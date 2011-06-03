@@ -85,11 +85,11 @@ struct	fileops {
 			 struct ucred *cred, int flags);
 	int (*fo_ioctl)	(struct file *fp, u_long com, caddr_t data,
 			 struct ucred *cred, struct sysmsg *msg);
-	int (*fo_kqfilter)(struct file *fp, struct knote *kn);
 	int (*fo_stat)	(struct file *fp, struct stat *sb,
 			 struct ucred *cred);
 	int (*fo_close)	(struct file *fp);
 	int (*fo_shutdown)(struct file *fp, int how);
+	struct kev_filter * (*fo_kev_filter)(struct file *fp);
 };
 
 /*
@@ -121,7 +121,10 @@ struct file {
 	int	f_msgcount;	/* (U) reference count from message queue */
 	struct nchandle f_nchandle; /* namecache reference */
 	struct spinlock f_spin;	/* NOT USED */
-	struct klist 	f_klist;/* knotes attached to fp/kq */
+	struct kev_filter_entry_list 	f_kflist; /*
+						   * kevent filters attached
+						   * to fp/kq
+						   */
 };
 
 #define	DTYPE_VNODE	1	/* file */
@@ -174,10 +177,10 @@ int badfo_readwrite(struct file *fp, struct uio *uio,
 		    struct ucred *cred, int flags);
 int badfo_ioctl(struct file *fp, u_long com, caddr_t data,
 		struct ucred *cred, struct sysmsg *msg);
-int badfo_kqfilter(struct file *fp, struct knote *kn);
 int badfo_stat(struct file *fp, struct stat *sb, struct ucred *cred);
 int badfo_close(struct file *fp);
 int badfo_shutdown(struct file *fp, int how);
+struct kev_filter *badfo_kev_filter(struct file *fp);
 
 #endif /* _KERNEL */
 

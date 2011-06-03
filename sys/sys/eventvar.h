@@ -50,18 +50,16 @@
 #define KQ_NEVENTS	8		/* minimize copy{in,out} calls */
 #define KQEXTENT	256		/* linear growth by this amount */
 
-TAILQ_HEAD(kqlist, knote);
-
 struct kqueue {
-	struct kqlist	kq_knpend;
-	struct kqlist	kq_knlist;
+	struct		kev_filter_entry_list *kq_fepending;
+	struct		kev_filter_entry_list *kq_felist;
 	int		kq_count;		/* number of pending events */
 	struct		sigio *kq_sigio;
-	struct		kqinfo kq_kqinfo;	
+	struct		kev_filter kq_kev_filter;
 	struct		filedesc *kq_fdp;
 	int		kq_state;
-	u_long		kq_knhashmask;          /* size of knhash */
-	struct		klist *kq_knhash;       /* hash table for knotes */
+	u_long		kq_fehashmask;          /* size of fehash */
+	struct		kev_filter_entry_list *kq_fehash;	/* hash table */
 };
 
 #define KQ_SLEEP	0x02

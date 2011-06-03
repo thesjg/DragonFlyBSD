@@ -619,7 +619,7 @@ retry:
 	 */
 	if (delfp) {
 		if (SLIST_FIRST(&delfp->f_klist))
-			knote_fdclose(delfp, fdp, new);
+			kev_filter_event_fdclose(delfp, fdp, new);
 		closef(delfp, p);
 		if (holdleaders) {
 			spin_lock(&fdp->fd_spin);
@@ -908,7 +908,7 @@ kern_close(int fd)
 	 */
 	spin_unlock(&fdp->fd_spin);
 	if (SLIST_FIRST(&fp->f_klist))
-		knote_fdclose(fp, fdp, fd);
+		kev_filter_event_fdclose(fp, fdp, fd);
 	error = closef(fp, p);
 	if (holdleaders) {
 		spin_lock(&fdp->fd_spin);
@@ -1462,7 +1462,7 @@ fdrevoke_proc_callback(struct proc *p, void *vinfo)
 			fhold(info->nfp);
 			fdp->fd_files[n].fp = info->nfp;
 			spin_unlock(&fdp->fd_spin);
-			knote_fdclose(fp, fdp, n);	/* XXX */
+			kev_filter_event_fdclose(fp, fdp, n);	/* XXX */
 			closef(fp, p);
 			spin_lock(&fdp->fd_spin);
 			--info->count;
@@ -2057,7 +2057,7 @@ fdfree(struct proc *p, struct filedesc *repl)
 			if (fp) {
 				spin_unlock(&fdp->fd_spin);
 				if (SLIST_FIRST(&fp->f_klist))
-					knote_fdclose(fp, fdp, i);
+					kev_filter_event_fdclose(fp, fdp, i);
 				closef(fp, p);
 				spin_lock(&fdp->fd_spin);
 			}
@@ -2223,7 +2223,7 @@ is_unsafe(struct file *fp)
 /*
  * Make this setguid thing safe, if at all possible.
  *
- * NOT MPSAFE - scans fdp without spinlocks, calls knote_fdclose()
+ * NOT MPSAFE - scans fdp without spinlocks, calls kev_filter_event_fdclose()
  */
 void
 setugidsafety(struct proc *p)
@@ -2250,7 +2250,7 @@ setugidsafety(struct proc *p)
 			 * a race while close blocks.
 			 */
 			if ((fp = funsetfd_locked(fdp, i)) != NULL) {
-				knote_fdclose(fp, fdp, i);
+				kev_filter_event_fdclose(fp, fdp, i);
 				closef(fp, p);
 			}
 		}
@@ -2260,7 +2260,7 @@ setugidsafety(struct proc *p)
 /*
  * Close any files on exec?
  *
- * NOT MPSAFE - scans fdp without spinlocks, calls knote_fdclose()
+ * NOT MPSAFE - scans fdp without spinlocks, calls kev_filter_event_fdclose()
  */
 void
 fdcloseexec(struct proc *p)
@@ -2286,7 +2286,7 @@ fdcloseexec(struct proc *p)
 			 * a race while close blocks.
 			 */
 			if ((fp = funsetfd_locked(fdp, i)) != NULL) {
-				knote_fdclose(fp, fdp, i);
+				kev_filter_event_fdclose(fp, fdp, i);
 				closef(fp, p);
 			}
 		}
@@ -2836,10 +2836,10 @@ struct fileops badfileops = {
 	.fo_read = badfo_readwrite,
 	.fo_write = badfo_readwrite,
 	.fo_ioctl = badfo_ioctl,
-	.fo_kqfilter = badfo_kqfilter,
 	.fo_stat = badfo_stat,
 	.fo_close = badfo_close,
-	.fo_shutdown = badfo_shutdown
+	.fo_shutdown = badfo_shutdown,
+	.fo_kev_filter = badfo_kev_filter
 };
 
 int
@@ -2857,16 +2857,6 @@ badfo_ioctl(struct file *fp, u_long com, caddr_t data,
 	    struct ucred *cred, struct sysmsg *msgv)
 {
 	return (EBADF);
-}
-
-/*
- * Must return an error to prevent registration, typically
- * due to a revoked descriptor (file_filtops assigned).
- */
-int
-badfo_kqfilter(struct file *fp, struct knote *kn)
-{
-	return (EOPNOTSUPP);
 }
 
 /*
@@ -2903,6 +2893,15 @@ int
 nofo_shutdown(struct file *fp, int how)
 {
 	return (EOPNOTSUPP);
+}
+
+/*
+ * MPSAFE
+ */
+struct kev_filter *
+badfo_kev_filter(struct file *fp)
+{
+        return (NULL);
 }
 
 SYSINIT(fildescdev,SI_SUB_DRIVERS,SI_ORDER_MIDDLE+CDEV_MAJOR,

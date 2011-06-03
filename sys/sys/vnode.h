@@ -192,9 +192,7 @@ struct vnode {
 	enum	vtagtype v_tag;			/* type of underlying data */
 	void	*v_data;			/* private data for fs */
 	struct namecache_list v_namecache;	/* (S) associated nc entries */
-	struct	{
-		struct	kqinfo vpi_kqinfo;	/* identity of poller(s) */
-	} v_pollinfo;
+	struct kev_filter v_filter;		/* kevent filters (poller(s)) */
 	struct vmresident *v_resident;		/* optional vmresident */
 	struct ccms_dataspace v_ccms;		/* cache coherency */
 #ifdef	DEBUG_LOCKS

@@ -116,8 +116,9 @@ struct dev_ops default_dev_ops = {
 	.d_dump = nodump,
 	.d_psize = nopsize,
 	.d_kqfilter = nokqfilter,
+	.d_clone = noclone,
 	.d_revoke = norevoke,
-	.d_clone = noclone
+	.d_kev_filter = dev_kev_filter
 };
 
 static __inline
@@ -421,35 +422,6 @@ dev_dpsize(cdev_t dev)
 	return(-1);
 }
 
-/*
- * Pass-thru to the device kqfilter.
- *
- * NOTE: We explicitly preset a_result to 0 so d_kqfilter() functions
- *	 which return 0 do not have to bother setting a_result.
- */
-int
-dev_dkqfilter(cdev_t dev, struct knote *kn)
-{
-	struct dev_kqfilter_args ap;
-	int needmplock = dev_needmplock(dev);
-	int error;
-
-	ap.a_head.a_desc = &dev_kqfilter_desc;
-	ap.a_head.a_dev = dev;
-	ap.a_kn = kn;
-	ap.a_result = 0;
-
-	if (needmplock)
-		get_mplock();
-	error = dev->si_ops->d_kqfilter(&ap);
-	if (needmplock)
-		rel_mplock();
-
-	if (error == 0)
-		return(ap.a_result);
-	return(ENODEV);
-}
-
 /************************************************************************
  *			DEVICE HELPER FUNCTIONS				*
  ************************************************************************/
@@ -636,7 +608,6 @@ dev_ops_restore(cdev_t dev, struct dev_ops *oops)
  *			DEFAULT DEV OPS FUNCTIONS			*
  ************************************************************************/
 
-
 /*
  * Unsupported devswitch functions (e.g. for writing to read-only device).
  * XXX may belong elsewhere.
@@ -686,12 +657,6 @@ noioctl(struct dev_ioctl_args *ap)
 }
 
 int
-nokqfilter(struct dev_kqfilter_args *ap)
-{
-	return (ENODEV);
-}
-
-int
 nommap(struct dev_mmap_args *ap)
 {
 	return (ENODEV);
@@ -708,6 +673,12 @@ nostrategy(struct dev_strategy_args *ap)
 	return(0);
 }
 
+void
+nokqfilter(void)
+{
+	panic("kqfilter op no longer supported through device vector");
+}
+
 int
 nopsize(struct dev_psize_args *ap)
 {
@@ -719,6 +690,19 @@ int
 nodump(struct dev_dump_args *ap)
 {
 	return (ENODEV);
+}
+
+/*
+ * Returns the initialized kevent filter or ENODEV
+ */
+int
+dev_kev_filter(cdev_t dev, struct kev_filter **filt)
+{
+	if (dev->si_filter == NULL)
+		return (ENODEV);
+
+	*filt = dev->si_filter;
+	return (0);
 }
 
 /*
@@ -736,4 +720,3 @@ nullclose(struct dev_close_args *ap)
 {
 	return (0);
 }
-

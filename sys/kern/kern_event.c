@@ -84,7 +84,6 @@ static int 	kqueue_stat(struct file *fp, struct stat *st,
 		    struct ucred *cred);
 static int 	kqueue_close(struct file *fp);
 static void	kqueue_wakeup(struct kqueue *kq);
-static int	filter_attach(struct knote *kn);
 static int	filter_event(struct knote *kn, long hint);
 
 /*
@@ -94,39 +93,19 @@ static struct fileops kqueueops = {
 	.fo_read = kqueue_read,
 	.fo_write = kqueue_write,
 	.fo_ioctl = kqueue_ioctl,
-	.fo_kqfilter = kqueue_kqfilter,
+/*	.fo_kqfilter = kqueue_kqfilter, */
 	.fo_stat = kqueue_stat,
 	.fo_close = kqueue_close,
 	.fo_shutdown = nofo_shutdown
 };
 
-static void 	knote_attach(struct knote *kn);
-static void 	knote_drop(struct knote *kn);
-static void	knote_detach_and_drop(struct knote *kn);
-static void 	knote_enqueue(struct knote *kn);
-static void 	knote_dequeue(struct knote *kn);
-static struct 	knote *knote_alloc(void);
-static void 	knote_free(struct knote *kn);
-
-static void	filt_kqdetach(struct knote *kn);
-static int	filt_kqueue(struct knote *kn, long hint);
-static int	filt_procattach(struct knote *kn);
-static void	filt_procdetach(struct knote *kn);
-static int	filt_proc(struct knote *kn, long hint);
-static int	filt_fileattach(struct knote *kn);
-static void	filt_timerexpire(void *knx);
-static int	filt_timerattach(struct knote *kn);
-static void	filt_timerdetach(struct knote *kn);
-static int	filt_timer(struct knote *kn, long hint);
-
-static struct filterops file_filtops =
-	{ FILTEROP_ISFD, filt_fileattach, NULL, NULL };
-static struct filterops kqread_filtops =
-	{ FILTEROP_ISFD, NULL, filt_kqdetach, filt_kqueue };
-static struct filterops proc_filtops =
-	{ 0, filt_procattach, filt_procdetach, filt_proc };
-static struct filterops timer_filtops =
-	{ 0, filt_timerattach, filt_timerdetach, filt_timer };
+static void	kev_filter_entry_drop(struct kev_filter_entry *fe);
+static void	kev_filter_entry_enqueue(struct kev_filter_entry *fe);
+static void	kev_filter_entry_activate(struct kev_filter_entry *fe);
+static struct 	kev_filter_entry *kev_filter_entry_alloc(void);
+static void	kev_filter_entry_free(struct kev_filter_entry *fe)
+static struct 	kev_filter_note *kev_filter_note_alloc(void);
+static void	kev_filter_note_free(struct kev_filter_note *fn);
 
 static int 		kq_ncallouts = 0;
 static int 		kq_calloutmax = (4 * 1024);
@@ -136,325 +115,97 @@ static int		kq_checkloop = 1000000;
 SYSCTL_INT(_kern, OID_AUTO, kq_checkloop, CTLFLAG_RW,
     &kq_checkloop, 0, "Maximum number of callouts allocated for kqueue");
 
-#define KNOTE_ACTIVATE(kn) do { 					\
+#define KEV_FILTER_NOTE_ACTIVATE(fn) do { 				\
 	kn->kn_status |= KN_ACTIVE;					\
 	if ((kn->kn_status & (KN_QUEUED | KN_DISABLED)) == 0)		\
 		knote_enqueue(kn);					\
 } while(0)
 
-#define	KN_HASHSIZE		64		/* XXX should be tunable */
-#define KN_HASH(val, mask)	(((val) ^ (val >> 8)) & (mask))
+#define	KFE_HASHSIZE		64		/* XXX should be tunable */
+#define KFE_HASH(val, mask)	(((val) ^ (val >> 8)) & (mask))
 
-extern struct filterops aio_filtops;
-extern struct filterops sig_filtops;
 
 /*
- * Table for for all system-defined filters.
- */
-static struct filterops *sysfilt_ops[] = {
-	&file_filtops,			/* EVFILT_READ */
-	&file_filtops,			/* EVFILT_WRITE */
-	&aio_filtops,			/* EVFILT_AIO */
-	&file_filtops,			/* EVFILT_VNODE */
-	&proc_filtops,			/* EVFILT_PROC */
-	&sig_filtops,			/* EVFILT_SIGNAL */
-	&timer_filtops,			/* EVFILT_TIMER */
-	&file_filtops,			/* EVFILT_EXCEPT */
-};
-
-static int
-filt_fileattach(struct knote *kn)
-{
-	return (fo_kqfilter(kn->kn_fp, kn));
-}
-
-/*
- * MPSAFE
- */
-static int
-kqueue_kqfilter(struct file *fp, struct knote *kn)
-{
-	struct kqueue *kq = (struct kqueue *)kn->kn_fp->f_data;
-
-	if (kn->kn_filter != EVFILT_READ)
-		return (EOPNOTSUPP);
-
-	kn->kn_fop = &kqread_filtops;
-	knote_insert(&kq->kq_kqinfo.ki_note, kn);
-	return (0);
-}
-
-static void
-filt_kqdetach(struct knote *kn)
-{
-	struct kqueue *kq = (struct kqueue *)kn->kn_fp->f_data;
-
-	knote_remove(&kq->kq_kqinfo.ki_note, kn);
-}
-
-/*ARGSUSED*/
-static int
-filt_kqueue(struct knote *kn, long hint)
-{
-	struct kqueue *kq = (struct kqueue *)kn->kn_fp->f_data;
-
-	kn->kn_data = kq->kq_count;
-	return (kn->kn_data > 0);
-}
-
-static int
-filt_procattach(struct knote *kn)
-{
-	struct proc *p;
-	int immediate;
-
-	immediate = 0;
-	p = pfind(kn->kn_id);
-	if (p == NULL && (kn->kn_sfflags & NOTE_EXIT)) {
-		p = zpfind(kn->kn_id);
-		immediate = 1;
-	}
-	if (p == NULL) {
-		return (ESRCH);
-	}
-	if (!PRISON_CHECK(curthread->td_ucred, p->p_ucred)) {
-		if (p)
-			PRELE(p);
-		return (EACCES);
-	}
-
-	lwkt_gettoken(&p->p_token);
-	kn->kn_ptr.p_proc = p;
-	kn->kn_flags |= EV_CLEAR;		/* automatically set */
-
-	/*
-	 * internal flag indicating registration done by kernel
-	 */
-	if (kn->kn_flags & EV_FLAG1) {
-		kn->kn_data = kn->kn_sdata;		/* ppid */
-		kn->kn_fflags = NOTE_CHILD;
-		kn->kn_flags &= ~EV_FLAG1;
-	}
-
-	knote_insert(&p->p_klist, kn);
-
-	/*
-	 * Immediately activate any exit notes if the target process is a
-	 * zombie.  This is necessary to handle the case where the target
-	 * process, e.g. a child, dies before the kevent is negistered.
-	 */
-	if (immediate && filt_proc(kn, NOTE_EXIT))
-		KNOTE_ACTIVATE(kn);
-	lwkt_reltoken(&p->p_token);
-	PRELE(p);
-
-	return (0);
-}
-
-/*
- * The knote may be attached to a different process, which may exit,
- * leaving nothing for the knote to be attached to.  So when the process
- * exits, the knote is marked as DETACHED and also flagged as ONESHOT so
- * it will be deleted when read out.  However, as part of the knote deletion,
- * this routine is called, so a check is needed to avoid actually performing
- * a detach, because the original process does not exist any more.
- */
-static void
-filt_procdetach(struct knote *kn)
-{
-	struct proc *p;
-
-	if (kn->kn_status & KN_DETACHED)
-		return;
-	/* XXX locking? take proc_token here? */
-	p = kn->kn_ptr.p_proc;
-	knote_remove(&p->p_klist, kn);
-}
-
-static int
-filt_proc(struct knote *kn, long hint)
-{
-	u_int event;
-
-	/*
-	 * mask off extra data
-	 */
-	event = (u_int)hint & NOTE_PCTRLMASK;
-
-	/*
-	 * if the user is interested in this event, record it.
-	 */
-	if (kn->kn_sfflags & event)
-		kn->kn_fflags |= event;
-
-	/*
-	 * Process is gone, so flag the event as finished.  Detach the
-	 * knote from the process now because the process will be poof,
-	 * gone later on.
-	 */
-	if (event == NOTE_EXIT) {
-		struct proc *p = kn->kn_ptr.p_proc;
-		if ((kn->kn_status & KN_DETACHED) == 0) {
-			knote_remove(&p->p_klist, kn);
-			kn->kn_status |= KN_DETACHED;
-			kn->kn_data = p->p_xstat;
-			kn->kn_ptr.p_proc = NULL;
-		}
-		kn->kn_flags |= (EV_EOF | EV_ONESHOT); 
-		return (1);
-	}
-
-	/*
-	 * process forked, and user wants to track the new process,
-	 * so attach a new knote to it, and immediately report an
-	 * event with the parent's pid.
-	 */
-	if ((event == NOTE_FORK) && (kn->kn_sfflags & NOTE_TRACK)) {
-		struct kevent kev;
-		int error;
-
-		/*
-		 * register knote with new process.
-		 */
-		kev.ident = hint & NOTE_PDATAMASK;	/* pid */
-		kev.filter = kn->kn_filter;
-		kev.flags = kn->kn_flags | EV_ADD | EV_ENABLE | EV_FLAG1;
-		kev.fflags = kn->kn_sfflags;
-		kev.data = kn->kn_id;			/* parent */
-		kev.udata = kn->kn_kevent.udata;	/* preserve udata */
-		error = kqueue_register(kn->kn_kq, &kev);
-		if (error)
-			kn->kn_fflags |= NOTE_TRACKERR;
-	}
-
-	return (kn->kn_fflags != 0);
-}
-
-/*
- * The callout interlocks with callout_stop() (or should), so the
- * knote should still be a valid structure.  However the timeout
- * can race a deletion so if KN_DELETING is set we just don't touch
- * the knote.
- */
-static void
-filt_timerexpire(void *knx)
-{
-	struct knote *kn = knx;
-	struct callout *calloutp;
-	struct timeval tv;
-	int tticks;
-
-	lwkt_gettoken(&kq_token);
-	if ((kn->kn_status & KN_DELETING) == 0) {
-		kn->kn_data++;
-		KNOTE_ACTIVATE(kn);
-
-		if ((kn->kn_flags & EV_ONESHOT) == 0) {
-			tv.tv_sec = kn->kn_sdata / 1000;
-			tv.tv_usec = (kn->kn_sdata % 1000) * 1000;
-			tticks = tvtohz_high(&tv);
-			calloutp = (struct callout *)kn->kn_hook;
-			callout_reset(calloutp, tticks, filt_timerexpire, kn);
-		}
-	}
-	lwkt_reltoken(&kq_token);
-}
-
-/*
- * data contains amount of time to sleep, in milliseconds
- */ 
-static int
-filt_timerattach(struct knote *kn)
-{
-	struct callout *calloutp;
-	struct timeval tv;
-	int tticks;
-
-	if (kq_ncallouts >= kq_calloutmax) {
-		kn->kn_hook = NULL;
-		return (ENOMEM);
-	}
-	kq_ncallouts++;
-
-	tv.tv_sec = kn->kn_sdata / 1000;
-	tv.tv_usec = (kn->kn_sdata % 1000) * 1000;
-	tticks = tvtohz_high(&tv);
-
-	kn->kn_flags |= EV_CLEAR;		/* automatically set */
-	MALLOC(calloutp, struct callout *, sizeof(*calloutp),
-	    M_KQUEUE, M_WAITOK);
-	callout_init(calloutp);
-	kn->kn_hook = (caddr_t)calloutp;
-	callout_reset(calloutp, tticks, filt_timerexpire, kn);
-
-	return (0);
-}
-
-static void
-filt_timerdetach(struct knote *kn)
-{
-	struct callout *calloutp;
-
-	calloutp = (struct callout *)kn->kn_hook;
-	callout_stop(calloutp);
-	FREE(calloutp, M_KQUEUE);
-	kq_ncallouts--;
-}
-
-static int
-filt_timer(struct knote *kn, long hint)
-{
-
-	return (kn->kn_data != 0);
-}
-
-/*
- * Acquire a knote, return non-zero on success, 0 on failure.
  *
- * If we cannot acquire the knote we sleep and return 0.  The knote
+ */
+static
+int
+file_vector_lookup(struct kev_filter **filt, struct kev_filter_note *fn, void *arg)
+{
+	struct file *fp = (struct file *)arg;
+	int error;
+
+	return (fo_kev_filter(fp, *filt));
+}
+
+/* filt_procattach (formerly) */
+static
+int
+proc_vector_lookup(struct kev_filter **filt, struct kev_filter_note *fn, void *arg)
+{
+}
+
+static
+int
+signal_vector_lookup(struct kev_filter **filt, struct kev_filter_note *fn, void *arg)
+{
+}
+
+/* filt_timerattach (formerly) */
+static
+int
+timer_vector_lookup(struct kev_filter **filt, struct kev_filter_note *fn, void *arg)
+{
+}
+
+/*
+ * Acquire a filter event, return non-zero on success, 0 on failure.
+ *
+ * If we cannot acquire the fevent we sleep and return 0.  The fevent
  * may be stale on return in this case and the caller must restart
  * whatever loop they are in.
  */
 static __inline
 int
-knote_acquire(struct knote *kn)
+kev_filter_entry_acquire(struct kev_filter_entry *fe)
 {
-	if (kn->kn_status & KN_PROCESSING) {
-		kn->kn_status |= KN_WAITING | KN_REPROCESS;
-		tsleep(kn, 0, "kqepts", hz);
-		/* knote may be stale now */
-		return(0);
+	if (fe->fe_status & KFE_PROCESSING) {
+		fe->fe_status |= KFE_WAITING | KFE_REPROCESS;
+		tsleep(fe, 0, "kqepts", hz);
+		/* filter entry may be stale now */
+		return (0);
 	}
-	kn->kn_status |= KN_PROCESSING;
-	return(1);
+	fe->fe_status |= KFE_PROCESSING;
+	return (1);
 }
 
 /*
- * Release an acquired knote, clearing KN_PROCESSING and handling any
- * KN_REPROCESS events.
+ * Release an acquired filter entry, clearing KN_PROCESSING and handling
+ * any KN_REPROCESS events.
  *
- * Non-zero is returned if the knote is destroyed.
+ * Non-zero is returned if the filter entry is destroyed.
  */
 static __inline
 int
-knote_release(struct knote *kn)
+kev_filter_entry_release(struct kev_filter_entry *fe)
 {
-	while (kn->kn_status & KN_REPROCESS) {
-		kn->kn_status &= ~KN_REPROCESS;
-		if (kn->kn_status & KN_WAITING) {
-			kn->kn_status &= ~KN_WAITING;
-			wakeup(kn);
+	while (fe->fe_status & KFE_REPROCESS) {
+		fe->fe_status &= ~KFE_REPROCESS;
+		if (fe->fe_status & KFE_WAITING) {
+			fe->fe_status &= ~KFE_WAITING;
+			wakeup(fe);
 		}
-		if (kn->kn_status & KN_DELETING) {
-			knote_detach_and_drop(kn);
-			return(1);
+		if (fe->fe_status & KFE_DELETING) {
+			kev_filter_entry_drop(fe);
+			return (1);
 			/* NOT REACHED */
 		}
-		if (filter_event(kn, 0))
-			KNOTE_ACTIVATE(kn);
+/* XXX, SJG: KNOTE_ACTIVATE?? */
+		if (filter_event(fe, 0))
+			KNOTE_ACTIVATE(fe);
 	}
-	kn->kn_status &= ~KN_PROCESSING;
-	return(0);
+	fe->fe_status &= ~KFE_PROCESSING;
+	return (0);
 }
 
 /*
@@ -467,34 +218,35 @@ knote_release(struct knote *kn)
 void
 kqueue_init(struct kqueue *kq, struct filedesc *fdp)
 {
-	TAILQ_INIT(&kq->kq_knpend);
-	TAILQ_INIT(&kq->kq_knlist);
+	TAILQ_INIT(&kq->kq_fepending);
+	TAILQ_INIT(&kq->kq_felist);
 	kq->kq_count = 0;
 	kq->kq_fdp = fdp;
-	SLIST_INIT(&kq->kq_kqinfo.ki_note);
+
+/* XXX	SLIST_INIT(&kq->kq_kqinfo.ki_note); */
 }
 
 /*
  * Terminate a kqueue.  Freeing the actual kq itself is left up to the
  * caller (it might be embedded in a lwp so we don't do it here).
  *
- * The kq's knlist must be completely eradicated so block on any
+ * The kq's felist must be completely eradicated so block on any
  * processing races.
  */
 void
 kqueue_terminate(struct kqueue *kq)
 {
-	struct knote *kn;
+	struct kev_filter_entry *fe;
 
 	lwkt_gettoken(&kq_token);
-	while ((kn = TAILQ_FIRST(&kq->kq_knlist)) != NULL) {
-		if (knote_acquire(kn))
-			knote_detach_and_drop(kn);
+	while ((fe = TAILQ_FIRST(&kq->kq_felist)) != NULL) {
+		if (kev_filter_entry_acquire(fe))
+			kev_filter_entry_drop(fe);
 	}
-	if (kq->kq_knhash) {
-		kfree(kq->kq_knhash, M_KQUEUE);
-		kq->kq_knhash = NULL;
-		kq->kq_knhashmask = 0;
+	if (kq->kq_fehash) {
+		kfree(kq->kq_fehash, M_KQUEUE);
+		kq->kq_fehash = NULL;
+		kq->kq_fehashmask = 0;
 	}
 	lwkt_reltoken(&kq_token);
 }
@@ -783,154 +535,277 @@ sys_kevent(struct kevent_args *uap)
 	return (error);
 }
 
-int
-kqueue_register(struct kqueue *kq, struct kevent *kev)
+/*
+ * Convert EVFILT_* filter to 0-base index and return the proper note
+ * reference.
+ */
+static
+struct kev_filter_note *
+kev_filter_entry_get_note(struct kev_filter_entry *fe, short filter)
+{
+	return (&fe->fe_notes[~filter]);
+}
+
+/*
+ * ...
+ */
+static
+struct kev_filter_op *
+kev_filter_entry_get_vector(struct kev_filter_entry *fe, short filter)
+{
+	static struct kev_filter_op ops[EVFILT_SYSCOUNT] = {
+	    &fe->fe_filter.kf_ops->fop_read,		/* EVFILT_READ */
+	    &fe->fe_filter.kf_ops->fop_write,		/* EVFILT_WRITE */
+	    NULL,					/* EVFILT_AIO */
+	    &fe->fe_filter.kf_ops->fop_special,		/* EVFILT_VNODE */
+	    &fe->fe_filter.kf_ops->fop_special,		/* EVFILT_PROC */
+	    &fe->fe_filter.kf_ops->fop_special,		/* EVFILT_SIGNAL */
+	    &fe->fe_filter.kf_ops->fop_special,		/* EVFILT_TIMER */
+	    &fe->fe_filter.kf_ops->fop_special		/* EVFILT_EXCEPT */
+	};
+
+	return (ops[~filter]);
+}
+
+/*
+ * Look up a filter event and acquire it, caller is responsible for releasing
+ * the filter event with kev_filter_entry_release().
+ */
+struct kev_filter_entry *
+kqueue_lookup_filter_entry(struct kqueue *kq, uintptr_t ident, boolean_t isfd)
 {
 	struct filedesc *fdp = kq->kq_fdp;
-	struct filterops *fops;
-	struct file *fp = NULL;
-	struct knote *kn = NULL;
-	int error = 0;
-
-	if (kev->filter < 0) {
-		if (kev->filter + EVFILT_SYSCOUNT < 0)
-			return (EINVAL);
-		fops = sysfilt_ops[~kev->filter];	/* to 0-base index */
-	} else {
-		/*
-		 * XXX
-		 * filter attach routine is responsible for insuring that
-		 * the identifier can be attached to it.
-		 */
-		kprintf("unknown filter: %d\n", kev->filter);
-		return (EINVAL);
-	}
+	struct kev_filter_entry *fe = NULL;
 
 	lwkt_gettoken(&kq_token);
-	if (fops->f_flags & FILTEROP_ISFD) {
-		/* validate descriptor */
-		fp = holdfp(fdp, kev->ident, -1);
-		if (fp == NULL) {
-			lwkt_reltoken(&kq_token);
-			return (EBADF);
-		}
-
+	if (isfd) {
 again1:
-		SLIST_FOREACH(kn, &fp->f_klist, kn_link) {
-			if (kn->kn_kq == kq &&
-			    kn->kn_filter == kev->filter &&
-			    kn->kn_id == kev->ident) {
-				if (knote_acquire(kn) == 0)
+		TAILQ_FOREACH(fe, &fp->f_kflist, fe_link) {
+			if (fe->fe_kq == kq &&
+			    fe->fe_ident == ident) {
+				if (kev_filter_entry_acquire(fe) == 0)
 					goto again1;
 				break;
 			}
 		}
 	} else {
-		if (kq->kq_knhashmask) {
+		if (kq->kq_fehashmask) {
 			struct klist *list;
-			
-			list = &kq->kq_knhash[
-			    KN_HASH((u_long)kev->ident, kq->kq_knhashmask)];
+
+			list = &kq->kq_fehash[
+			    KFE_HASH((u_long)kev->ident, kq->kq_fehashmask)];
 again2:
 			SLIST_FOREACH(kn, list, kn_link) {
 				if (kn->kn_id == kev->ident &&
 				    kn->kn_filter == kev->filter) {
-					if (knote_acquire(kn) == 0)
+					if (kev_filter_entry_acquire(kn) == 0)
 						goto again2;
 					break;
 				}
 			}
 		}
 	}
+	lwkt_reltoken(&kq_token);
+
+	return (fe);
+}
+
+int
+kqueue_register_filter_note(struct kqueue *kq, ...
+{
+
+}
+
+int
+kqueue_register(struct kqueue *kq, uintptr_t ident, struct kev_filter_note *fn)
+{
+	struct filedesc *fdp = kq->kq_fdp;
+	struct kev_filter_entry *fe;
+	struct file *fp = NULL;
+	struct kev_filter *filter;
+	int error = 0;
+
+	int (*vector_lookup)(struct kev_filter **, struct kev_filter_note *, void *);
+	void *vector_lookup_arg;
+	boolean_t isfd;
+
+
+	if (fn->fn_filter > 0 || fn->fn_filter + EVFILT_SYSCOUNT <= 0)
+		return (EINVAL);	/* unknown or invalid filter */
 
 	/*
-	 * NOTE: At this point if kn is non-NULL we will have acquired
-	 *	 it and set KN_PROCESSING.
+	 * Set up some defaults to minimize redundancy in the following switch.
 	 */
-	if (kn == NULL && ((kev->flags & EV_ADD) == 0)) {
+	vector_lookup = file_vector_lookup;
+	isfd = false;			/* does not represent an fd */
+
+	/*
+	 * Set up the correct vector lookup for the filter note and
+	 * determine if we will be representing a file descriptor or not,
+	 */
+	switch (fn->fn_filter) {
+	case EVFILT_READ:
+		isfd = true;
+		break;
+	case EVFILT_WRITE:
+		isfd = true;
+		break;
+	case EVFILT_VNODE:
+	case EVFILT_EXCEPT:
+		isfd = true;
+		break;
+	case EVFILT_PROC:
+		vector_lookup = proc_vector_lookup;
+		break;
+	case EVFILT_SIGNAL:
+		vector_lookup = signal_vector_lookup;
+		break;
+	case EVFILT_TIMER:
+		vector_lookup = timer_vector_lookup;
+		break;
+	case EVFILT_AIO:
+		return (ENXIO);		/* not implemented */
+		/* NOT REACHED */
+	}
+
+	/*
+	 * Validate descriptor
+	 */
+	if (isfd) {
+		fp = holdfp(fdp, ident, -1);
+		if (fp == NULL)
+			return (EBADF);
+	}
+
+	fe = kqueue_lookup_filter_event(kq, ident, isfd);
+
+	/*
+	 * NOTE: At this point if fe is non-NULL we will have acquired
+	 *	 it and set KFE_PROCESSING.
+	 */
+	if (fe == NULL & ((fn->ufflags & EV_ADD) == 0)) {
 		error = ENOENT;
 		goto done;
 	}
 
 	/*
-	 * kn now contains the matching knote, or NULL if no match
+	 * fe now contains the matching filter_entry, or NULL if no match
 	 */
-	if (kev->flags & EV_ADD) {
-		if (kn == NULL) {
-			kn = knote_alloc();
-			if (kn == NULL) {
+	if (fn->fn_ufflags & EV_ADD) {
+		if (fe == NULL) {
+			if (isfd)
+				vector_lookup_arg = fp;
+			else
+				vector_lookup_arg = NULL;
+
+			/*
+			 * Look up the vector and validate that it supports
+			 * the operations we need.
+			 */
+			error = vector_lookup(&filter, fn, vector_lookup_arg);
+			if (error != 0)
+				goto done;
+
+			fe = kev_filter_entry_alloc();
+			if (fe == NULL) {
 				error = ENOMEM;
 				goto done;
 			}
-			kn->kn_fp = fp;
-			kn->kn_kq = kq;
-			kn->kn_fop = fops;
 
 			/*
-			 * apply reference count to knote structure, and
+			 * Initialize the filter event
+			 */
+			fe->fe_ident = ident;
+			fe->fe_fd = isfd;
+			fe->fe_kq = kq;
+			fe->fe_filter = &filter;
+
+			/*
+			 * Apply reference count to knote structure and
 			 * do not release it at the end of this routine.
 			 */
+			fe->fe_ptr.p_fp = fp;
 			fp = NULL;
 
-			kn->kn_sfflags = kev->fflags;
-			kn->kn_sdata = kev->data;
-			kev->fflags = 0;
-			kev->data = 0;
-			kn->kn_kevent = *kev;
+			/*
+			 * Slot in the filter note
+			 */
+			fe->fe_notes[filter_idx] = fn;
+
+/* XXX: who owns the fn, allocation/deallocation? */
 
 			/*
-			 * KN_PROCESSING prevents the knote from getting
+			 * FE_PROCESSING prevents the knote from getting
 			 * ripped out from under us while we are trying
 			 * to attach it, in case the attach blocks.
 			 */
-			kn->kn_status = KN_PROCESSING;
-			knote_attach(kn);
-			if ((error = filter_attach(kn)) != 0) {
-				kn->kn_status |= KN_DELETING | KN_REPROCESS;
-				knote_drop(kn);
-				goto done;
-			}
+			fe->fe_status = FE_PROCESSING;
+
+/*
+        struct klist *list;
+        struct kqueue *kq = kn->kn_kq;
+
+/* We know whether it is an fd or not here, it is set in the kev_filter_entry (fe_fd) */
+        if (isfd) {
+                KKASSERT(kn->kn_fp);
+                list = &kn->kn_fp->f_klist;
+        } else {
+                if (kq->kq_fehashmask == 0)
+                        kq->kq_fehash = hashinit(KFE_HASHSIZE, M_KQUEUE,
+                                                 &kq->kq_fehashmask);
+                list = &kq->kq_fehash[KFE_HASH(kn->kn_id, kq->kq_fehashmask)];
+        }
+        SLIST_INSERT_HEAD(list, kn, kn_link);
+        TAILQ_INSERT_HEAD(&kq->kq_knlist, kn, kn_kqlink);
+*/
 
 			/*
-			 * Interlock against close races which either tried
-			 * to remove our knote while we were blocked or missed
-			 * it entirely prior to our attachment.  We do not
-			 * want to end up with a knote on a closed descriptor.
+			 * Interlock against close races which we may have
+			 * missed, we do not want to end up with a filter event
+			 * hanging from a closed descriptor.
 			 */
-			if ((fops->f_flags & FILTEROP_ISFD) &&
-			    checkfdclosed(fdp, kev->ident, kn->kn_fp)) {
-				kn->kn_status |= KN_DELETING | KN_REPROCESS;
+			if ((isfd) && checkfdclosed(fdp, ident, fe->fe_ptr.p_fp)) {
+				fe->fe_status |= KFE_DELETING | KFE_REPROCESS;
 			}
 		} else {
 			/*
-			 * The user may change some filter values after the
-			 * initial EV_ADD, but doing so will not reset any 
+			 * Handle changing various filter values after the
+			 * initial EV_ADD, but doing so will not reset any
 			 * filter which have already been triggered.
 			 */
-			KKASSERT(kn->kn_status & KN_PROCESSING);
-			kn->kn_sfflags = kev->fflags;
-			kn->kn_sdata = kev->data;
-			kn->kn_kevent.udata = kev->udata;
+/* ??? */		KKASSERT(fe->fe_status & FE_PROCESSING);
+
+			fe->fe_notes[filter_idx].fn_ufflags = fn->fn_ufflags;
+			fe->fe_notes[filter_idx].fn_udata = fn->fn_udata;
+
+			/* XXX: Free the fn here? */
 		}
 
 		/*
 		 * Execute the filter event to immediately activate the
 		 * knote if necessary.  If reprocessing events are pending
 		 * due to blocking above we do not run the filter here
-		 * but instead let knote_release() do it.  Otherwise we
-		 * might run the filter on a deleted event.
+		 * but instead let kev_filter_entry_release() do it.  Otherwise
+		 * we might run the filter on a deleted event.
 		 */
-		if ((kn->kn_status & KN_REPROCESS) == 0) {
+/*
+		if ((fe->fe_status & KFE_REPROCESS) == 0) {
 			if (filter_event(kn, 0))
 				KNOTE_ACTIVATE(kn);
 		}
-	} else if (kev->flags & EV_DELETE) {
+*/
+	} else if (fn->fn_ufflags & EV_DELETE) {
 		/*
-		 * Delete the existing knote
+		 * Delete existing kev_filter_entry and associated
+		 * kev_filter_note's.
 		 */
-		knote_detach_and_drop(kn);
+		kev_filter_entry_drop(fe);
 		goto done;
 	}
+
+
+
+
 
 	/*
 	 * Disablement does not deactivate a knote here.
@@ -954,7 +829,7 @@ again2:
 	/*
 	 * Handle any required reprocessing
 	 */
-	knote_release(kn);
+	kev_filter_entry_release(fe);
 	/* kn may be invalid now */
 
 done:
@@ -1012,30 +887,29 @@ kqueue_sleep(struct kqueue *kq, struct timespec *tsp)
  */
 static int
 kqueue_scan(struct kqueue *kq, struct kevent *kevp, int count,
-            struct knote *marker)
+            struct kev_filter_entry *marker)
 {
-        struct knote *kn, local_marker;
+        struct kev_filter_entry *fe, local_marker;
         int total;
 
         total = 0;
-	local_marker.kn_filter = EVFILT_MARKER;
-	local_marker.kn_status = KN_PROCESSING;
+	local_marker.fe_status = KFE_PROCESSING | KFE_MARKER;
 
 	/*
 	 * Collect events.
 	 */
-	TAILQ_INSERT_HEAD(&kq->kq_knpend, &local_marker, kn_tqe);
+	TAILQ_INSERT_HEAD(&kq->kq_fepending, &local_marker, fe_entry);
 	while (count) {
-		kn = TAILQ_NEXT(&local_marker, kn_tqe);
-		if (kn->kn_filter == EVFILT_MARKER) {
+		fe = TAILQ_NEXT(&local_marker, fe_entry);
+		if (fe->fe_status & KFE_MARKER) {
 			/* Marker reached, we are done */
-			if (kn == marker)
+			if (fe == marker)
 				break;
 
 			/* Move local marker past some other threads marker */
-			kn = TAILQ_NEXT(kn, kn_tqe);
-			TAILQ_REMOVE(&kq->kq_knpend, &local_marker, kn_tqe);
-			TAILQ_INSERT_BEFORE(kn, &local_marker, kn_tqe);
+			fe = TAILQ_NEXT(fe, fe_entry);
+			TAILQ_REMOVE(&kq->kq_fepending, &local_marker, fe_entry);
+			TAILQ_INSERT_BEFORE(fe, &local_marker, fe_entry);
 			continue;
 		}
 
@@ -1044,7 +918,7 @@ kqueue_scan(struct kqueue *kq, struct kevent *kevp, int count,
 		 * we risk not returning it when the user process expects
 		 * it should be returned.  Sleep and retry.
 		 */
-		if (knote_acquire(kn) == 0)
+		if (kev_filter_entry_acquire(fe) == 0)
 			continue;
 
 		/*
@@ -1059,40 +933,43 @@ kqueue_scan(struct kqueue *kq, struct kevent *kevp, int count,
 		 *	     against deletion or another thread's
 		 *	     processing.
 		 */
-		TAILQ_REMOVE(&kq->kq_knpend, kn, kn_tqe);
+		TAILQ_REMOVE(&kq->kq_fepending, fe, fe_entry);
 		kq->kq_count--;
 
 		/*
 		 * We have to deal with an extremely important race against
 		 * file descriptor close()s here.  The file descriptor can
 		 * disappear MPSAFE, and there is a small window of
-		 * opportunity between that and the call to knote_fdclose().
+		 * opportunity between that and the call to
+		 * kev_filter_entry_fdclose().
 		 *
 		 * If we hit that window here while doselect or dopoll is
 		 * trying to delete a spurious event they will not be able
 		 * to match up the event against a knote and will go haywire.
 		 */
-		if ((kn->kn_fop->f_flags & FILTEROP_ISFD) &&
-		    checkfdclosed(kq->kq_fdp, kn->kn_kevent.ident, kn->kn_fp)) {
-			kn->kn_status |= KN_DELETING | KN_REPROCESS;
+		if ((fe->fe_fd) &&
+		    checkfdclosed(kq->kq_fdp, fe->fe_ident, fe->fe_ptr.p_fp)) {
+			fe->fe_status |= KFE_DELETING | KFE_REPROCESS;
 		}
 
-		if (kn->kn_status & KN_DISABLED) {
+		if (fe->fe_status & KFE_DISABLED) {
 			/*
 			 * If disabled we ensure the event is not queued
 			 * but leave its active bit set.  On re-enablement
 			 * the event may be immediately triggered.
 			 */
-			kn->kn_status &= ~KN_QUEUED;
-		} else if ((kn->kn_flags & EV_ONESHOT) == 0 &&
-			   (kn->kn_status & KN_DELETING) == 0 &&
-			   filter_event(kn, 0) == 0) {
+			fe->fe_status &= ~KFE_QUEUED;
+		} else if ((fe->kn_flags & EV_ONESHOT) == 0 &&
+			   (fe->fe_status & KFE_DELETING) == 0 &&
+			   filter_event(fe, 0) == 0) {
+/* XXX, SJG: kn_flags access here, we need to know which one (filter), or all? */
+/* I think we need to check them all ...  yes...  */
 			/*
 			 * If not running in one-shot mode and the event
 			 * is no longer present we ensure it is removed
 			 * from the queue and ignore it.
 			 */
-			kn->kn_status &= ~(KN_QUEUED | KN_ACTIVE);
+			fe->kfe_status &= ~(KFE_QUEUED | KFE_ACTIVE);
 		} else {
 			/*
 			 * Post the event
@@ -1101,15 +978,16 @@ kqueue_scan(struct kqueue *kq, struct kevent *kevp, int count,
 			++total;
 			--count;
 
-			if (kn->kn_flags & EV_ONESHOT) {
-				kn->kn_status &= ~KN_QUEUED;
-				kn->kn_status |= KN_DELETING | KN_REPROCESS;
+/* XXX, SJG: Again with the kn_flags */
+			if (fe->kn_flags & EV_ONESHOT) {
+				fe->fe_status &= ~KFE_QUEUED;
+				fe->fe_status |= KFE_DELETING | KFE_REPROCESS;
 			} else if (kn->kn_flags & EV_CLEAR) {
 				kn->kn_data = 0;
 				kn->kn_fflags = 0;
-				kn->kn_status &= ~(KN_QUEUED | KN_ACTIVE);
+				fe->fe_status &= ~(KFE_QUEUED | KFE_ACTIVE);
 			} else {
-				TAILQ_INSERT_TAIL(&kq->kq_knpend, kn, kn_tqe);
+				TAILQ_INSERT_TAIL(&kq->kq_fepending, fe, fe_entry);
 				kq->kq_count++;
 			}
 		}
@@ -1117,9 +995,9 @@ kqueue_scan(struct kqueue *kq, struct kevent *kevp, int count,
 		/*
 		 * Handle any post-processing states
 		 */
-		knote_release(kn);
+		kev_filter_entry_release(fe);
 	}
-	TAILQ_REMOVE(&kq->kq_knpend, &local_marker, kn_tqe);
+	TAILQ_REMOVE(&kq->kq_fepending, &local_marker, fe_entry);
 
 	return (total);
 }
@@ -1216,95 +1094,102 @@ kqueue_wakeup(struct kqueue *kq)
 		kq->kq_state &= ~KQ_SLEEP;
 		wakeup(kq);
 	}
-	KNOTE(&kq->kq_kqinfo.ki_note, 0);
+	KEV_FILTER_NOTE(&kq->kq_kev_filter, 0);
 }
 
 /*
- * Calls filterops f_attach function, acquiring mplock if filter is not
- * marked as FILTEROP_MPSAFE.
+ *
  */
 static int
-filter_attach(struct knote *kn)
+poll_filter_entry(struct kev_filter_entry *fe, short filter_type, long hint)
 {
-	int ret;
+	struct kev_filter_note[EVFILT_SYSCOUNT] *notes;
+	struct kev_filter_op *fop;
+	int note_count, i;
 
-	if (!(kn->kn_fop->f_flags & FILTEROP_MPSAFE)) {
-		get_mplock();
-		ret = kn->kn_fop->f_attach(kn);
-		rel_mplock();
+	if (filter_type) {
+		notes[0] = fe->fe_notes[~filter_type];
+		note_count = 1;
 	} else {
-		ret = kn->kn_fop->f_attach(kn);
+		for (i = 0, note_count = 0; i < EVFILT_SYSCOUNT; ++i) {
+			if (fe->notes[~i] != NULL) {
+				notes[note_count] = fe->fe_notes[~i];
+				++note_count;
+			}
+		}
 	}
 
-	return (ret);
+	for (i = 0; i < note_count; ++i) {
+		fn = notes[i];
+
+		switch (fn->fn_filter) {
+		case EVFILT_READ:
+			fop = fe->filter->kf_ops->fop_read;
+			break;
+		case EVFILT_WRITE:
+			fop = fe->filter->kf_ops->fop_write;
+			break;
+		default:
+			fop = fe->filter->kf_ops->fop_special;
+			break;
+		}
+
+		if (fe->filter->fo_flags & KEV_FILTOP_NOTMPSAFE) {
+			get_mplock();
+			fop(notes[i], hint, fe->filter->kf_hook);
+			rel_mplock();
+		} else {
+			fop(notes[i], hint, fe->filter->kf_hook);
+		}
+
+		/* XXX, SJG:
+			Accumulate the return values from fop()
+			calls and return ...
+		*/
+
+	}	
+}
+
+void
+kev_dev_filter_init(cdev_t cdev, struct kev_filter_ops *fops, caddr_t hook)
+{
+	kev_filter_init(cdev->si_filter, fops, hook);
+}
+
+void
+kev_filter_init(struct kev_filter *filter, struct kev_filter_ops *fops,
+	caddr_t hook)
+{
+	TAILQ_INIT(filter->kf_entry);
+	filter->kf_ops = fops;
+	filter->fo_hook = hook;
 }
 
 /*
- * Detach the knote and drop it, destroying the knote.
+ * Walk down a list of kev_filter_entry's, activating them if their event
+ * has triggered.
  *
- * Calls filterops f_detach function, acquiring mplock if filter is not
- * marked as FILTEROP_MPSAFE.
- */
-static void
-knote_detach_and_drop(struct knote *kn)
-{
-	kn->kn_status |= KN_DELETING | KN_REPROCESS;
-	if (kn->kn_fop->f_flags & FILTEROP_MPSAFE) {
-		kn->kn_fop->f_detach(kn);
-	} else {
-		get_mplock();
-		kn->kn_fop->f_detach(kn);
-		rel_mplock();
-	}
-	knote_drop(kn);
-}
-
-/*
- * Calls filterops f_event function, acquiring mplock if filter is not
- * marked as FILTEROP_MPSAFE.
- *
- * If the knote is in the middle of being created or deleted we cannot
- * safely call the filter op.
- */
-static int
-filter_event(struct knote *kn, long hint)
-{
-	int ret;
-
-	if (kn->kn_fop->f_flags & FILTEROP_MPSAFE) {
-		ret = kn->kn_fop->f_event(kn, hint);
-	} else {
-		get_mplock();
-		ret = kn->kn_fop->f_event(kn, hint);
-		rel_mplock();
-	}
-	return (ret);
-}
-
-/*
- * Walk down a list of knotes, activating them if their event has triggered.
- *
- * If we encounter any knotes which are undergoing processing we just mark
- * them for reprocessing and do not try to [re]activate the knote.  However,
+ * If we encounter any filter entries which are undergoing processing we just
+ * mark them for reprocessing and do not try to [re]activate them.  However,
  * if a hint is being passed we have to wait and that makes things a bit
  * sticky.
  */
 void
-knote(struct klist *list, long hint)
+kev_filter(struct kev_filter *filter, short filter_type, long hint)
 {
-	struct knote *kn;
+	struct kev_filter_entry *fe;
 
 	lwkt_gettoken(&kq_token);
 restart:
-	SLIST_FOREACH(kn, list, kn_next) {
-		if (kn->kn_status & KN_PROCESSING) {
+	TAILQ_FOREACH(fe, &filter->kf_entry, fe_link) {
+		if (fe->fe_status & KFE_PROCESSING) {
 			/*
-			 * Someone else is processing the knote, ask the
-			 * other thread to reprocess it and don't mess
+			 * Someone else is processing the filter event, ask
+			 * the other thread to reprocess it and don't mess
 			 * with it otherwise.
 			 */
 			if (hint == 0) {
-				kn->kn_status |= KN_REPROCESS;
+				fe->fe_status |= KFE_REPROCESS;
 				continue;
 			}
 
@@ -1317,109 +1202,50 @@ restart:
 			 *     already-processed notes more than once if
 			 *     we restart the list scan.  FIXME.
 			 */
-			kn->kn_status |= KN_WAITING | KN_REPROCESS;
-			tsleep(kn, 0, "knotec", hz);
+			fe->fe_status |= KFE_WAITING | KFE_REPROCESS;
+			tsleep(kn, 0, "kfnc", hz);
 			goto restart;
 		}
 
 		/*
 		 * Become the reprocessing master ourselves.
 		 *
-		 * If hint is non-zer running the event is mandatory
+		 * If hint is non-zero running the event is mandatory
 		 * when not deleting so do it whether reprocessing is
 		 * set or not.
 		 */
-		kn->kn_status |= KN_PROCESSING;
-		if ((kn->kn_status & KN_DELETING) == 0) {
-			if (filter_event(kn, hint))
-				KNOTE_ACTIVATE(kn);
+		fe->fe_status |= KFE_PROCESSING;
+		if ((fe->fe_status & KFE_DELETING) == 0) {
+
+/* XXX: SJG, implement kev_filter_entry_activate */
+
+			if (poll_filter_entry(fe, filter_type, hint))
+				kev_filter_entry_activate();
 		}
-		if (knote_release(kn))
+		if (kev_filter_entry_release(fe))
 			goto restart;
 	}
 	lwkt_reltoken(&kq_token);
 }
 
 /*
- * Insert knote at head of klist.
+ * Remove all filter events referencing a specified fd
  *
- * This function may only be called via a filter function and thus
- * kq_token should already be held and marked for processing.
+ * XXX: This only seems to be used from the descriptor code, perhaps
+ * this could be made visible or implemented in a cleaner (in terms of
+ * cross-subsystem calls) fashion.
  */
 void
-knote_insert(struct klist *klist, struct knote *kn)
+kev_filter_entry_fdclose(struct file *fp, struct filedesc *fdp, int fd)
 {
-	KKASSERT(kn->kn_status & KN_PROCESSING);
-	ASSERT_LWKT_TOKEN_HELD(&kq_token);
-	SLIST_INSERT_HEAD(klist, kn, kn_next);
-}
-
-/*
- * Remove knote from a klist
- *
- * This function may only be called via a filter function and thus
- * kq_token should already be held and marked for processing.
- */
-void
-knote_remove(struct klist *klist, struct knote *kn)
-{
-	KKASSERT(kn->kn_status & KN_PROCESSING);
-	ASSERT_LWKT_TOKEN_HELD(&kq_token);
-	SLIST_REMOVE(klist, kn, knote, kn_next);
-}
-
-/*
- * Remove all knotes from a specified klist
- *
- * Only called from aio.
- */
-void
-knote_empty(struct klist *list)
-{
-	struct knote *kn;
-
-	lwkt_gettoken(&kq_token);
-	while ((kn = SLIST_FIRST(list)) != NULL) {
-		if (knote_acquire(kn))
-			knote_detach_and_drop(kn);
-	}
-	lwkt_reltoken(&kq_token);
-}
-
-void
-knote_assume_knotes(struct kqinfo *src, struct kqinfo *dst,
-		    struct filterops *ops, void *hook)
-{
-	struct knote *kn;
-
-	lwkt_gettoken(&kq_token);
-	while ((kn = SLIST_FIRST(&src->ki_note)) != NULL) {
-		if (knote_acquire(kn)) {
-			knote_remove(&src->ki_note, kn);
-			kn->kn_fop = ops;
-			kn->kn_hook = hook;
-			knote_insert(&dst->ki_note, kn);
-			knote_release(kn);
-			/* kn may be invalid now */
-		}
-	}
-	lwkt_reltoken(&kq_token);
-}
-
-/*
- * Remove all knotes referencing a specified fd
- */
-void
-knote_fdclose(struct file *fp, struct filedesc *fdp, int fd)
-{
-	struct knote *kn;
+	struct kev_filter_entry *fe;
 
 	lwkt_gettoken(&kq_token);
 restart:
-	SLIST_FOREACH(kn, &fp->f_klist, kn_link) {
-		if (kn->kn_kq->kq_fdp == fdp && kn->kn_id == fd) {
-			if (knote_acquire(kn))
-				knote_detach_and_drop(kn);
+	SLIST_FOREACH(fe, &fp->f_kflist, fe_link) {
+		if (fe->fe_kq->kq_fdp == fdp && fe->fe_ident == fd) {
+			if (kev_filter_entry_acquire(fe))
+				kev_filter_entry_drop(fe);
 			goto restart;
 		}
 	}
@@ -1427,71 +1253,53 @@ restart:
 }
 
 /*
- * Low level attach function.
  *
- * The knote should already be marked for processing.
  */
 static void
-knote_attach(struct knote *kn)
+kev_filter_entry_drop(struct kev_filter_entry *fe)
 {
-	struct klist *list;
-	struct kqueue *kq = kn->kn_kq;
+	struct kqueue *kq = fe->fe_kq;
+	struct kev_filter_entry_list *list;
+	int i;
 
-	if (kn->kn_fop->f_flags & FILTEROP_ISFD) {
-		KKASSERT(kn->kn_fp);
-		list = &kn->kn_fp->f_klist;
-	} else {
-		if (kq->kq_knhashmask == 0)
-			kq->kq_knhash = hashinit(KN_HASHSIZE, M_KQUEUE,
-						 &kq->kq_knhashmask);
-		list = &kq->kq_knhash[KN_HASH(kn->kn_id, kq->kq_knhashmask)];
-	}
-	SLIST_INSERT_HEAD(list, kn, kn_link);
-	TAILQ_INSERT_HEAD(&kq->kq_knlist, kn, kn_kqlink);
-}
+/* XXX, SJG: this is a carryover -- why are we doing this immediately before free'ing? */
+	fe->fe_status |= KFE_DELETING | KFE_REPROCESS;
 
-/*
- * Low level drop function.
- *
- * The knote should already be marked for processing.
- */
-static void
-knote_drop(struct knote *kn)
-{
-	struct kqueue *kq;
-	struct klist *list;
-
-	kq = kn->kn_kq;
-
-	if (kn->kn_fop->f_flags & FILTEROP_ISFD)
-		list = &kn->kn_fp->f_klist;
+	if (fe->fe_fd == true)
+		list = &fe->fe_ptr.p_fp->f_kevlist?; /* XXX, SJG (list = &kn->kn_fp->f_klist;) */
 	else
-		list = &kq->kq_knhash[KN_HASH(kn->kn_id, kq->kq_knhashmask)];
+		list = &kq->kq_fehash[KFE_HASH(fe->fe_ident, kq->kq_fehashmask)];
 
-	SLIST_REMOVE(list, kn, knote, kn_link);
-	TAILQ_REMOVE(&kq->kq_knlist, kn, kn_kqlink);
-	if (kn->kn_status & KN_QUEUED)
-		knote_dequeue(kn);
-	if (kn->kn_fop->f_flags & FILTEROP_ISFD) {
-		fdrop(kn->kn_fp);
+	TAILQ_REMOVE(list, fe, fe_link);
+	TAILQ_REMOVE(&kq->kq_felist, fe, fe_kqlink);
+	if (fe->fe_status & KFE_QUEUED) {
+		TAILQ_REMOVE(&kq->kq_fepend, fe, fe_entry);
+		fe->fe_status &= ~KFE_QUEUED;
+		fe->fe_kq->kq_count--;
+	}
+	if (fe->fe_fd == true) {
+		fdrop(kn->kn_ptr.p_fp);
 		kn->kn_fp = NULL;
 	}
-	knote_free(kn);
+
+	for (i = 0; i < EVFILT_SYSCOUNT; ++i)
+		if (fe->fe_notes[i] != NULL)
+			kev_filter_note_free(fe->fe_notes[i]);
+
+	kev_filter_entry_free(fe);
 }
 
 /*
- * Low level enqueue function.
  *
- * The knote should already be marked for processing.
  */
 static void
-knote_enqueue(struct knote *kn)
+kev_filter_entry_enqueue(struct kev_filter_entry *fe)
 {
-	struct kqueue *kq = kn->kn_kq;
+	struct kqueue *kq = fe->fe_kq;
 
-	KASSERT((kn->kn_status & KN_QUEUED) == 0, ("knote already queued"));
-	TAILQ_INSERT_TAIL(&kq->kq_knpend, kn, kn_tqe);
-	kn->kn_status |= KN_QUEUED;
+	KASSERT((fe->fe_status & KFE_QUEUED) == 0, ("filter event already queued"));
+	TAILQ_INSERT_TAIL(&kq->kq_fepend, fe, fe_entry);
+	fe->fe_status |= KN_QUEUED;
 	++kq->kq_count;
 
 	/*
@@ -1503,30 +1311,27 @@ knote_enqueue(struct knote *kn)
 	kqueue_wakeup(kq);
 }
 
-/*
- * Low level dequeue function.
- *
- * The knote should already be marked for processing.
- */
-static void
-knote_dequeue(struct knote *kn)
+static struct kev_filter_entry *
+kev_filter_entry_alloc(void)
 {
-	struct kqueue *kq = kn->kn_kq;
-
-	KASSERT(kn->kn_status & KN_QUEUED, ("knote not queued"));
-	TAILQ_REMOVE(&kq->kq_knpend, kn, kn_tqe);
-	kn->kn_status &= ~KN_QUEUED;
-	kq->kq_count--;
-}
-
-static struct knote *
-knote_alloc(void)
-{
-	return kmalloc(sizeof(struct knote), M_KQUEUE, M_WAITOK);
+	return kmalloc(sizeof(struct kev_filter_entry), M_KQUEUE, M_WAITOK);
 }
 
 static void
-knote_free(struct knote *kn)
+kev_filter_entry_free(struct kev_filter_entry *fe)
 {
-	kfree(kn, M_KQUEUE);
+	kfree(fe, M_KQUEUE);
 }
+
+static struct kev_filter_note *
+kev_filter_note_alloc(void)
+{
+	return kmalloc(sizeof(struct kev_filter_note), M_KQUEUE, M_WAITOK);
+}
+
+static void
+kev_filter_note_free(struct kev_filter_note *fn)
+{
+	kfree(fn, M_KQUEUE);
+}
+

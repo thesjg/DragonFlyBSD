@@ -111,9 +111,9 @@ static int devfs_fo_close(struct file *);
 static int devfs_fo_read(struct file *, struct uio *, struct ucred *, int);
 static int devfs_fo_write(struct file *, struct uio *, struct ucred *, int);
 static int devfs_fo_stat(struct file *, struct stat *, struct ucred *);
-static int devfs_fo_kqfilter(struct file *, struct knote *);
 static int devfs_fo_ioctl(struct file *, u_long, caddr_t,
 				struct ucred *, struct sysmsg *);
+static int devfs_fo_kev_filter(struct file *, struct kev_filter **);
 static __inline int sequential_heuristic(struct uio *, struct file *);
 
 extern struct lock devfs_lock;
@@ -168,7 +168,6 @@ struct vop_ops devfs_vnode_dev_vops = {
 	.vop_open =		devfs_spec_open,
 	.vop_pathconf =		vop_stdpathconf,
 	.vop_print =		devfs_vop_print,
-	.vop_kqfilter =		devfs_spec_kqfilter,
 	.vop_read =		devfs_spec_read,
 	.vop_readdir =		DEVFS_BADOP,
 	.vop_readlink =		DEVFS_BADOP,
@@ -176,7 +175,8 @@ struct vop_ops devfs_vnode_dev_vops = {
 	.vop_setattr =		devfs_vop_setattr,
 	.vop_strategy =		devfs_spec_strategy,
 	.vop_write =		devfs_spec_write,
-	.vop_ioctl =		devfs_spec_ioctl
+	.vop_ioctl =		devfs_spec_ioctl,
+	.vop_kev_filter = 	devfs_spec_kev_filter
 };
 
 /*
@@ -188,10 +188,10 @@ struct fileops devfs_dev_fileops = {
 	.fo_read	= devfs_fo_read,
 	.fo_write	= devfs_fo_write,
 	.fo_ioctl	= devfs_fo_ioctl,
-	.fo_kqfilter	= devfs_fo_kqfilter,
 	.fo_stat	= devfs_fo_stat,
 	.fo_close	= devfs_fo_close,
-	.fo_shutdown	= nofo_shutdown
+	.fo_shutdown	= nofo_shutdown,
+	.fo_kev_filter	= devfs_fo_kev_filter
 };
 
 /*
@@ -1359,9 +1359,8 @@ devfs_fo_stat(struct file *fp, struct stat *sb, struct ucred *cred)
 	return (0);
 }
 
-
 static int
-devfs_fo_kqfilter(struct file *fp, struct knote *kn)
+devfs_fo_kev_filter(struct file *fp, struct kev_filter **filt)
 {
 	struct vnode *vp;
 	int error;
@@ -1378,7 +1377,7 @@ devfs_fo_kqfilter(struct file *fp, struct knote *kn)
 	}
 	reference_dev(dev);
 
-	error = dev_dkqfilter(dev, kn);
+	error = dev_kev_filter(dev, filt);
 
 	release_dev(dev);
 
@@ -1599,11 +1598,10 @@ devfs_spec_ioctl(struct vop_ioctl_args *ap)
 }
 
 /*
- * spec_kqfilter(struct vnode *a_vp, struct knote *a_kn)
+ * spec_kev_filter(struct vop_kev_filter_args *ap)
  */
-/* ARGSUSED */
 static int
-devfs_spec_kqfilter(struct vop_kqfilter_args *ap)
+devfs_spec_kev_filter(struct vop_kev_filter_args *ap)
 {
 	struct vnode *vp = ap->a_vp;
 	struct devfs_node *node;
@@ -1613,12 +1611,7 @@ devfs_spec_kqfilter(struct vop_kqfilter_args *ap)
 		return (EBADF);		/* device was revoked (EBADF) */
 	node = DEVFS_NODE(vp);
 
-#if 0
-	if (node)
-		nanotime(&node->atime);
-#endif
-
-	return (dev_dkqfilter(dev, ap->a_kn));
+	return (dev_kev_filter(dev, ap->a_filt));
 }
 
 /*

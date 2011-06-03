@@ -33,25 +33,21 @@
 #ifndef _SYS_TYPES_H_
 #include <sys/types.h>
 #endif
-#ifndef _NET_NETISR_H_
-#include <net/netisr.h>			/* struct notifymsglist */
-#endif
-#if defined(_KERNEL) || defined(_KERNEL_STRUCTURES)
+#ifndef _SYS_QUEUE_H_
 #include <sys/queue.h>
 #endif
 
-#define EVFILT_READ		(-1)
-#define EVFILT_WRITE		(-2)
-#define EVFILT_AIO		(-3)	/* attached to aio requests */
-#define EVFILT_VNODE		(-4)	/* attached to vnodes */
-#define EVFILT_PROC		(-5)	/* attached to struct proc */
-#define EVFILT_SIGNAL		(-6)	/* attached to struct proc */
-#define EVFILT_TIMER		(-7)	/* timers */
-#define EVFILT_EXCEPT		(-8)	/* exceptional conditions */
-
-#define EVFILT_MARKER		0xF	/* placemarker for tailq */
-
-#define EVFILT_SYSCOUNT		8
+enum {
+	EVFILT_READ = 	-1,
+	EVFILT_WRITE =	-2,
+	EVFILT_AIO =	-3,	/* attached to aio requests */
+	EVFILT_VNODE =	-4,	/* attached to vnodes */
+	EVFILT_PROC =	-5,	/* attached to struct proc */
+	EVFILT_SIGNAL =	-6,	/* attached to struct proc */
+	EVFILT_TIMER =	-7,	/* timers */
+	EVFILT_EXCEPT = -8	/* exceptional conditions */
+};
+#define EVFILT_SYSCOUNT		8	/* filter count */
 
 #define EV_SET(kevp_, a, b, c, d, e, f) do {	\
 	struct kevent *kevp = (kevp_);		\
@@ -125,22 +121,6 @@ struct kevent {
 #define	NOTE_TRACKERR	0x00000002		/* could not track child */
 #define	NOTE_CHILD	0x00000004		/* am a child process */
 
-#if defined(_KERNEL) || defined(_KERNEL_STRUCTURES)
-
-struct knote;
-SLIST_HEAD(klist, knote);
-
-/*
- * Used to maintain information about processes that wish to be
- * notified when I/O becomes possible.
- */
-struct kqinfo {
-	struct	klist ki_note;		/* kernel note list */
-	struct	notifymsglist ki_mlist;	/* list of pending predicate messages */
-};
-
-#endif
-
 #ifdef _KERNEL
 
 /*
@@ -152,8 +132,6 @@ extern struct lwkt_token kq_token;
 MALLOC_DECLARE(M_KQUEUE);
 #endif
 
-#define KNOTE(list, hint)	if ((list) != NULL) knote(list, hint)
-
 /*
  * Flag indicating hint is a signal.  Used by EVFILT_SIGNAL, and also
  * shared by EVFILT_PROC  (all knotes attached to p->p_klist)
@@ -164,53 +142,99 @@ MALLOC_DECLARE(M_KQUEUE);
 #define NOTE_SIGNAL	0x08000000
 #define NOTE_OLDAPI	0x04000000	/* select/poll note */
 
-#define FILTEROP_ISFD	0x0001		/* if ident == filedescriptor */
-#define FILTEROP_MPSAFE	0x0002
+#define KEV_FILTOP_NOTMPSAFE	0x0001	/* if the filter is NOT MPSAFE */
 
-struct filterops {
-	u_short	f_flags;
+struct kev_filter_note;
 
-	/* f_attach returns 0 on success or valid error code on failure */
-	int	(*f_attach)	(struct knote *kn);
-	void	(*f_detach)	(struct knote *kn);
-
-        /* f_event returns boolean truth */
-	int	(*f_event)	(struct knote *kn, long hint);
+/*
+ *
+ */
+struct kev_filter_op {
+	boolean_t	(*fo_event)	(struct kev_filter_note *fn, long hint, caddr_t hook);
+	u_int		fo_flags;
 };
 
-struct knote {
-	SLIST_ENTRY(knote)	kn_link;	/* for fd */
-	TAILQ_ENTRY(knote)	kn_kqlink;	/* for kq_knlist */
-	SLIST_ENTRY(knote)	kn_next;	/* for struct kqinfo */
-	TAILQ_ENTRY(knote)	kn_tqe;		/* for kq_head */
-	struct			kqueue *kn_kq;	/* which queue we are on */
-	struct 			kevent kn_kevent;
-	int			kn_status;
-	int			kn_sfflags;	/* saved filter flags */
-	intptr_t		kn_sdata;	/* saved data field */
+/*
+ *
+ */
+struct kev_filter_ops {
+	struct kev_filter_op	fop_read;
+	struct kev_filter_op	fop_write;
+
+	/*
+	 * fop_special is overloaded for aio, vnode, proc, signal, timer and
+	 * except.
+	 */
+	struct kev_filter_op	fop_special;
+};
+
+
+struct kev_filter_entry;
+TAILQ_HEAD(kev_filter_entry_list, kev_filter_entry);
+
+/*
+ * Used to maintain information about processes that wish to be
+ * notified when I/O becomes possible.
+ */
+struct kev_filter {
+	struct  kev_filter_entry_list   *kf_entry;
+	struct  kev_filter_ops          kf_ops;
+	caddr_t                         kf_hook;
+};
+
+struct kev_filter_note {
+	struct			kev_filter_entry *fn_entry;	/* parent */
+
+	short			fn_filter;	/* EVFILT_* filter type */
+
+	u_int			fn_ufflags;	/* flags from userland */
+	intptr_t		fn_udata;	/* data from userland */
+
+	/*
+	 * Set by an event filter and returned to userland inside
+	 * struct kevent or optionally acted on by select/poll.
+	 */
+	u_short			fn_flags;
+	u_int			fn_fflags;
+	intptr_t		fn_data;
+};
+
+struct kev_filter_entry {
+	TAILQ_ENTRY(kev_filter_entry)	fe_link;	/* proc */
+	TAILQ_ENTRY(kev_filter_entry)	fe_kqlink;	/* parent (struct kqueue) */
+	TAILQ_ENTRY(kev_filter_entry)	fe_pending;
+	TAILQ_ENTRY(kev_filter_entry)	fe_entry;	/* kq_head?, cdev or specially embedded */
+
+	/*
+         * Identifier (typically a file descriptor)
+         * fe_link is indexed via this field
+         */
+	uintptr_t		fe_ident;
+	boolean_t		fe_fd;		/* represents a file descriptor */
+
+	int			fe_status;	/* flags, KFE_* */
+	struct			kqueue *fe_kq;	/* parent */
+
 	union {
-		struct		file *p_fp;	/* file data pointer */
-		struct		proc *p_proc;	/* proc pointer */
-	} kn_ptr;
-	struct			filterops *kn_fop;
-	caddr_t			kn_hook;
+		struct		file *p_fp;
+		struct		proc *p_proc;
+	} fe_ptr;
+
+	struct 			kev_filter_note	*fe_notes[EVFILT_SYSCOUNT];
+	struct			kev_filter	*fe_filter;
+
+	intptr_t		fn_idata;	/* opaque data for select/poll */
 };
 
-#define KN_ACTIVE	0x0001			/* event has been triggered */
-#define KN_QUEUED	0x0002			/* event is on queue */
-#define KN_DISABLED	0x0004			/* event is disabled */
-#define KN_DETACHED	0x0008			/* knote is detached */
-#define KN_REPROCESS	0x0010			/* force reprocessing race */
-#define KN_DELETING	0x0020			/* deletion in progress */
-#define KN_PROCESSING	0x0040			/* event processing in prog */
-#define KN_WAITING	0x0080			/* waiting on processing */
-
-#define kn_id		kn_kevent.ident
-#define kn_filter	kn_kevent.filter
-#define kn_flags	kn_kevent.flags
-#define kn_fflags	kn_kevent.fflags
-#define kn_data		kn_kevent.data
-#define kn_fp		kn_ptr.p_fp
+#define KFE_ACTIVE	0x0001			/* event has been triggered */
+#define KFE_QUEUED	0x0002			/* event is on queue */
+#define KFE_DISABLED	0x0004			/* event is disabled */
+#define KFE_DETACHED	0x0008			/* knote is detached */
+#define KFE_REPROCESS	0x0010			/* force reprocessing race */
+#define KFE_DELETING	0x0020			/* deletion in progress */
+#define KFE_PROCESSING	0x0040			/* event processing in prog */
+#define KFE_WAITING	0x0080			/* waiting on processing */
+#define KFE_MARKER	0x0100			/* scan marker */
 
 struct proc;
 struct thread;
@@ -225,13 +249,14 @@ int kern_kevent(struct kqueue *kq, int nevents, int *res, void *uap,
     k_copyin_fn kevent_copyin, k_copyout_fn kevent_copyout,
     struct timespec *tsp);
 
-extern void	knote(struct klist *list, long hint);
-extern void	knote_insert(struct klist *klist, struct knote *kn);
-extern void	knote_remove(struct klist *klist, struct knote *kn);
-extern void	knote_empty(struct klist *list);
-extern void	knote_assume_knotes(struct kqinfo *, struct kqinfo *,
-		    struct filterops *, void *);
-extern void	knote_fdclose(struct file *fp, struct filedesc *fdp, int fd);
+extern void	kev_dev_filter_init(cdev_t cdev, struct kev_filter_ops *fops,
+    caddr_t hook);
+extern void	kev_filter_init(struct kev_filter *filter,
+    struct kev_filter_ops *fops, caddr_t hook);
+extern void	kev_dev_filter_destroy(cdev_t cdev);
+extern void	kev_filter_destroy(struct kev_filter *filter);
+extern void	kev_filter(struct kev_filter *filter, long hint);
+
 extern void	kqueue_init(struct kqueue *kq, struct filedesc *fdp);
 extern void	kqueue_terminate(struct kqueue *kq);
 extern int 	kqueue_register(struct kqueue *kq, struct kevent *kev);

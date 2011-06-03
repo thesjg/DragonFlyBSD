@@ -113,10 +113,10 @@ fo_shutdown(struct file *fp, int how)
 	return ((*fp->f_ops->fo_shutdown)(fp, how));
 }
 
-static __inline int
-fo_kqfilter(struct file *fp, struct knote *kn)
+static __inline struct kev_filter *
+fo_kev_filter(struct file *fp)
 {
-	return ((*fp->f_ops->fo_kqfilter)(fp, kn));
+	return ((*fp->f_ops->fo_kev_filter)(fp));
 }
 
 #endif /* _KERNEL */

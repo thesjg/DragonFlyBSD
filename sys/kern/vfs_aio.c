@@ -102,12 +102,3 @@ sys_aio_waitcomplete(struct aio_waitcomplete_args *uap)
 	return ENOSYS;
 }
 
-static int
-filt_aioattach(struct knote *kn)
-{
-
-	return ENXIO;
-}
-
-struct filterops aio_filtops =
-	{ 0, filt_aioattach, NULL, NULL };

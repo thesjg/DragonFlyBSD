@@ -276,7 +276,11 @@ struct	proc {
 	char		p_pad2[2];	/* padding for alignment */
 	struct		sigiolst p_sigiolst;	/* list of sigio sources */
 	int		p_sigparent;	/* signal to parent on exit */
-	struct klist	p_klist;	/* knotes attached to this process */
+
+	struct kev_filter_entry_list	p_felist;	/*
+							 * kqueue filter entries
+							 * atached to this process
+							 */
 
 	struct timeval	p_start;	/* start time for a process */
 

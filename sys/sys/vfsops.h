@@ -192,10 +192,10 @@ struct vop_poll_args {
 	struct ucred *a_cred;
 };
 
-struct vop_kqfilter_args {
+struct vop_kev_filter_args {
 	struct vop_generic_args a_head;
 	struct vnode *a_vp;
-	struct knote *a_kn;
+	struct kev_filter **a_filt;
 };
 
 struct vop_mmap_args {
@@ -596,7 +596,7 @@ struct vop_ops {
 	int	(*vop_unused04)(void *);
 	int	(*vop_ioctl)(struct vop_ioctl_args *);
 	int	(*vop_poll)(struct vop_poll_args *);
-	int	(*vop_kqfilter)(struct vop_kqfilter_args *);
+	int	(*vop_unused12)(void *);	/* was vop_kqfilter */
 	int	(*vop_unused01)(void *);	/* was vop_revoke */
 	int	(*vop_mmap)(struct vop_mmap_args *);
 	int	(*vop_fsync)(struct vop_fsync_args *);
@@ -645,7 +645,9 @@ struct vop_ops {
 	int	(*vop_nremove)(struct vop_nremove_args *);
 	int	(*vop_nrmdir)(struct vop_nrmdir_args *);
 	int	(*vop_nrename)(struct vop_nrename_args *);
-#define vop_ops_last_field	vop_nrename
+
+	int	(*vop_kev_filter)(struct vop_kev_filter_args *);
+#define vop_ops_last_field	vop_kev_filter
 };
 
 /*
@@ -675,7 +677,6 @@ union vop_args_union {
 	struct vop_write_args vu_write;
 	struct vop_ioctl_args vu_ioctl;
 	struct vop_poll_args vu_poll;
-	struct vop_kqfilter_args vu_kqfilter;
 	struct vop_mmap_args vu_mmap;
 	struct vop_fsync_args vu_fsync;
 	struct vop_old_remove_args vu_remove;
@@ -717,6 +718,8 @@ union vop_args_union {
 	struct vop_nremove_args vu_nremove;
 	struct vop_nrmdir_args vu_nrmdir;
 	struct vop_nrename_args vu_nrename;
+
+	struct vop_kev_filter_args vu_kev_filter;
 };
 
 #ifdef _KERNEL
@@ -756,7 +759,6 @@ int vop_ioctl(struct vop_ops *ops, struct vnode *vp, u_long command,
 		struct sysmsg *msg);
 int vop_poll(struct vop_ops *ops, struct vnode *vp, int events,
 		struct ucred *cred);
-int vop_kqfilter(struct vop_ops *ops, struct vnode *vp, struct knote *kn);
 int vop_mmap(struct vop_ops *ops, struct vnode *vp, int fflags,
 		struct ucred *cred);
 int vop_fsync(struct vop_ops *ops, struct vnode *vp, int waitfor, int flags);
@@ -842,6 +844,8 @@ int vop_nrename(struct vop_ops *ops,
 		struct nchandle *fnch, struct nchandle *tnch,
 		struct vnode *fdvp, struct vnode *tdvp,
 		struct ucred *cred);
+int vop_kev_filter(struct vop_ops *ops, struct vnode *vp,
+		struct kev_filter *filt);
 
 /*
  * Kernel VOP forwarding wrappers.  These are called when a VFS such as
@@ -868,7 +872,6 @@ int vop_read_ap(struct vop_read_args *ap);
 int vop_write_ap(struct vop_write_args *ap);
 int vop_ioctl_ap(struct vop_ioctl_args *ap);
 int vop_poll_ap(struct vop_poll_args *ap);
-int vop_kqfilter_ap(struct vop_kqfilter_args *ap);
 int vop_mmap_ap(struct vop_mmap_args *ap);
 int vop_fsync_ap(struct vop_fsync_args *ap);
 int vop_old_remove_ap(struct vop_old_remove_args *ap);
@@ -911,6 +914,8 @@ int vop_nremove_ap(struct vop_nremove_args *ap);
 int vop_nrmdir_ap(struct vop_nrmdir_args *ap);
 int vop_nrename_ap(struct vop_nrename_args *ap);
 
+int vop_kev_filter_ap(struct vop_kev_filter_args *ap);
+
 /*
  * VOP operations descriptor.  This is used by the vop_ops compiler
  * to convert VFS vector arrays (typically in vfs/blah/blah_vnops.c)
@@ -930,7 +935,6 @@ extern struct syslink_desc vop_read_desc;
 extern struct syslink_desc vop_write_desc;
 extern struct syslink_desc vop_ioctl_desc;
 extern struct syslink_desc vop_poll_desc;
-extern struct syslink_desc vop_kqfilter_desc;
 extern struct syslink_desc vop_mmap_desc;
 extern struct syslink_desc vop_fsync_desc;
 extern struct syslink_desc vop_old_remove_desc;
@@ -973,6 +977,7 @@ extern struct syslink_desc vop_nremove_desc;
 extern struct syslink_desc vop_nrmdir_desc;
 extern struct syslink_desc vop_nrename_desc;
 
+extern struct syslink_desc vop_kev_filter_desc;
 #endif
 
 /*
@@ -1001,8 +1006,6 @@ extern struct syslink_desc vop_nrename_desc;
 	vop_ioctl(*(vp)->v_ops, vp, command, data, fflag, cred, msg)
 #define VOP_POLL(vp, events, cred)			\
 	vop_poll(*(vp)->v_ops, vp, events, cred)
-#define VOP_KQFILTER(vp, kn)				\
-	vop_kqfilter(*(vp)->v_ops, vp, kn)
 #define VOP_MMAP(vp, fflags, cred)			\
 	vop_mmap(*(vp)->v_ops, vp, fflags, cred)
 #define VOP_FSYNC(vp, waitfor, flags)			\
@@ -1045,6 +1048,8 @@ extern struct syslink_desc vop_nrename_desc;
 	vop_setextattr(*(vp)->v_ops, vp, attrnamespace, attrname, uio, cred)
 #define VOP_MARKATIME(vp, cred)			\
 	vop_markatime(*(vp)->v_ops, vp, cred)
+#define VOP_KEV_FILTER(vp, filt)		\
+	vop_kev_filter(*(vp)->v_ops, vp, filt)
 /* no VOP_VFSSET() */
 /* VOP_STRATEGY - does not exist, use vn_strategy() */
 

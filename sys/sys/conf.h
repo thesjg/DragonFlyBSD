@@ -105,7 +105,7 @@ struct cdev {
 	time_t		si_lastwrite;	/* time_second */
 	struct vm_object *si_object;	/* vm_pager support */
 	prop_dictionary_t si_dict;
-	struct kqinfo	si_kqinfo;	/* degenerate delegated knotes */
+	struct kev_filter		*si_filter;	/* kevent filters */
 };
 
 #define SI_UNUSED01	0x0001

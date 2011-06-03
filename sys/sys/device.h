@@ -153,16 +153,7 @@ struct dev_psize_args {
 };
 
 /*
- * int d_kqfilter(cdev_t dev, struct knote *kn)
- */
-struct dev_kqfilter_args {
-	struct dev_generic_args a_head;
-	struct knote	*a_kn;
-	int		a_result;
-};
-
-/*
- * int d_clone(cdev_t dev);
+ * int d_clone(cdev_t dev)
  */
 struct dev_clone_args {
 	struct dev_generic_args a_head;
@@ -182,8 +173,17 @@ struct dev_revoke_args {
 };
 
 /*
+ * int d_kev_filter(cdev_t dev, struct kev_filter **filt);
+ */
+struct dev_kev_filter_args {
+	struct dev_generic_args a_head;
+	struct kev_filter **a_filt;
+};
+
+/*
  * Typedefs to help drivers declare the driver routines and such
  */
+typedef void d_panic_t (void);
 typedef int d_default_t (struct dev_generic_args *ap);
 typedef int d_open_t (struct dev_open_args *ap);
 typedef int d_close_t (struct dev_close_args *ap);
@@ -194,9 +194,9 @@ typedef int d_mmap_t (struct dev_mmap_args *ap);
 typedef int d_strategy_t (struct dev_strategy_args *ap);
 typedef int d_dump_t (struct dev_dump_args *ap);
 typedef int d_psize_t (struct dev_psize_args *ap);
-typedef int d_kqfilter_t (struct dev_kqfilter_args *ap);
 typedef int d_clone_t (struct dev_clone_args *ap);
 typedef int d_revoke_t (struct dev_revoke_args *ap);
+typedef int d_kev_filter_t (struct dev_kev_filter_args *ap);
 
 /*
  * Character device switch table.
@@ -224,10 +224,11 @@ struct dev_ops {
 	d_strategy_t	*d_strategy;
 	d_dump_t	*d_dump;
 	d_psize_t	*d_psize;
-	d_kqfilter_t	*d_kqfilter;
+	d_panic_t	*d_kqfilter;
 	d_clone_t	*d_clone;	/* clone from base dev_ops */
 	d_revoke_t	*d_revoke;
-#define dev_ops_last_field	d_revoke
+	d_kev_filter_t	*d_kev_filter;
+#define dev_ops_last_field	d_kev_filter
 };
 
 /*
@@ -251,24 +252,6 @@ struct dev_ops {
 #define D_MASTER	0x00100000	/* used by pty/tty code */
 #define D_UNUSED200000	0x00200000
 #define D_MPSAFE	0x00400000	/* all dev_d*() calls are MPSAFE */
-
-/*
- * A union of all possible argument structures.
- */
-union dev_args_union {
-	struct dev_generic_args	du_head;
-	struct dev_open_args	du_open;
-	struct dev_close_args	du_close;
-	struct dev_read_args	du_read;
-	struct dev_write_args	du_write;
-	struct dev_ioctl_args	du_ioctl;
-	struct dev_mmap_args	du_mmap;
-	struct dev_strategy_args du_strategy;
-	struct dev_dump_args	du_dump;
-	struct dev_psize_args	du_psize;
-	struct dev_kqfilter_args du_kqfilter;
-	struct dev_clone_args	du_clone;
-};
 
 /*
  * Linking structure for mask/match registration
@@ -307,10 +290,10 @@ int dev_ddump(cdev_t dev, void *virtual, vm_offset_t physical, off_t offset,
 int64_t dev_dpsize(cdev_t dev);
 int dev_dread(cdev_t dev, struct uio *uio, int ioflag);
 int dev_dwrite(cdev_t dev, struct uio *uio, int ioflag);
-int dev_dkqfilter(cdev_t dev, struct knote *kn);
 int dev_dmmap(cdev_t dev, vm_offset_t offset, int nprot);
 int dev_dclone(cdev_t dev);
 int dev_drevoke(cdev_t dev);
+int dev_kev_filter(cdev_t dev, struct kev_filter **filt);
 
 int dev_drefs(cdev_t dev);
 const char *dev_dname(cdev_t dev);
@@ -329,10 +312,8 @@ d_mmap_t	nommap;
 d_strategy_t	nostrategy;
 d_dump_t	nodump;
 d_psize_t	nopsize;
-d_kqfilter_t	nokqfilter;
 d_clone_t	noclone;
 d_revoke_t	norevoke;
-
 d_open_t	nullopen;
 d_close_t	nullclose;
 
@@ -346,7 +327,6 @@ extern struct syslink_desc dev_dump_desc;
 extern struct syslink_desc dev_psize_desc;
 extern struct syslink_desc dev_mmap_desc;
 extern struct syslink_desc dev_strategu_desc;
-extern struct syslink_desc dev_kqfilter_desc;
 extern struct syslink_desc dev_clone_desc;
 
 void compile_dev_ops(struct dev_ops *);

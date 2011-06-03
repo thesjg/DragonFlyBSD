@@ -61,11 +61,9 @@ static	d_open_t	logopen;
 static	d_close_t	logclose;
 static	d_read_t	logread;
 static	d_ioctl_t	logioctl;
-static	d_kqfilter_t	logkqfilter;
 
 static	void logtimeout(void *arg);
-static	void logfiltdetach(struct knote *kn);
-static	int  logfiltread(struct knote *kn, long hint);
+static	boolean_t	logfiltread(struct kev_filter_note *fn, long hint, caddr_t hook);
 
 #define CDEV_MAJOR 7
 static struct dev_ops log_ops = {
@@ -73,15 +71,14 @@ static struct dev_ops log_ops = {
 	.d_open =	logopen,
 	.d_close =	logclose,
 	.d_read =	logread,
-	.d_ioctl =	logioctl,
-	.d_kqfilter =	logkqfilter
+	.d_ioctl =	logioctl
 };
 
 static struct logsoftc {
 	int	sc_state;		/* see above for possibilities */
-	struct	kqinfo	sc_kqp;		/* processes waiting on I/O */
 	struct  sigio *sc_sigio;	/* information for async I/O */
 	struct	callout sc_callout;	/* callout to wakeup syslog  */
+	cdev_t	sc_cdev;		/* cdev for KNOTE_DEV */
 } logsoftc;
 
 int	log_open;			/* also used in log() */
@@ -161,46 +158,14 @@ logread(struct dev_read_args *ap)
 	return (error);
 }
 
-static struct filterops logread_filtops =
-	{ FILTEROP_ISFD, NULL, logfiltdetach, logfiltread };
-
-static int
-logkqfilter(struct dev_kqfilter_args *ap)
+static boolean_t
+logfiltread(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	struct knote *kn = ap->a_kn;
-	struct klist *klist = &logsoftc.sc_kqp.ki_note;
-
-	ap->a_result = 0;
-	switch (kn->kn_filter) {
-	case EVFILT_READ:
-		kn->kn_fop = &logread_filtops;
-		break;
-	default:
-		ap->a_result = EOPNOTSUPP;
-		return (0);
-	}
-
-	knote_insert(klist, kn);
-
-	return (0);
-}
-
-static void
-logfiltdetach(struct knote *kn)
-{
-	struct klist *klist = &logsoftc.sc_kqp.ki_note;
-
-	knote_remove(klist, kn);
-}
-
-static int
-logfiltread(struct knote *kn, long hint)
-{
-	int ret = 0;
+	boolean_t ret = FALSE;
 
 	crit_enter();
 	if (msgbufp->msg_bufr != msgbufp->msg_bufx)
-		ret = 1;
+		ret = TRUE;
 	crit_exit();
 
 	return (ret);
@@ -218,7 +183,7 @@ logtimeout(void *arg)
 		return;
 	}
 	msgbuftrigger = 0;
-	KNOTE(&logsoftc.sc_kqp.ki_note, 0);
+	KNOTE_DEV(&logsoftc.sc_cdev, 0);
 	if ((logsoftc.sc_state & LOG_ASYNC) && logsoftc.sc_sigio != NULL)
 		pgsigio(logsoftc.sc_sigio, SIGIO, 0);
 	if (logsoftc.sc_state & LOG_RDWAIT) {
@@ -278,7 +243,15 @@ logioctl(struct dev_ioctl_args *ap)
 static void
 log_drvinit(void *unused)
 {
-	make_dev(&log_ops, 0, UID_ROOT, GID_WHEEL, 0600, "klog");
+	cdev_t log_dev;
+	static struct kev_filter_ops kev_log_fops = {
+        	.fop_read = { logfiltread, KEV_FILTOP_NOTMPSAFE };
+	}
+
+	log_dev = make_dev(&log_ops, 0, UID_ROOT, GID_WHEEL, 0600, "klog");
+	kev_dev_filter_init(log_dev, kev_log_fops, NULL);
+
+	&logsoftc.sc_cdev = log_dev;
 }
 
 SYSINIT(logdev,SI_SUB_DRIVERS,SI_ORDER_MIDDLE+CDEV_MAJOR,log_drvinit,NULL)
