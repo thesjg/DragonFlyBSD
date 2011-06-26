@@ -125,6 +125,7 @@
 #include <machine_base/apic/lapic.h>
 #include <machine_base/apic/ioapic.h>
 #include <machine_base/apic/ioapic_abi.h>
+#include <machine/mptable.h>
 
 #define PHYSMAP_ENTRIES		10
 
@@ -389,14 +390,6 @@ again:
 	 */
 	bufinit();
 	vm_pager_bufferinit();
-
-#ifdef SMP
-	/*
-	 * OK, enough kmem_alloc/malloc state should be up, lets get on with it!
-	 */
-	mp_start();			/* fire up the APs and APICs */
-	mp_announce();
-#endif  /* SMP */
 }
 
 static void
@@ -410,6 +403,9 @@ pic_finish(void *dummy __unused)
 {
 	/* Log ELCR information */
 	elcr_dump();
+
+	/* Log MPTABLE information */
+	mptable_pci_int_dump();
 
 	/* Finalize PCI */
 	MachIntrABI.finalize();
@@ -1780,11 +1776,10 @@ hammer_time(u_int64_t modulep, u_int64_t physfree)
 	 * Default MachIntrABI to ICU
 	 */
 	MachIntrABI = MachIntrABI_ICU;
-#ifdef SMP
+
 	TUNABLE_INT_FETCH("hw.apic_io_enable", &ioapic_enable); /* for compat */
 	TUNABLE_INT_FETCH("hw.ioapic_enable", &ioapic_enable);
 	TUNABLE_INT_FETCH("hw.lapic_enable", &lapic_enable);
-#endif
 
 	/*
 	 * start with one cpu.  Note: with one cpu, ncpus2_shift, ncpus2_mask,

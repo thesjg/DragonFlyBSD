@@ -37,13 +37,13 @@
 #include <machine_base/apic/lapic.h>
 #include <machine_base/apic/ioapic.h>
 #include <machine_base/apic/ioapic_abi.h>
+#include <machine_base/apic/apicvar.h>
+#include <machine_base/icu/icu_var.h>
 #include <machine/segments.h>
 #include <sys/thread2.h>
 
 #include <machine/cputypes.h>
 #include <machine/intr_machdep.h>
-
-#include "apicvar.h"
 
 extern int naps;
 
@@ -95,13 +95,6 @@ int	cpu_id_to_apic_id[NAPICID];
 int	apic_id_to_cpu_id[NAPICID];
 int	lapic_enable = 1;
 
-void
-lapic_eoi(void)
-{
-
-	lapic->eoi = 0;
-}
-
 /*
  * Enable LAPIC, configure interrupts.
  */
@@ -122,6 +115,11 @@ lapic_init(boolean_t bsp)
 		setidt(XSPURIOUSINT_OFFSET, Xspuriousint,
 		    SDT_SYSIGT, SEL_KPL, 0);
 
+		/* Install a timer vector */
+		setidt(XTIMER_OFFSET, Xtimer,
+		    SDT_SYSIGT, SEL_KPL, 0);
+
+#ifdef SMP
 		/* Install an inter-CPU IPI for TLB invalidation */
 		setidt(XINVLTLB_OFFSET, Xinvltlb,
 		    SDT_SYSIGT, SEL_KPL, 0);
@@ -130,13 +128,10 @@ lapic_init(boolean_t bsp)
 		setidt(XIPIQ_OFFSET, Xipiq,
 		    SDT_SYSIGT, SEL_KPL, 0);
 
-		/* Install a timer vector */
-		setidt(XTIMER_OFFSET, Xtimer,
-		    SDT_SYSIGT, SEL_KPL, 0);
-
 		/* Install an inter-CPU IPI for CPU stop/restart */
 		setidt(XCPUSTOP_OFFSET, Xcpustop,
 		    SDT_SYSIGT, SEL_KPL, 0);
+#endif
 	}
 
 	/*
@@ -228,9 +223,9 @@ lapic_init(boolean_t bsp)
 	 * Pump out a few EOIs to clean out interrupts that got through
 	 * before we were able to set the TPR.
 	 */
-	lapic_eoi();
-	lapic_eoi();
-	lapic_eoi();
+	lapic->eoi = 0;
+	lapic->eoi = 0;
+	lapic->eoi = 0;
 
 	if (bsp) {
 		lapic_timer_calibrate();
@@ -476,14 +471,22 @@ lapic_timer_restart_handler(void *dummy __unused)
 static void
 lapic_timer_intr_pmfixup(struct cputimer_intr *cti __unused)
 {
+#ifdef SMP
 	lwkt_send_ipiq_mask(smp_active_mask,
 			    lapic_timer_fixup_handler, NULL);
+#else
+	lapic_timer_fixup_handler(NULL);
+#endif
 }
 
 static void
 lapic_timer_intr_restart(struct cputimer_intr *cti __unused)
 {
+#ifdef SMP
 	lwkt_send_ipiq_mask(smp_active_mask, lapic_timer_restart_handler, NULL);
+#else
+	lapic_timer_restart_handler(NULL);
+#endif
 }
 
 
@@ -497,6 +500,8 @@ apic_dump(char* str)
 	kprintf("     lint0: 0x%08x lint1: 0x%08x TPR: 0x%08x SVR: 0x%08x\n",
 		lapic->lvt_lint0, lapic->lvt_lint1, lapic->tpr, lapic->svr);
 }
+
+#ifdef SMP
 
 /*
  * Inter Processor Interrupt functions.
@@ -624,6 +629,8 @@ selected_apic_ipi(cpumask_t target, int vector, int delivery_mode)
 	crit_exit();
 }
 
+#endif	/* SMP */
+
 /*
  * Timer code, in development...
  *  - suggested by rgrimes@gndrsh.aac.dev.com
@@ -696,11 +703,9 @@ lapic_unused_apic_id(int start)
 }
 
 void
-lapic_map(vm_offset_t lapic_addr)
+lapic_map(vm_paddr_t lapic_addr)
 {
 	lapic = pmap_mapdev_uncacheable(lapic_addr, sizeof(struct LAPIC));
-
-	kprintf("lapic: at 0x%08lx\n", lapic_addr);
 }
 
 static TAILQ_HEAD(, lapic_enumerator) lapic_enumerators =
@@ -782,3 +787,24 @@ lapic_fixup_noioapic(void)
 	temp |= APIC_LVT_MASKED;
 	lapic->lvt_lint1 = temp;
 }
+
+static void
+lapic_sysinit(void *dummy __unused)
+{
+	if (lapic_enable) {
+		int error;
+
+		error = lapic_config();
+		if (error)
+			lapic_enable = 0;
+	}
+
+	if (lapic_enable) {
+		/* Initialize BSP's local APIC */
+		lapic_init(TRUE);
+	} else if (ioapic_enable) {
+		ioapic_enable = 0;
+		icu_reinit_noioapic();
+	}
+}
+SYSINIT(lapic, SI_BOOT2_LAPIC, SI_ORDER_FIRST, lapic_sysinit, NULL)

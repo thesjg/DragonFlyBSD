@@ -210,7 +210,7 @@ static driver_t acpi_driver = {
 };
 
 static devclass_t acpi_devclass;
-DRIVER_MODULE(acpi, nexus, acpi_driver, acpi_devclass, acpi_modevent, 0);
+DRIVER_MODULE(acpi, nexus, acpi_driver, acpi_devclass, acpi_modevent, NULL);
 MODULE_VERSION(acpi, 1);
 
 ACPI_SERIAL_DECL(acpi, "ACPI serializer")
@@ -1744,7 +1744,8 @@ acpi_shutdown_final(void *arg, int howto)
 	/* Reboot using the reset register. */
 	status = AcpiReset();
 	if (ACPI_FAILURE(status)) {
-	    kprintf("ACPI reset failed - %s\n", AcpiFormatException(status));
+	    if (status != AE_NOT_EXIST)
+		    kprintf("ACPI reset failed - %s\n", AcpiFormatException(status));
 	} else {
 	    DELAY(1000000);
 	    kprintf("ACPI reset failed - timeout\n");

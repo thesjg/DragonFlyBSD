@@ -88,7 +88,7 @@ static device_method_t pcib_methods[] = {
 static devclass_t pcib_devclass;
 
 DEFINE_CLASS_0(pcib, pcib_driver, pcib_methods, sizeof(struct pcib_softc));
-DRIVER_MODULE(pcib, pci, pcib_driver, pcib_devclass, 0, 0);
+DRIVER_MODULE(pcib, pci, pcib_driver, pcib_devclass, NULL, NULL);
 
 /*
  * Is the prefetch window open (eg, can we allocate memory in it?)
@@ -127,11 +127,9 @@ pcib_probe(device_t dev)
 	(pci_get_subclass(dev) == PCIS_BRIDGE_PCI)) {
 	device_set_desc(dev, "PCI-PCI bridge");
 #if defined(__i386__) || defined(__x86_64__)
-#ifdef SMP
 	/* PCIBIOS PCI-PCI bridge is -2000 */
 	if (ioapic_enable)
 		return (-1000);
-#endif
 #endif
 	return (-10000);
     }

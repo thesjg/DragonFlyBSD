@@ -141,7 +141,7 @@ static driver_t nexus_driver = {
 };
 static devclass_t nexus_devclass;
 
-DRIVER_MODULE(nexus, root, nexus_driver, nexus_devclass, 0, 0);
+DRIVER_MODULE(nexus, root, nexus_driver, nexus_devclass, NULL, NULL);
 
 static int
 nexus_probe(device_t dev)
@@ -159,23 +159,20 @@ nexus_probe(device_t dev)
 	irq_rman.rm_start = 0;
 	irq_rman.rm_type = RMAN_ARRAY;
 	irq_rman.rm_descr = "Interrupt request lines";
-#ifdef SMP
-if (ioapic_enable) {
-	irq_rman.rm_end = APIC_INTMAPSIZE - 1;
-	if (rman_init(&irq_rman)
-	    || rman_manage_region(&irq_rman,
-				  irq_rman.rm_start, irq_rman.rm_end))
-		panic("nexus_probe irq_rman");
-} else {
-#endif
-	irq_rman.rm_end = 15;
-	if (rman_init(&irq_rman)
-	    || rman_manage_region(&irq_rman, irq_rman.rm_start, 1)
-	    || rman_manage_region(&irq_rman, 3, irq_rman.rm_end))
-		panic("nexus_probe irq_rman");
-#ifdef SMP
-}
-#endif
+
+	if (ioapic_enable) {
+		irq_rman.rm_end = APIC_INTMAPSIZE - 1;
+		if (rman_init(&irq_rman)
+		    || rman_manage_region(&irq_rman,
+					  irq_rman.rm_start, irq_rman.rm_end))
+			panic("nexus_probe irq_rman");
+	} else {
+		irq_rman.rm_end = 15;
+		if (rman_init(&irq_rman)
+		    || rman_manage_region(&irq_rman, irq_rman.rm_start, 1)
+		    || rman_manage_region(&irq_rman, 3, irq_rman.rm_end))
+			panic("nexus_probe irq_rman");
+	}
 
 	/*
 	 * ISA DMA on PCI systems is implemented in the ISA part of each
@@ -232,15 +229,9 @@ nexus_attach(device_t dev)
 	bus_generic_attach(dev);
 
 	/*
-	 * And if we didn't see EISA or ISA on a pci bridge, create some
-	 * connection points now so they show up "on motherboard".
+	 * And if we didn't see ISA on a pci bridge, create a
+	 * connection point now so it shows up "on motherboard".
 	 */
-	if (!devclass_get_device(devclass_find("eisa"), 0)) {
-		child = BUS_ADD_CHILD(dev, dev, 0, "eisa", 0);
-		if (child == NULL)
-			panic("nexus_attach eisa");
-		device_probe_and_attach(child);
-	}
 	if (!devclass_get_device(devclass_find("isa"), 0)) {
 		child = BUS_ADD_CHILD(dev, dev, 0, "isa", 0);
 		if (child == NULL)

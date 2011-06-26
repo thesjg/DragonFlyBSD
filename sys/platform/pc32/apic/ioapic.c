@@ -30,25 +30,17 @@
 #include <sys/kernel.h>
 #include <sys/bus.h>
 #include <sys/machintr.h>
-#include <vm/pmap.h>
-#include <machine/globaldata.h>
-#include <machine/smp.h>
-#include <machine/cputypes.h>
-#include <machine/md_var.h>
+#include <sys/thread2.h>
+
 #include <machine/pmap.h>
+#include <machine_base/icu/icu_var.h>
 #include <machine_base/apic/lapic.h>
 #include <machine_base/apic/ioapic.h>
 #include <machine_base/apic/ioapic_abi.h>
-#include <machine/segments.h>
-#include <sys/thread2.h>
-
-#include <machine/intr_machdep.h>
+#include <machine_base/apic/apicvar.h>
 
 #define IOAPIC_COUNT_MAX	16
 #define IOAPIC_ID_MASK		(IOAPIC_COUNT_MAX - 1)
-
-/* XXX */
-extern pt_entry_t *SMPpt;
 
 struct ioapic_info {
 	int		io_idx;
@@ -72,6 +64,7 @@ struct ioapic_conf {
 	struct ioapic_intsrc ioc_intsrc[16];	/* XXX magic number */
 };
 
+static int	ioapic_config(void);
 static void	ioapic_setup(const struct ioapic_info *);
 static int	ioapic_alloc_apic_id(int);
 static void	ioapic_set_apic_id(const struct ioapic_info *);
@@ -88,7 +81,7 @@ static TAILQ_HEAD(, ioapic_enumerator) ioapic_enumerators =
 
 int		ioapic_enable = 1; /* I/O APIC is enabled by default */
 
-int
+static int
 ioapic_config(void)
 {
 	struct ioapic_info *info;
@@ -586,3 +579,21 @@ ioapic_map(vm_paddr_t pa)
 	KKASSERT(pa < 0x100000000LL);
 	return pmap_mapdev_uncacheable(pa, PAGE_SIZE);
 }
+
+static void
+ioapic_sysinit(void *dummy __unused)
+{
+	int error;
+
+	if (!ioapic_enable)
+		return;
+
+	KASSERT(lapic_enable, ("I/O APIC is enabled, but LAPIC is disabled\n"));
+	error = ioapic_config();
+	if (error) {
+		ioapic_enable = 0;
+		icu_reinit_noioapic();
+		lapic_fixup_noioapic();
+	}
+}
+SYSINIT(ioapic, SI_BOOT2_IOAPIC, SI_ORDER_FIRST, ioapic_sysinit, NULL)
