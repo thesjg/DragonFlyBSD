@@ -189,9 +189,7 @@ static char	*aac_describe_code(struct aac_code_lookup *table,
 static d_open_t		aac_open;
 static d_close_t	aac_close;
 static d_ioctl_t	aac_ioctl;
-static d_kqfilter_t	aac_kqfilter;
-static void		aac_filter_detach(struct knote *kn);
-static int		aac_filter_read(struct knote *kn, long hint);
+static boolean_t	aac_filter_read(struct kev_filter_note *fn, long hint, caddr_t hook);
 static int		aac_ioctl_sendfib(struct aac_softc *sc, caddr_t ufib);
 static int		aac_ioctl_send_raw_srb(struct aac_softc *sc, caddr_t arg);
 static void		aac_handle_aif(struct aac_softc *sc,
@@ -214,8 +212,7 @@ static struct dev_ops aac_ops = {
 	{ "aac", 0, 0 },
 	.d_open =	aac_open,
 	.d_close =	aac_close,
-	.d_ioctl =	aac_ioctl,
-	.d_kqfilter =	aac_kqfilter
+	.d_ioctl =	aac_ioctl
 };
 
 MALLOC_DEFINE(M_AACBUF, "aacbuf", "Buffers for the AAC driver");
@@ -234,6 +231,9 @@ int
 aac_attach(struct aac_softc *sc)
 {
 	int error, unit;
+	static struct kev_filter_ops kev_fops = {
+		.fop_read = { aac_filter_read, KEV_FILTOP_NOTMPSAFE }
+	}
 
 	fwprintf(sc, HBA_FLAGS_DBG_FUNCTION_ENTRY_B, "");
 
@@ -310,6 +310,7 @@ aac_attach(struct aac_softc *sc)
 	(void)make_dev_alias(sc->aac_dev_t, "afa%d", unit);
 	(void)make_dev_alias(sc->aac_dev_t, "hpn%d", unit);
 	sc->aac_dev_t->si_drv1 = sc;
+	(void)kev_dev_filter_init(sc->aac_dev_t, &kev_fops, (caddr_t)sc);
 
 	/* Create the AIF thread */
 	if (kthread_create(aac_command_thread, sc,
@@ -2903,60 +2904,21 @@ aac_ioctl(struct dev_ioctl_args *ap)
 	return(error);
 }
 
-static struct filterops aac_filterops =
-	{ FILTEROP_ISFD|FILTEROP_MPSAFE, NULL, aac_filter_detach, aac_filter_read };
-
-static int
-aac_kqfilter(struct dev_kqfilter_args *ap)
-{
-	cdev_t dev = ap->a_head.a_dev;
-	struct aac_softc *sc = dev->si_drv1;
-	struct knote *kn = ap->a_kn;
-	struct klist *klist;
-
-	ap->a_result = 0;
-
-	switch (kn->kn_filter) {
-	case EVFILT_READ:
-		kn->kn_fop = &aac_filterops;
-		kn->kn_hook = (caddr_t)sc;
-		break;
-	default:
-		ap->a_result = EOPNOTSUPP;
-		return (0);
-	}
-
-	klist = &sc->rcv_kq.ki_note;
-	knote_insert(klist, kn);
-
-	return (0);
-}
-
-static void
-aac_filter_detach(struct knote *kn)
-{
-	struct aac_softc *sc = (struct aac_softc *)kn->kn_hook;
-	struct klist *klist;
-
-	klist = &sc->rcv_kq.ki_note;
-	knote_remove(klist, kn);
-}
-
-static int
-aac_filter_read(struct knote *kn, long hint)
+static boolean_t
+aac_filter_read(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
 	struct aac_softc *sc;
 	struct aac_fib_context *ctx;
 
-	sc = (struct aac_softc *)kn->kn_hook;
+	sc = (struct aac_softc *)hook;
 
 	lockmgr(&sc->aac_aifq_lock, LK_EXCLUSIVE);
 	for (ctx = sc->fibctx; ctx; ctx = ctx->next)
 		if (ctx->ctx_idx != sc->aifq_idx || ctx->ctx_wrap)
-			return(1);
+			return (TRUE);
 	lockmgr(&sc->aac_aifq_lock, LK_RELEASE);
 
-	return (0);
+	return (FALSE);
 }
 
 static void
@@ -3390,7 +3352,7 @@ aac_handle_aif(struct aac_softc *sc, struct aac_fib *fib)
 		wakeup(sc->aac_aifq);
 	/* token may have been lost */
 	/* Wakeup any poll()ers */
-	KNOTE(&sc->rcv_kq.ki_note, 0);
+	kev_filter(&sc->rcv_filter, 0);
 	/* token may have been lost */
 	lockmgr(&sc->aac_aifq_lock, LK_RELEASE);
 

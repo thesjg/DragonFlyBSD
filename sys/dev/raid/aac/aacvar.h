@@ -385,7 +385,7 @@ struct aac_softc
 	int			aifq_idx;
 	int			aifq_filled;
 	struct aac_fib_context *fibctx;
-	struct kqinfo		rcv_kq;
+	struct kev_filter	rcv_filter;
 	struct thread		*aifthread;
 	int			aifflags;
 #define AAC_AIFFLAGS_RUNNING	(1 << 0)
