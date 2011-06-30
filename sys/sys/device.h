@@ -183,7 +183,6 @@ struct dev_kev_filter_args {
 /*
  * Typedefs to help drivers declare the driver routines and such
  */
-typedef void d_panic_t (void);
 typedef int d_default_t (struct dev_generic_args *ap);
 typedef int d_open_t (struct dev_open_args *ap);
 typedef int d_close_t (struct dev_close_args *ap);
@@ -224,7 +223,6 @@ struct dev_ops {
 	d_strategy_t	*d_strategy;
 	d_dump_t	*d_dump;
 	d_psize_t	*d_psize;
-	d_panic_t	*d_kqfilter;
 	d_clone_t	*d_clone;	/* clone from base dev_ops */
 	d_revoke_t	*d_revoke;
 	d_kev_filter_t	*d_kev_filter;
@@ -293,7 +291,6 @@ int dev_dwrite(cdev_t dev, struct uio *uio, int ioflag);
 int dev_dmmap(cdev_t dev, vm_offset_t offset, int nprot);
 int dev_dclone(cdev_t dev);
 int dev_drevoke(cdev_t dev);
-int dev_kev_filter(cdev_t dev, struct kev_filter **filt);
 
 int dev_drefs(cdev_t dev);
 const char *dev_dname(cdev_t dev);
@@ -316,6 +313,7 @@ d_clone_t	noclone;
 d_revoke_t	norevoke;
 d_open_t	nullopen;
 d_close_t	nullclose;
+d_kev_filter_t	dev_kev_filter;
 
 extern struct syslink_desc dev_default_desc;
 extern struct syslink_desc dev_open_desc;

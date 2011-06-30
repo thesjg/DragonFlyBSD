@@ -94,9 +94,9 @@ DEVOP_DESC_INIT(dump);
 DEVOP_DESC_INIT(psize);
 DEVOP_DESC_INIT(mmap);
 DEVOP_DESC_INIT(strategy);
-DEVOP_DESC_INIT(kqfilter);
 DEVOP_DESC_INIT(revoke);
 DEVOP_DESC_INIT(clone);
+DEVOP_DESC_INIT(kev_filter);
 
 /*
  * Misc default ops
@@ -115,10 +115,9 @@ struct dev_ops default_dev_ops = {
 	.d_strategy = nostrategy,
 	.d_dump = nodump,
 	.d_psize = nopsize,
-	.d_kqfilter = nokqfilter,
 	.d_clone = noclone,
 	.d_revoke = norevoke,
-	.d_kev_filter = dev_kev_filter
+//	.d_kev_filter = dev_kev_filter
 };
 
 static __inline
@@ -673,12 +672,6 @@ nostrategy(struct dev_strategy_args *ap)
 	return(0);
 }
 
-void
-nokqfilter(void)
-{
-	panic("kqfilter op no longer supported through device vector");
-}
-
 int
 nopsize(struct dev_psize_args *ap)
 {
@@ -693,16 +686,22 @@ nodump(struct dev_dump_args *ap)
 }
 
 /*
- * Returns the initialized kevent filter or ENODEV
+ * Returns 0 when filt is set or ENODEV
+ *
+ * XXX --
+ * We could setup a passthrough to the device like the other dev ops functions
+ * in case it wanted to setup the vector on a per-request basis.
  */
 int
-dev_kev_filter(cdev_t dev, struct kev_filter **filt)
+dev_kev_filter(struct dev_kev_filter_args *ap)
 {
-	if (dev->si_filter == NULL)
-		return (ENODEV);
+	struct cdev *dev = ap->a_head.a_dev;
 
-	*filt = dev->si_filter;
-	return (0);
+        if (dev->si_filter == NULL)
+                return (ENODEV);
+
+        *ap->a_filt = dev->si_filter;
+        return (0);
 }
 
 /*
