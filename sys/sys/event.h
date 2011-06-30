@@ -121,28 +121,9 @@ struct kevent {
 #define	NOTE_TRACKERR	0x00000002		/* could not track child */
 #define	NOTE_CHILD	0x00000004		/* am a child process */
 
-#ifdef _KERNEL
+#if defined(_KERNEL) || defined(_KERNEL_STRUCTURES)
 
-/*
- * Global token for kqueue subsystem
- */
-extern struct lwkt_token kq_token;
-
-#ifdef MALLOC_DECLARE
-MALLOC_DECLARE(M_KQUEUE);
-#endif
-
-/*
- * Flag indicating hint is a signal.  Used by EVFILT_SIGNAL, and also
- * shared by EVFILT_PROC  (all knotes attached to p->p_klist)
- *
- * NOTE_OLDAPI is used to signal that standard filters are being called
- * from the select/poll wrapper.
- */
-#define NOTE_SIGNAL	0x08000000
-#define NOTE_OLDAPI	0x04000000	/* select/poll note */
-
-#define KEV_FILTOP_NOTMPSAFE	0x0001	/* if the filter is NOT MPSAFE */
+#define KEV_FILTOP_NOTMPSAFE    0x0001  /* if the filter is NOT MPSAFE */
 
 struct kev_filter_note;
 
@@ -177,10 +158,32 @@ TAILQ_HEAD(kev_filter_entry_list, kev_filter_entry);
  * notified when I/O becomes possible.
  */
 struct kev_filter {
-	struct  kev_filter_entry_list   *kf_entry;
-	struct  kev_filter_ops          kf_ops;
-	caddr_t                         kf_hook;
+	struct  kev_filter_entry_list	*kf_entry;
+	struct  kev_filter_ops		kf_ops;
+	caddr_t				kf_hook;
 };
+#endif
+
+#ifdef _KERNEL
+
+/*
+ * Global token for kqueue subsystem
+ */
+extern struct lwkt_token kq_token;
+
+#ifdef MALLOC_DECLARE
+MALLOC_DECLARE(M_KQUEUE);
+#endif
+
+/*
+ * Flag indicating hint is a signal.  Used by EVFILT_SIGNAL, and also
+ * shared by EVFILT_PROC  (all knotes attached to p->p_klist)
+ *
+ * NOTE_OLDAPI is used to signal that standard filters are being called
+ * from the select/poll wrapper.
+ */
+#define NOTE_SIGNAL	0x08000000
+#define NOTE_OLDAPI	0x04000000	/* select/poll note */
 
 struct kev_filter_note {
 	struct			kev_filter_entry *fn_entry;	/* parent */

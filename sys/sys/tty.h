@@ -94,8 +94,8 @@ struct tty {
 	struct	pgrp *t_pgrp;		/* Foreground process group. */
 	struct	session *t_session;	/* Enclosing session. */
 	struct  sigio *t_sigio;		/* Information for async I/O. */
-	struct	kqinfo t_rkq;		/* Tty read/oob kq. */
-	struct	kqinfo t_wkq;		/* Tty write kq. */
+	struct	kev_filter t_rfilter;	/* Tty read/oob pollers. */
+	struct	kev_filter t_wfilter;	/* Tty write pollers. */
 	struct	termios t_termios;	/* Termios state. */
 	struct	winsize t_winsize;	/* Window size. */
 					/* Start output. */

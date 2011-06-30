@@ -45,7 +45,7 @@
 #include <sys/queue.h>			/* for TAILQ macros */
 #endif
 #ifndef _SYS_EVENT_H_
-#include <sys/event.h>			/* for struct kqinfo */
+#include <sys/event.h>			/* for struct kev_filter */
 #endif
 #ifndef _SYS_THREAD_H_
 #include <sys/thread.h>			/* for struct lwkt_token */
@@ -67,7 +67,7 @@ struct accept_filter;
  */
 struct signalsockbuf {
 	struct sockbuf sb;
-	struct kqinfo ssb_kq;	/* process selecting read/write */
+	struct kev_filter ssb_filter;	/* process selecting read/write */
 	uint32_t ssb_flags;	/* flags, see below (use atomic ops) */
 	u_int	ssb_timeo;	/* timeout for read/write */
 	long	ssb_lowat;	/* low water mark */

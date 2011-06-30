@@ -34,7 +34,7 @@
 #include <sys/time.h>			/* for struct timespec */
 #endif
 #ifndef _SYS_EVENT_H_
-#include <sys/event.h>			/* for struct kqinfo */
+#include <sys/event.h>			/* for struct kev_filter */
 #endif
 #ifndef _SYS_XIO_H_
 #include <sys/xio.h>			/* for struct xio */
@@ -93,7 +93,7 @@ struct pipebuf {
  */
 struct pipe {
 	struct	pipebuf pipe_buffer;	/* data storage */
-	struct	kqinfo pipe_kq;		/* for compat with select/poll/kq */
+	struct	kev_filter pipe_filter;	/* for compat with select/poll/kq */
 	struct	timespec pipe_atime;	/* time of last access */
 	struct	timespec pipe_mtime;	/* time of last modify */
 	struct	timespec pipe_ctime;	/* time of status change */
