@@ -260,6 +260,9 @@ extern void	kev_dev_filter_destroy(cdev_t cdev);
 extern void	kev_filter_destroy(struct kev_filter *filter);
 extern void	kev_filter(struct kev_filter *filter, long hint);
 
+extern void	kev_filter_entry_fdclose(struct file *fp, struct filedesc *fdp,
+    int fd);
+
 extern void	kqueue_init(struct kqueue *kq, struct filedesc *fdp);
 extern void	kqueue_terminate(struct kqueue *kq);
 extern int 	kqueue_register(struct kqueue *kq, struct kevent *kev);

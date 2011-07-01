@@ -618,8 +618,8 @@ retry:
 	 * close() were performed on it).
 	 */
 	if (delfp) {
-		if (SLIST_FIRST(&delfp->f_klist))
-			kev_filter_event_fdclose(delfp, fdp, new);
+		if (TAILQ_FIRST(&delfp->f_kflist))
+			kev_filter_entry_fdclose(delfp, fdp, new);
 		closef(delfp, p);
 		if (holdleaders) {
 			spin_lock(&fdp->fd_spin);
@@ -907,8 +907,8 @@ kern_close(int fd)
 	 * array.
 	 */
 	spin_unlock(&fdp->fd_spin);
-	if (SLIST_FIRST(&fp->f_klist))
-		kev_filter_event_fdclose(fp, fdp, fd);
+	if (TAILQ_FIRST(&fp->f_kflist))
+		kev_filter_entry_fdclose(fp, fdp, fd);
 	error = closef(fp, p);
 	if (holdleaders) {
 		spin_lock(&fdp->fd_spin);
@@ -1462,7 +1462,7 @@ fdrevoke_proc_callback(struct proc *p, void *vinfo)
 			fhold(info->nfp);
 			fdp->fd_files[n].fp = info->nfp;
 			spin_unlock(&fdp->fd_spin);
-			kev_filter_event_fdclose(fp, fdp, n);	/* XXX */
+			kev_filter_entry_fdclose(fp, fdp, n);	/* XXX */
 			closef(fp, p);
 			spin_lock(&fdp->fd_spin);
 			--info->count;
@@ -1520,7 +1520,7 @@ falloc(struct lwp *lp, struct file **resultfp, int *resultfd)
 	 */
 	fp = kmalloc(sizeof(struct file), M_FILE, M_WAITOK | M_ZERO);
 	spin_init(&fp->f_spin);
-	SLIST_INIT(&fp->f_klist);
+	TAILQ_INIT(&fp->f_kflist);
 	fp->f_count = 1;
 	fp->f_ops = &badfileops;
 	fp->f_seqcount = 1;
@@ -2056,8 +2056,8 @@ fdfree(struct proc *p, struct filedesc *repl)
 			fp = funsetfd_locked(fdp, i);
 			if (fp) {
 				spin_unlock(&fdp->fd_spin);
-				if (SLIST_FIRST(&fp->f_klist))
-					kev_filter_event_fdclose(fp, fdp, i);
+				if (TAILQ_FIRST(&fp->f_kflist))
+					kev_filter_entry_fdclose(fp, fdp, i);
 				closef(fp, p);
 				spin_lock(&fdp->fd_spin);
 			}
@@ -2223,7 +2223,7 @@ is_unsafe(struct file *fp)
 /*
  * Make this setguid thing safe, if at all possible.
  *
- * NOT MPSAFE - scans fdp without spinlocks, calls kev_filter_event_fdclose()
+ * NOT MPSAFE - scans fdp without spinlocks, calls kev_filter_entry_fdclose()
  */
 void
 setugidsafety(struct proc *p)
@@ -2250,7 +2250,7 @@ setugidsafety(struct proc *p)
 			 * a race while close blocks.
 			 */
 			if ((fp = funsetfd_locked(fdp, i)) != NULL) {
-				kev_filter_event_fdclose(fp, fdp, i);
+				kev_filter_entry_fdclose(fp, fdp, i);
 				closef(fp, p);
 			}
 		}
@@ -2260,7 +2260,7 @@ setugidsafety(struct proc *p)
 /*
  * Close any files on exec?
  *
- * NOT MPSAFE - scans fdp without spinlocks, calls kev_filter_event_fdclose()
+ * NOT MPSAFE - scans fdp without spinlocks, calls kev_filter_entry_fdclose()
  */
 void
 fdcloseexec(struct proc *p)
@@ -2286,7 +2286,7 @@ fdcloseexec(struct proc *p)
 			 * a race while close blocks.
 			 */
 			if ((fp = funsetfd_locked(fdp, i)) != NULL) {
-				kev_filter_event_fdclose(fp, fdp, i);
+				kev_filter_entry_fdclose(fp, fdp, i);
 				closef(fp, p);
 			}
 		}
@@ -2455,7 +2455,7 @@ fdrop(struct file *fp)
 	if (atomic_fetchadd_int(&fp->f_count, -1) > 1)
 		return (0);
 
-	KKASSERT(SLIST_FIRST(&fp->f_klist) == NULL);
+	KKASSERT(TAILQ_FIRST(&fp->f_kflist) == NULL);
 
 	/*
 	 * The last reference has gone away, we own the fp structure free
