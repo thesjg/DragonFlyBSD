@@ -46,6 +46,10 @@
 #include <sys/file.h>
 #endif
 
+#ifndef _SYS_PROTOSW_H_
+#include <sys/protosw.h>	/* for union netmsg */
+#endif
+
 /*
  * Definitions for UNIX IPC domain.
  */
