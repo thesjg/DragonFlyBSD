@@ -159,7 +159,7 @@ TAILQ_HEAD(kev_filter_entry_list, kev_filter_entry);
  */
 struct kev_filter {
 	struct  kev_filter_entry_list	*kf_entry;
-	struct  kev_filter_ops		kf_ops;
+	struct  kev_filter_ops		*kf_ops;
 	caddr_t				kf_hook;
 };
 #endif
@@ -258,14 +258,19 @@ extern void	kev_filter_init(struct kev_filter *filter,
     struct kev_filter_ops *fops, caddr_t hook);
 extern void	kev_dev_filter_destroy(cdev_t cdev);
 extern void	kev_filter_destroy(struct kev_filter *filter);
-extern void	kev_filter(struct kev_filter *filter, long hint);
+/* XXX, SJG: Call this kev_filter_activate or such? */
+extern void	kev_filter(struct kev_filter *filter, short filter_type,
+    long hint);
 
 extern void	kev_filter_entry_fdclose(struct file *fp, struct filedesc *fdp,
     int fd);
 
 extern void	kqueue_init(struct kqueue *kq, struct filedesc *fdp);
+extern struct 	kev_filter_entry *kqueue_lookup_filter_entry(struct kqueue *kq,
+    uintptr_t ident, struct file *fp);
+extern int	kqueue_register_filter_note(struct kqueue *kq,
+    uintptr_t ident, struct kev_filter_note *fn);
 extern void	kqueue_terminate(struct kqueue *kq);
-extern int 	kqueue_register(struct kqueue *kq, struct kevent *kev);
 
 #endif 	/* _KERNEL */
 

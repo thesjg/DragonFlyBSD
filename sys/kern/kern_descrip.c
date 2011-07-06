@@ -2898,10 +2898,10 @@ nofo_shutdown(struct file *fp, int how)
 /*
  * MPSAFE
  */
-struct kev_filter *
-badfo_kev_filter(struct file *fp)
+int
+badfo_kev_filter(struct file *fp, struct kev_filter **filt)
 {
-        return (NULL);
+        return (EOPNOTSUPP);
 }
 
 SYSINIT(fildescdev,SI_SUB_DRIVERS,SI_ORDER_MIDDLE+CDEV_MAJOR,

@@ -51,8 +51,8 @@
 #define KQEXTENT	256		/* linear growth by this amount */
 
 struct kqueue {
-	struct		kev_filter_entry_list *kq_fepending;
-	struct		kev_filter_entry_list *kq_felist;
+	struct		kev_filter_entry_list kq_fepending;
+	struct		kev_filter_entry_list kq_felist;
 	int		kq_count;		/* number of pending events */
 	struct		sigio *kq_sigio;
 	struct		kev_filter kq_kev_filter;

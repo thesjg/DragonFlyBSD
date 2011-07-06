@@ -89,7 +89,7 @@ struct	fileops {
 			 struct ucred *cred);
 	int (*fo_close)	(struct file *fp);
 	int (*fo_shutdown)(struct file *fp, int how);
-	struct kev_filter * (*fo_kev_filter)(struct file *fp);
+	int (*fo_kev_filter)(struct file *fp, struct kev_filter **filt);
 };
 
 /*
@@ -180,7 +180,7 @@ int badfo_ioctl(struct file *fp, u_long com, caddr_t data,
 int badfo_stat(struct file *fp, struct stat *sb, struct ucred *cred);
 int badfo_close(struct file *fp);
 int badfo_shutdown(struct file *fp, int how);
-struct kev_filter *badfo_kev_filter(struct file *fp);
+int badfo_kev_filter(struct file *fp, struct kev_filter **filt);
 
 #endif /* _KERNEL */
 
