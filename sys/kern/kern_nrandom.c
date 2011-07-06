@@ -524,15 +524,6 @@ random_poll(cdev_t dev, int events)
 }
 
 /*
- * Kqueue filter (always succeeds)
- */
-int
-random_filter_read(struct knote *kn, long hint)
-{
-	return (1);
-}
-
-/*
  * Heavy weight random number generator.  May return less then the
  * requested number of bytes.
  */

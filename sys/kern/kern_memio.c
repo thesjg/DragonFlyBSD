@@ -75,7 +75,6 @@ static	d_read_t	mmread;
 static	d_write_t	mmwrite;
 static	d_ioctl_t	mmioctl;
 static	d_mmap_t	memmmap;
-static	d_kqfilter_t	mmkqfilter;
 
 #define CDEV_MAJOR 2
 static struct dev_ops mem_ops = {
@@ -85,7 +84,6 @@ static struct dev_ops mem_ops = {
 	.d_read =	mmread,
 	.d_write =	mmwrite,
 	.d_ioctl =	mmioctl,
-	.d_kqfilter =	mmkqfilter,
 	.d_mmap =	memmmap,
 };
 
@@ -538,58 +536,13 @@ random_ioctl(cdev_t dev, u_long cmd, caddr_t data, int flags, struct ucred *cred
 	return (error);
 }
 
-static int
-mm_filter_read(struct knote *kn, long hint)
+/*
+ * Dummy filter (always succeeds)
+ */
+static boolean_t
+dummy_filter(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	return (1);
-}
-
-static int
-mm_filter_write(struct knote *kn, long hint)
-{
-	return (1);
-}
-
-static void
-dummy_filter_detach(struct knote *kn) {}
-
-/* Implemented in kern_nrandom.c */
-static struct filterops random_read_filtops =
-        { FILTEROP_ISFD|FILTEROP_MPSAFE, NULL, dummy_filter_detach, random_filter_read };
-
-static struct filterops mm_read_filtops =
-        { FILTEROP_ISFD|FILTEROP_MPSAFE, NULL, dummy_filter_detach, mm_filter_read };
-
-static struct filterops mm_write_filtops =
-        { FILTEROP_ISFD|FILTEROP_MPSAFE, NULL, dummy_filter_detach, mm_filter_write };
-
-int
-mmkqfilter(struct dev_kqfilter_args *ap)
-{
-	struct knote *kn = ap->a_kn;
-	cdev_t dev = ap->a_head.a_dev;
-
-	ap->a_result = 0;
-	switch (kn->kn_filter) {
-	case EVFILT_READ:
-		switch (minor(dev)) {
-		case 3:
-			kn->kn_fop = &random_read_filtops;
-			break;
-		default:
-			kn->kn_fop = &mm_read_filtops;
-			break;
-		}
-		break;
-	case EVFILT_WRITE:
-		kn->kn_fop = &mm_write_filtops;
-		break;
-	default:
-		ap->a_result = EOPNOTSUPP;
-		return (0);
-	}
-
-	return (0);
+	return (TRUE);
 }
 
 int
@@ -601,18 +554,36 @@ iszerodev(cdev_t dev)
 static void
 mem_drvinit(void *unused)
 {
+	cdev_t dev;
+	static struct kev_filter_ops kev_fops = {
+		.fop_read = { dummy_filter },
+		.fop_write = { dummy_filter }
+	};
 
 	/* Initialise memory range handling */
 	if (mem_range_softc.mr_op != NULL)
 		mem_range_softc.mr_op->init(&mem_range_softc);
 
-	make_dev(&mem_ops, 0, UID_ROOT, GID_KMEM, 0640, "mem");
-	make_dev(&mem_ops, 1, UID_ROOT, GID_KMEM, 0640, "kmem");
-	make_dev(&mem_ops, 2, UID_ROOT, GID_WHEEL, 0666, "null");
-	make_dev(&mem_ops, 3, UID_ROOT, GID_WHEEL, 0644, "random");
-	make_dev(&mem_ops, 4, UID_ROOT, GID_WHEEL, 0644, "urandom");
+	dev = make_dev(&mem_ops, 0, UID_ROOT, GID_KMEM, 0640, "mem");
+	kev_dev_filter_init(dev, &kev_fops, NULL);
+
+	dev = make_dev(&mem_ops, 1, UID_ROOT, GID_KMEM, 0640, "kmem");
+	kev_dev_filter_init(dev, &kev_fops, NULL);
+
+	dev = make_dev(&mem_ops, 2, UID_ROOT, GID_WHEEL, 0666, "null");
+	kev_dev_filter_init(dev, &kev_fops, NULL);
+
+	dev = make_dev(&mem_ops, 3, UID_ROOT, GID_WHEEL, 0644, "random");
+	kev_dev_filter_init(dev, &kev_fops, NULL);
+
+	dev = make_dev(&mem_ops, 4, UID_ROOT, GID_WHEEL, 0644, "urandom");
+	kev_dev_filter_init(dev, &kev_fops, NULL);
+
 	zerodev = make_dev(&mem_ops, 12, UID_ROOT, GID_WHEEL, 0666, "zero");
-	make_dev(&mem_ops, 14, UID_ROOT, GID_WHEEL, 0600, "io");
+	kev_dev_filter_init(zerodev, &kev_fops, NULL);
+
+	dev = make_dev(&mem_ops, 14, UID_ROOT, GID_WHEEL, 0600, "io");
+	kev_dev_filter_init(dev, &kev_fops, NULL);
 }
 
 SYSINIT(memdev,SI_SUB_DRIVERS,SI_ORDER_MIDDLE+CDEV_MAJOR,mem_drvinit,NULL)
