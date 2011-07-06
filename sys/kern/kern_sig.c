@@ -86,12 +86,8 @@ static void	signotify_remote(void *arg);
 static int	kern_sigtimedwait(sigset_t set, siginfo_t *info,
 		    struct timespec *timeout);
 
-static int	filt_sigattach(struct knote *kn);
-static void	filt_sigdetach(struct knote *kn);
-static int	filt_signal(struct knote *kn, long hint);
-
-struct filterops sig_filtops =
-	{ 0, filt_sigattach, filt_sigdetach, filt_signal };
+static boolean_t	sig_filter(struct kev_filter_note *fn, long hint,
+    caddr_t hook);
 
 static int	kern_logsigexit = 1;
 SYSCTL_INT(_kern, KERN_LOGSIGEXIT, logsigexit, CTLFLAG_RW, 
@@ -402,10 +398,22 @@ void
 siginit(struct proc *p)
 {
 	int i;
+	static struct kev_filter_ops kev_fops = {
+		.fop_special = { sig_filter, KEV_FILTOP_NOTMPSAFE }
+	};
 
 	for (i = 1; i <= NSIG; i++)
 		if (sigprop(i) & SA_IGNORE && i != SIGCONT)
 			SIGADDSET(p->p_sigignore, i);
+
+	kev_filter_init(&p->p_sig_filter, &kev_fops, NULL);
+
+/*
+XXX, SJG:
+How do we set the kn->kn_ptr.p_proc without an init fn, does it matter?
+*/
+//        kn->kn_ptr.p_proc = p;
+//        kn->kn_flags |= EV_CLEAR;               /* automatically set */
 }
 
 /*
@@ -1084,7 +1092,7 @@ lwpsignal(struct proc *p, struct lwp *lp, int sig)
 			 * Even if a signal is set SIG_IGN, it may still be
 			 * lurking in a kqueue.
 			 */
-			KNOTE(&p->p_klist, NOTE_SIGNAL | sig);
+			kev_filter(&p->p_filter, 0, NOTE_SIGNAL | sig);
 			lwkt_reltoken(&p->p_token);
 			PRELE(p);
 			return;
@@ -1929,7 +1937,7 @@ postsig(int sig)
 
 	KASSERT(sig != 0, ("postsig"));
 
-	KNOTE(&p->p_klist, NOTE_SIGNAL | sig);
+	kev_filter(&p->p_filter, 0, NOTE_SIGNAL | sig);
 
 	/*
 	 * If we are a virtual kernel running an emulated user process
@@ -2308,42 +2316,25 @@ pgsigio(struct sigio *sigio, int sig, int checkctty)
 	}
 }
 
-static int
-filt_sigattach(struct knote *kn)
+static boolean_t
+sig_filter(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	struct proc *p = curproc;
+	if (hint & NOTE_SIGNAL) {
+		hint &= ~NOTE_SIGNAL;
 
-	kn->kn_ptr.p_proc = p;
-	kn->kn_flags |= EV_CLEAR;		/* automatically set */
+		if (fn->fn_entry->fe_ident == hint)
+			fn->fn_data++;
+	}
 
-	/* XXX lock the proc here while adding to the list? */
-	knote_insert(&p->p_klist, kn);
-
-	return (0);
-}
-
-static void
-filt_sigdetach(struct knote *kn)
-{
-	struct proc *p = kn->kn_ptr.p_proc;
-
-	knote_remove(&p->p_klist, kn);
+	return ((fn->fn_data != 0) ? TRUE : FALSE);
 }
 
 /*
+ * XXX, SJG: Old comment, verify ... --^
+ *
  * signal knotes are shared with proc knotes, so we apply a mask to 
  * the hint in order to differentiate them from process hints.  This
  * could be avoided by using a signal-specific knote list, but probably
  * isn't worth the trouble.
  */
-static int
-filt_signal(struct knote *kn, long hint)
-{
-	if (hint & NOTE_SIGNAL) {
-		hint &= ~NOTE_SIGNAL;
 
-		if (kn->kn_id == hint)
-			kn->kn_data++;
-	}
-	return (kn->kn_data != 0);
-}

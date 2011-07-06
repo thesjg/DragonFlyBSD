@@ -587,7 +587,7 @@ fork1(struct lwp *lp1, int flags, struct proc **procp)
 	/*
 	 * tell any interested parties about the new process
 	 */
-	KNOTE(&p1->p_klist, NOTE_FORK | p2->p_pid);
+	kev_filter(&p1->p_filter, 0, NOTE_FORK | p2->p_pid);
 
 	/*
 	 * Return child proc pointer to parent.

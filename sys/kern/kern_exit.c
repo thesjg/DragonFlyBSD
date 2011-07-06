@@ -521,7 +521,7 @@ exit1(int rv)
 	/*
 	 * notify interested parties of our demise.
 	 */
-	KNOTE(&p->p_klist, NOTE_EXIT);
+	kev_filter(&p->p_filter, 0, NOTE_EXIT);
 
 	/*
 	 * Notify parent that we're gone.  If parent has the PS_NOCLDWAIT
