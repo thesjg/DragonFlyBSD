@@ -85,11 +85,10 @@ typedef struct	file file_t;	/* XXX: Should we put this in sys/types.h ? */
 /* Function prototypes */
 static int	mq_stat_fop(file_t *, struct stat *, struct ucred *cred);
 static int	mq_close_fop(file_t *);
-static int	mq_kqfilter_fop(struct file *fp, struct knote *kn);
-static void	mqfilter_read_detach(struct knote *kn);
-static void	mqfilter_write_detach(struct knote *kn);
-static int	mqfilter_read(struct knote *kn, long hint);
-static int	mqfilter_write(struct knote *kn, long hint);
+static boolean_t	mq_filter_read(struct kev_filter_note *fn, long hint,
+    caddr_t hook);
+static boolean_t	mq_filter_write(struct kev_filter_note *fn, long hint,
+    caddr_t hook);
 
 /* Some time-related utility functions */
 static int	itimespecfix(struct timespec *ts);
@@ -102,7 +101,6 @@ static struct fileops mqops = {
 	.fo_ioctl = badfo_ioctl,
 	.fo_stat = mq_stat_fop,
 	.fo_close = mq_close_fop,
-	.fo_kqfilter = mq_kqfilter_fop,
 	.fo_shutdown = badfo_shutdown
 };
 
@@ -293,92 +291,35 @@ mq_stat_fop(file_t *fp, struct stat *st, struct ucred *cred)
 	return 0;
 }
 
-static struct filterops mqfiltops_read =
-{ FILTEROP_ISFD|FILTEROP_MPSAFE, NULL, mqfilter_read_detach, mqfilter_read };
-static struct filterops mqfiltops_write =
-{ FILTEROP_ISFD|FILTEROP_MPSAFE, NULL, mqfilter_write_detach, mqfilter_write };
-
-static int
-mq_kqfilter_fop(struct file *fp, struct knote *kn)
+static boolean_t
+mq_filter_read(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	struct mqueue *mq = fp->f_data;
-	struct klist *klist;
-
-	lockmgr(&mq->mq_mtx, LK_EXCLUSIVE);
-
-	switch (kn->kn_filter) {
-	case EVFILT_READ:
-		kn->kn_fop = &mqfiltops_read;
-		kn->kn_hook = (caddr_t)mq;
-		klist = &mq->mq_rkq.ki_note;
-		break;
-	case EVFILT_WRITE:
-		kn->kn_fop = &mqfiltops_write;
-		kn->kn_hook = (caddr_t)mq;
-		klist = &mq->mq_wkq.ki_note;
-		break;
-	default:
-		lockmgr(&mq->mq_mtx, LK_RELEASE);
-		return (EOPNOTSUPP);
-	}
-
-	knote_insert(klist, kn);
-	lockmgr(&mq->mq_mtx, LK_RELEASE);
-
-	return (0);
-}
-
-static void
-mqfilter_read_detach(struct knote *kn)
-{
-	struct mqueue *mq = (struct mqueue *)kn->kn_hook;
-
-	lockmgr(&mq->mq_mtx, LK_EXCLUSIVE);
-	struct klist *klist = &mq->mq_rkq.ki_note;
-	knote_remove(klist, kn);
-	lockmgr(&mq->mq_mtx, LK_RELEASE);
-}
-
-static void
-mqfilter_write_detach(struct knote *kn)
-{
-	struct mqueue *mq = (struct mqueue *)kn->kn_hook;
-
-	lockmgr(&mq->mq_mtx, LK_EXCLUSIVE);
-	struct klist *klist = &mq->mq_wkq.ki_note;
-	knote_remove(klist, kn);
-	lockmgr(&mq->mq_mtx, LK_RELEASE);
-}
-
-static int
-mqfilter_read(struct knote *kn, long hint)
-{
-	struct mqueue *mq = (struct mqueue *)kn->kn_hook;
+	struct mqueue *mq = (struct mqueue *)hook;
 	struct mq_attr *mqattr;
-	int ready = 0;
+	boolean_t ready = FALSE;
 
 	lockmgr(&mq->mq_mtx, LK_EXCLUSIVE);
 	mqattr = &mq->mq_attrib;
 	/* Ready for receiving, if there are messages in the queue */
 	if (mqattr->mq_curmsgs)
-		ready = 1;
+		ready = TRUE;
 	lockmgr(&mq->mq_mtx, LK_RELEASE);
 
 	return (ready);
 }
 
-static int
-mqfilter_write(struct knote *kn, long hint)
+static boolean_t
+mq_filter_write(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	struct mqueue *mq = (struct mqueue *)kn->kn_hook;
+	struct mqueue *mq = (struct mqueue *)hook;
 	struct mq_attr *mqattr;
-	int ready = 0;
+	boolean_t ready = FALSE;
 
 	lockmgr(&mq->mq_mtx, LK_EXCLUSIVE);
 	mqattr = &mq->mq_attrib;
 	/* Ready for sending, if the message queue is not full */
 	if (mqattr->mq_curmsgs < mqattr->mq_maxmsg)
-		ready = 1;
+	ready = TRUE;
 	lockmgr(&mq->mq_mtx, LK_RELEASE);
 
 	return (ready);
@@ -438,6 +379,10 @@ sys_mq_open(struct mq_open_args *uap)
 	struct proc *p = td->td_proc;
 	struct filedesc *fdp = p->p_fd;
 	struct mqueue *mq, *mq_new = NULL;
+	static struct kev_filter_ops kev_fops = {
+		.fop_read = { mq_filter_read },
+		.fop_write = { mq_filter_write }
+	};
 	file_t *fp;
 	char *name;
 	int mqd, error, oflag;
@@ -602,10 +547,11 @@ sys_mq_open(struct mq_open_args *uap)
 		mq->mq_atime = mq->mq_mtime = mq->mq_btime;
 	}
 
-	/* Increase the counters, and make descriptor ready */
+	/* Increase the counters, make descriptor ready and init kevent */
 	p->p_mqueue_cnt++;
 	mq->mq_refcnt++;
 	fp->f_data = mq;
+	kev_filter_init(&mq->mq_filter, &kev_fops, (caddr_t)mq);
 exit:
 	lockmgr(&mq->mq_mtx, LK_RELEASE);
 	lockmgr(&mqlist_mtx, LK_RELEASE);
@@ -717,7 +663,7 @@ mq_receive1(struct lwp *l, mqd_t mqdes, void *msg_ptr, size_t msg_len,
 	wakeup_one(&mq->mq_recv_cv);
 
 	/* Ready for sending now */
-	KNOTE(&mq->mq_wkq.ki_note, 0);
+	kev_filter(&mq->mq_filter, EVFILT_WRITE, 0);
 error:
 	lockmgr(&mq->mq_mtx, LK_RELEASE);
 	fdrop(fp);
@@ -905,7 +851,7 @@ mq_send1(struct lwp *l, mqd_t mqdes, const char *msg_ptr, size_t msg_len,
 	wakeup_one(&mq->mq_send_cv);
 
 	/* Ready for receiving now */
-	KNOTE(&mq->mq_rkq.ki_note, 0);
+	kev_filter(&mq->mq_filter, EVFILT_READ, 0);
 error:
 	lockmgr(&mq->mq_mtx, LK_RELEASE);
 	fdrop(fp);
@@ -1130,8 +1076,7 @@ sys_mq_unlink(struct mq_unlink_args *uap)
 	wakeup(&mq->mq_send_cv);
 	wakeup(&mq->mq_recv_cv);
 
-	KNOTE(&mq->mq_rkq.ki_note, 0);
-	KNOTE(&mq->mq_wkq.ki_note, 0);
+	kev_filter(&mq->mq_filter, 0, 0);
 
 	refcnt = mq->mq_refcnt;
 	if (refcnt == 0)

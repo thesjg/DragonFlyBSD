@@ -80,8 +80,7 @@ struct mqueue {
 	int			mq_recv_cv;
 	struct mq_attr		mq_attrib;
 	/* Notification */
-	struct kev_filter	mq_rfilter;
-	struct kev_filter	mq_wfilter;
+	struct kev_filter	mq_filter;
 	struct sigevent		mq_sig_notify;
 	struct proc *		mq_notify_proc;
 	/* Permissions */
