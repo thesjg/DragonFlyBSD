@@ -56,7 +56,6 @@ static cdev_t		udev_dev;
 static d_open_t		udev_dev_open;
 static d_close_t	udev_dev_close;
 static d_read_t		udev_dev_read;
-static d_kqfilter_t	udev_dev_kqfilter;
 static d_ioctl_t	udev_dev_ioctl;
 
 static int _udev_dict_set_cstr(prop_dictionary_t, const char *, char *);
@@ -72,8 +71,7 @@ static void udev_event_free(struct udev_event_kernel *);
 static char *udev_event_externalize(struct udev_event_kernel *);
 static void udev_getdevs_scan_callback(cdev_t, void *);
 static int udev_getdevs_ioctl(struct plistref *, u_long, prop_dictionary_t);
-static void udev_dev_filter_detach(struct knote *);
-static int udev_dev_filter_read(struct knote *, long);
+static boolean_t udev_dev_filter_read(struct kev_filter_note *, long, caddr_t);
 
 struct cmd_function {
 	const char *cmd;
@@ -94,7 +92,7 @@ struct udev_softc {
 	int opened;
 	int initiated;
 
-	struct kqinfo kq;
+	struct kev_filter filter;
 
 	int qlen;
 	struct lock lock;
@@ -106,7 +104,6 @@ static struct dev_ops udev_dev_ops = {
 	.d_open = udev_dev_open,
 	.d_close = udev_dev_close,
 	.d_read = udev_dev_read,
-	.d_kqfilter = udev_dev_kqfilter,
 	.d_ioctl = udev_dev_ioctl
 };
 
@@ -426,7 +423,7 @@ udev_event_insert(int ev_type, prop_dictionary_t dict)
 	lockmgr(&udevctx.lock, LK_RELEASE);
 
 	wakeup(&udevctx);
-	KNOTE(&udevctx.kq.ki_note, 0);
+	kev_filter(&udevctx.filter, 0, 0);
 }
 
 static struct udev_event_kernel *
@@ -580,55 +577,14 @@ udev_dev_close(struct dev_close_args *ap)
 	return 0;
 }
 
-static struct filterops udev_dev_read_filtops =
-	{ FILTEROP_ISFD, NULL, udev_dev_filter_detach, udev_dev_filter_read };
-
-static int
-udev_dev_kqfilter(struct dev_kqfilter_args *ap)
+static boolean_t
+udev_dev_filter_read(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	struct knote *kn = ap->a_kn;
-	struct klist *klist;
-
-	ap->a_result = 0;
-	lockmgr(&udevctx.lock, LK_EXCLUSIVE);
-
-	switch (kn->kn_filter) {
-	case EVFILT_READ:
-		kn->kn_fop = &udev_dev_read_filtops;
-		break;
-	default:
-		ap->a_result = EOPNOTSUPP;
-	        lockmgr(&udevctx.lock, LK_RELEASE);
-		return (0);
-	}
-
-	klist = &udevctx.kq.ki_note;
-	knote_insert(klist, kn);
-
-        lockmgr(&udevctx.lock, LK_RELEASE);
-
-	return (0);
-}
-
-static void
-udev_dev_filter_detach(struct knote *kn)
-{
-	struct klist *klist;
-
-	lockmgr(&udevctx.lock, LK_EXCLUSIVE);
-	klist = &udevctx.kq.ki_note;
-	knote_remove(klist, kn);
-	lockmgr(&udevctx.lock, LK_RELEASE);
-}
-
-static int
-udev_dev_filter_read(struct knote *kn, long hint)
-{
-	int ready = 0;
+	boolean_t ready = FALSE;
 
 	lockmgr(&udevctx.lock, LK_EXCLUSIVE);
 	if (!TAILQ_EMPTY(&udevctx.ev_queue))
-		ready = 1;
+		ready = TRUE;
 	lockmgr(&udevctx.lock, LK_RELEASE);
 
 	return (ready);
@@ -801,12 +757,17 @@ udev_uninit(void)
 static void
 udev_dev_init(void)
 {
+	static struct kev_filter_ops kev_fops = {
+	    .fop_read = { udev_dev_filter_read }
+	};
+
 	udev_dev = make_dev(&udev_dev_ops,
             0,
             UID_ROOT,
             GID_WHEEL,
             0600,
             "udev");
+	kev_dev_filter_init(udev_dev, &kev_fops, NULL);
 }
 
 static void
