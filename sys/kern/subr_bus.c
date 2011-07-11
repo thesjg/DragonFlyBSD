@@ -102,6 +102,8 @@ void		print_devclass_list(void);
 static void	device_attach_async(device_t dev);
 static void	device_attach_thread(void *arg);
 static int	device_doattach(device_t dev);
+static boolean_t	dev_filter_read(struct kev_filter_note *fn, long hint,
+    caddr_t hook);
 
 static int do_async_attach = 0;
 static int numasyncthreads;
@@ -138,15 +140,13 @@ static d_open_t		devopen;
 static d_close_t	devclose;
 static d_read_t		devread;
 static d_ioctl_t	devioctl;
-static d_kqfilter_t	devkqfilter;
 
 static struct dev_ops devctl_ops = {
 	{ "devctl", 0, 0 },
 	.d_open =	devopen,
 	.d_close =	devclose,
 	.d_read =	devread,
-	.d_ioctl =	devioctl,
-	.d_kqfilter =	devkqfilter
+	.d_ioctl =	devioctl
 };
 
 struct dev_event_info
@@ -162,7 +162,7 @@ static struct dev_softc
 	int	inuse;
 	int	nonblock;
 	struct lock lock;
-	struct kqinfo kq;
+	struct kev_filter filter;
 	struct devq devq;
 	struct proc *async_proc;
 } devsoftc;
@@ -170,9 +170,15 @@ static struct dev_softc
 static void
 devinit(void)
 {
-	make_dev(&devctl_ops, 0, UID_ROOT, GID_WHEEL, 0600, "devctl");
+	cdev_t dev;
+	static struct kev_filter_ops kev_fops = {
+		.fop_read = { dev_filter_read }
+	};
+
+	dev = make_dev(&devctl_ops, 0, UID_ROOT, GID_WHEEL, 0600, "devctl");
 	lockinit(&devsoftc.lock, "dev mtx", 0, 0);
 	TAILQ_INIT(&devsoftc.devq);
+	kev_dev_filter_init(dev, &kev_fops, NULL);
 }
 
 static int
@@ -270,63 +276,18 @@ devioctl(struct dev_ioctl_args *ap)
 	return (ENOTTY);
 }
 
-static void dev_filter_detach(struct knote *);
-static int dev_filter_read(struct knote *, long);
-
-static struct filterops dev_filtops =
-	{ FILTEROP_ISFD, NULL, dev_filter_detach, dev_filter_read };
-
-static int
-devkqfilter(struct dev_kqfilter_args *ap)
+static boolean_t
+dev_filter_read(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	struct knote *kn = ap->a_kn;
-	struct klist *klist;
-
-	ap->a_result = 0;
-	lockmgr(&devsoftc.lock, LK_EXCLUSIVE);
-
-	switch (kn->kn_filter) {
-	case EVFILT_READ:
-		kn->kn_fop = &dev_filtops;
-		break;
-	default:
-		ap->a_result = EOPNOTSUPP;
-		lockmgr(&devsoftc.lock, LK_RELEASE);
-		return (0);
-	}
-
-	klist = &devsoftc.kq.ki_note;
-	knote_insert(klist, kn);
-
-	lockmgr(&devsoftc.lock, LK_RELEASE);
-
-	return (0);
-}
-
-static void
-dev_filter_detach(struct knote *kn)
-{
-	struct klist *klist;
-
-	lockmgr(&devsoftc.lock, LK_EXCLUSIVE);
-	klist = &devsoftc.kq.ki_note;
-	knote_remove(klist, kn);
-	lockmgr(&devsoftc.lock, LK_RELEASE);
-}
-
-static int
-dev_filter_read(struct knote *kn, long hint)
-{
-	int ready = 0;
+	boolean_t ready = FALSE;
 
 	lockmgr(&devsoftc.lock, LK_EXCLUSIVE);
 	if (!TAILQ_EMPTY(&devsoftc.devq))
-		ready = 1;
+		ready = TRUE;
 	lockmgr(&devsoftc.lock, LK_RELEASE);
 
 	return (ready);
 }
-
 
 /**
  * @brief Return whether the userland process is running
@@ -358,9 +319,7 @@ devctl_queue_data(char *data)
 	TAILQ_INSERT_TAIL(&devsoftc.devq, n1, dei_link);
 	wakeup(&devsoftc);
 	lockmgr(&devsoftc.lock, LK_RELEASE);
-	get_mplock();	/* XXX */
-	KNOTE(&devsoftc.kq.ki_note, 0);
-	rel_mplock();	/* XXX */
+	kev_filter(&devsoftc.filter, 0, 0);
 	p = devsoftc.async_proc;
 	if (p != NULL)
 		ksignal(p, SIGIO);
