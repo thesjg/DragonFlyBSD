@@ -78,7 +78,7 @@ static struct logsoftc {
 	int	sc_state;		/* see above for possibilities */
 	struct  sigio *sc_sigio;	/* information for async I/O */
 	struct	callout sc_callout;	/* callout to wakeup syslog  */
-	cdev_t	sc_cdev;		/* cdev for KNOTE_DEV */
+	struct	kev_filter filter;	/* pollers */
 } logsoftc;
 
 int	log_open;			/* also used in log() */
@@ -183,7 +183,7 @@ logtimeout(void *arg)
 		return;
 	}
 	msgbuftrigger = 0;
-	KNOTE_DEV(&logsoftc.sc_cdev, 0);
+	kev_filter(&logsoftc.filter, 0, 0);
 	if ((logsoftc.sc_state & LOG_ASYNC) && logsoftc.sc_sigio != NULL)
 		pgsigio(logsoftc.sc_sigio, SIGIO, 0);
 	if (logsoftc.sc_state & LOG_RDWAIT) {
@@ -245,13 +245,11 @@ log_drvinit(void *unused)
 {
 	cdev_t log_dev;
 	static struct kev_filter_ops kev_log_fops = {
-        	.fop_read = { logfiltread, KEV_FILTOP_NOTMPSAFE };
-	}
+        	.fop_read = { logfiltread, KEV_FILTOP_NOTMPSAFE }
+	};
 
 	log_dev = make_dev(&log_ops, 0, UID_ROOT, GID_WHEEL, 0600, "klog");
-	kev_dev_filter_init(log_dev, kev_log_fops, NULL);
-
-	&logsoftc.sc_cdev = log_dev;
+	kev_dev_filter_init(log_dev, &kev_log_fops, NULL);
 }
 
 SYSINIT(logdev,SI_SUB_DRIVERS,SI_ORDER_MIDDLE+CDEV_MAJOR,log_drvinit,NULL)
