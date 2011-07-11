@@ -58,11 +58,11 @@ static	d_close_t	cttyclose;
 static	d_read_t	cttyread;
 static	d_write_t	cttywrite;
 static	d_ioctl_t	cttyioctl;
-static	d_kqfilter_t	cttykqfilter;
 
-static void cttyfilt_detach(struct knote *);
-static int cttyfilt_read(struct knote *, long);
-static int cttyfilt_write(struct knote *, long);
+static boolean_t	cty_filter_read (struct kev_filter_note *fn, long hint,
+    caddr_t hook);
+static boolean_t	cty_filter_write (struct kev_filter_note *fn, long hint,
+    caddr_t hook);
 
 #define	CDEV_MAJOR	1
 static struct dev_ops ctty_ops = {
@@ -71,8 +71,7 @@ static struct dev_ops ctty_ops = {
 	.d_close =	cttyclose,
 	.d_read =	cttyread,
 	.d_write =	cttywrite,
-	.d_ioctl =	cttyioctl,
-	.d_kqfilter =	cttykqfilter
+	.d_ioctl =	cttyioctl
 };
 
 #define cttyvp(p) ((p)->p_flag & P_CONTROLT ? (p)->p_session->s_ttyvp : NULL)
@@ -249,73 +248,39 @@ cttyioctl(struct dev_ioctl_args *ap)
 			  ap->a_cred, ap->a_sysmsg));
 }
 
-static struct filterops cttyfiltops_read =
-	{ FILTEROP_ISFD, NULL, cttyfilt_detach, cttyfilt_read };
-static struct filterops cttyfiltops_write =
-	{ FILTEROP_ISFD, NULL, cttyfilt_detach, cttyfilt_write };
-
-static int
-cttykqfilter(struct dev_kqfilter_args *ap)
+static boolean_t
+cty_filter_read(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	cdev_t dev = ap->a_head.a_dev;
-	struct proc *p = curproc;
-	struct knote *kn = ap->a_kn;
-	struct vnode *ttyvp;
-
-	KKASSERT(p);
-	ttyvp = cttyvp(p);
-
-	if (ttyvp != NULL)
-		return (VOP_KQFILTER(ttyvp, kn));
-
-	ap->a_result = 0;
-
-	switch (kn->kn_filter) {
-	case EVFILT_READ:
-		kn->kn_fop = &cttyfiltops_read;
-		kn->kn_hook = (caddr_t)dev;
-		break;
-	case EVFILT_WRITE:
-		kn->kn_fop = &cttyfiltops_write;
-		kn->kn_hook = (caddr_t)dev;
-		break;
-	default:
-		ap->a_result = EOPNOTSUPP;
-		return (0);
-	}
-
-	return (0);
-}
-
-static void
-cttyfilt_detach(struct knote *kn) {}
-
-static int
-cttyfilt_read(struct knote *kn, long hint)
-{
-	cdev_t dev = (cdev_t)kn->kn_hook;
+	cdev_t dev = (cdev_t)hook;
 
 	if (seltrue(dev, POLLIN | POLLRDNORM))
-		return (1);
+		return (TRUE);
 
-	return (0);
+	return (FALSE);
 }
 
-static int
-cttyfilt_write(struct knote *kn, long hint)
+static boolean_t
+cty_filter_write(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	cdev_t dev = (cdev_t)kn->kn_hook;
+	cdev_t dev = (cdev_t)hook;
 
 	if (seltrue(dev, POLLOUT | POLLWRNORM))
-		return (1);
+		return (TRUE);
 
-	return (0);
+	return (FALSE);
 }
 
 static void
 ctty_drvinit(void *unused __unused)
 {
-	make_dev(&ctty_ops, 0, 0, 0, 0666, "tty");
+	cdev_t dev;
+	static struct kev_filter_ops kev_fops = {
+		.fop_read = { cty_filter_read, KEV_FILTOP_NOTMPSAFE },
+		.fop_write = { cty_filter_write, KEV_FILTOP_NOTMPSAFE }
+	};
+
+	dev = make_dev(&ctty_ops, 0, 0, 0, 0666, "tty");
+	kev_dev_filter_init(dev, &kev_fops, (caddr_t)dev);
 }
 
 SYSINIT(cttydev,SI_SUB_DRIVERS,SI_ORDER_MIDDLE+CDEV_MAJOR,ctty_drvinit,NULL)

@@ -112,7 +112,6 @@
 MALLOC_DEFINE(M_TTYS, "ttys", "tty data structures");
 
 static int	proc_compare (struct proc *p1, struct proc *p2);
-static int	ttnread (struct tty *tp);
 static void	ttyecho (int c, struct tty *tp);
 static int	ttyoutput (int c, struct tty *tp);
 static void	ttypend (struct tty *tp);
@@ -121,10 +120,6 @@ static void	ttyrub (int c, struct tty *tp);
 static void	ttyrubo (struct tty *tp, int cnt);
 static void	ttyunblock (struct tty *tp);
 static int	ttywflush (struct tty *tp);
-static int	filt_ttyread (struct knote *kn, long hint);
-static void 	filt_ttyrdetach (struct knote *kn);
-static int	filt_ttywrite (struct knote *kn, long hint);
-static void 	filt_ttywdetach (struct knote *kn);
 
 /*
  * Table with character classes and parity. The 8th bit indicates parity,
@@ -1299,102 +1294,11 @@ ttioctl(struct tty *tp, u_long cmd, void *data, int flag)
 	return (0);
 }
 
-static struct filterops ttyread_filtops =
-	{ FILTEROP_ISFD|FILTEROP_MPSAFE, NULL, filt_ttyrdetach, filt_ttyread };
-static struct filterops ttywrite_filtops =
-	{ FILTEROP_ISFD|FILTEROP_MPSAFE, NULL, filt_ttywdetach, filt_ttywrite };
-
-int
-ttykqfilter(struct dev_kqfilter_args *ap)
-{
-	cdev_t dev = ap->a_head.a_dev;
-	struct knote *kn = ap->a_kn;
-	struct tty *tp = dev->si_tty;
-	struct klist *klist;
-
-	ap->a_result = 0;
-
-	lwkt_gettoken(&tty_token);
-	switch (kn->kn_filter) {
-	case EVFILT_READ:
-		klist = &tp->t_rkq.ki_note;
-		kn->kn_fop = &ttyread_filtops;
-		break;
-	case EVFILT_WRITE:
-		klist = &tp->t_wkq.ki_note;
-		kn->kn_fop = &ttywrite_filtops;
-		break;
-	default:
-		ap->a_result = EOPNOTSUPP;
-		lwkt_reltoken(&tty_token);
-		return (0);
-	}
-	lwkt_reltoken(&tty_token);
-	kn->kn_hook = (caddr_t)dev;
-	knote_insert(klist, kn);
-
-	return (0);
-}
-
-static void
-filt_ttyrdetach(struct knote *kn)
-{
-	struct tty *tp = ((cdev_t)kn->kn_hook)->si_tty;
-
-	lwkt_gettoken(&tty_token);
-	knote_remove(&tp->t_rkq.ki_note, kn);
-	lwkt_reltoken(&tty_token);
-}
-
-static int
-filt_ttyread(struct knote *kn, long hint)
-{
-	struct tty *tp = ((cdev_t)kn->kn_hook)->si_tty;
-
-	lwkt_gettoken(&tty_token);
-	kn->kn_data = ttnread(tp);
-	if (ISSET(tp->t_state, TS_ZOMBIE)) {
-		kn->kn_flags |= EV_EOF;
-		lwkt_reltoken(&tty_token);
-		return (1);
-	}
-	lwkt_reltoken(&tty_token);
-	return (kn->kn_data > 0);
-}
-
-static void
-filt_ttywdetach(struct knote *kn)
-{
-	struct tty *tp = ((cdev_t)kn->kn_hook)->si_tty;
-
-	lwkt_gettoken(&tty_token);
-	knote_remove(&tp->t_wkq.ki_note, kn);
-	lwkt_reltoken(&tty_token);
-}
-
-static int
-filt_ttywrite(struct knote *kn, long hint)
-{
-	struct tty *tp = ((cdev_t)kn->kn_hook)->si_tty;
-	int ret;
-
-	lwkt_gettoken(&tty_token);
-	kn->kn_data = tp->t_outq.c_cc;
-	if (ISSET(tp->t_state, TS_ZOMBIE)) {
-		lwkt_reltoken(&tty_token);
-		return (1);
-	}
-	ret = (kn->kn_data <= tp->t_olowat &&
-	    ISSET(tp->t_state, TS_CONNECTED));
-	lwkt_reltoken(&tty_token);
-	return ret;
-}
-
 /*
  * Must be called while in a critical section.
  * NOTE: tty_token must be held.
  */
-static int
+int
 ttnread(struct tty *tp)
 {
 	int nread;
@@ -2439,7 +2343,7 @@ ttwakeup(struct tty *tp)
 	if (ISSET(tp->t_state, TS_ASYNC) && tp->t_sigio != NULL)
 		pgsigio(tp->t_sigio, SIGIO, (tp->t_session != NULL));
 	wakeup(TSA_HUP_OR_INPUT(tp));
-	KNOTE(&tp->t_rkq.ki_note, 0);
+	kev_filter(&tp->t_filter, EVFILT_READ, 0);
 	lwkt_reltoken(&tty_token);
 }
 
@@ -2462,7 +2366,7 @@ ttwwakeup(struct tty *tp)
 		CLR(tp->t_state, TS_SO_OLOWAT);
 		wakeup(TSA_OLOWAT(tp));
 	}
-	KNOTE(&tp->t_wkq.ki_note, 0);
+	kev_filter(&tp->t_filter, EVFILT_WRITE, 0);
 	lwkt_reltoken(&tty_token);
 }
 

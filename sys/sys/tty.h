@@ -94,8 +94,7 @@ struct tty {
 	struct	pgrp *t_pgrp;		/* Foreground process group. */
 	struct	session *t_session;	/* Enclosing session. */
 	struct  sigio *t_sigio;		/* Information for async I/O. */
-	struct	kev_filter t_rfilter;	/* Tty read/oob pollers. */
-	struct	kev_filter t_wfilter;	/* Tty write pollers. */
+	struct	kev_filter t_filter;	/* Tty pollers. */
 	struct	termios t_termios;	/* Termios state. */
 	struct	winsize t_winsize;	/* Window size. */
 					/* Start output. */
@@ -261,6 +260,7 @@ void	 termioschars (struct termios *t);
 int	 tputchar (int c, struct tty *tp);
 int	 ttcompat (struct tty *tp, u_long com, caddr_t data, int flag);
 int	 ttioctl (struct tty *tp, u_long com, void *data, int flag);
+int	 ttnread (struct tty *tp);
 int	 ttread (struct tty *tp, struct uio *uio, int flag);
 void	 ttrstrt (void *tp);
 int	 ttsetcompat (struct tty *tp, u_long *com, caddr_t data,
@@ -286,7 +286,7 @@ int	 ttylclose (struct tty *tp, int flag);
 struct tty *ttymalloc (struct tty *tp);
 int	 ttymodem (struct tty *tp, int flag);
 int	 ttyopen (cdev_t device, struct tty *tp);
-int	 ttykqfilter (struct dev_kqfilter_args *);
+boolean_t ttyfilter (struct kev_filter_note *fn, long hint, caddr_t hook);
 int	 ttyread (struct dev_read_args *);
 void	 ttyregister (struct tty *tp);
 void	 ttyunregister (struct tty *tp);

@@ -65,7 +65,6 @@ static d_close_t cnclose;
 static d_read_t cnread;
 static d_write_t cnwrite;
 static d_ioctl_t cnioctl;
-static d_kqfilter_t cnkqfilter;
 
 static int cnintercept(struct dev_generic_args *ap);
 
@@ -76,8 +75,7 @@ static struct dev_ops cn_ops = {
 	.d_close =	cnclose,
 	.d_read =	cnread,
 	.d_write =	cnwrite,
-	.d_ioctl =	cnioctl,
-	.d_kqfilter =	cnkqfilter,
+	.d_ioctl =	cnioctl
 };
 
 static struct dev_ops cn_iops = {
@@ -87,13 +85,6 @@ static struct dev_ops cn_iops = {
 
 static struct dev_ops *cn_fwd_ops;
 static cdev_t	cn_dev;
-
-//XXX: get this shit out! (alexh)
-#if 0
-SYSCTL_OPAQUE(_machdep, CPU_CONSDEV, consdev, CTLFLAG_RD,
-	&cn_udev, sizeof cn_udev, "T,udev_t", "");
-#endif
-
 static int cn_mute;
 
 int	cons_unavail = 0;	/* XXX:
@@ -465,6 +456,9 @@ cnioctl(struct dev_ioctl_args *ap)
 	return (dev_doperate(&ap->a_head));
 }
 
+/*
+XXX, SJG:
+
 static int
 cnkqfilter(struct dev_kqfilter_args *ap)
 {
@@ -473,6 +467,7 @@ cnkqfilter(struct dev_kqfilter_args *ap)
 	ap->a_head.a_dev = cn_tab->cn_dev;
 	return (dev_doperate(&ap->a_head));
 }
+*/
 
 /*
  * These synchronous functions are primarily used the kernel needs to 

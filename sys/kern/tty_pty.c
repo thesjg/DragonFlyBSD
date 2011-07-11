@@ -80,10 +80,14 @@ static void ptsstop (struct tty *tp, int rw);
 static void ptsunhold (struct tty *tp);
 static void ptcwakeup (struct tty *tp, int flag);
 static void ptyinit (int n);
-static int  filt_ptcread (struct knote *kn, long hint);
-static void filt_ptcrdetach (struct knote *kn);
-static int  filt_ptcwrite (struct knote *kn, long hint);
-static void filt_ptcwdetach (struct knote *kn);
+static boolean_t	tty_filter_read (struct kev_filter_note *fn, long hint,
+    caddr_t hook);
+static boolean_t	tty_filter_write (struct kev_filter_note *fn, long hint,
+    caddr_t hook);
+static boolean_t	ptc_filter_read (struct kev_filter_note *fn, long hint,
+    caddr_t hook);
+static boolean_t	ptc_filter_write (struct kev_filter_note *fn, long hint,
+    caddr_t hook);
 
 static	d_open_t	ptsopen;
 static	d_close_t	ptsclose;
@@ -94,7 +98,6 @@ static	d_open_t	ptcopen;
 static	d_close_t	ptcclose;
 static	d_read_t	ptcread;
 static	d_write_t	ptcwrite;
-static	d_kqfilter_t	ptckqfilter;
 
 #ifdef UNIX98_PTYS
 DEVFS_DECLARE_CLONE_BITMAP(pty);
@@ -110,7 +113,6 @@ static struct dev_ops pts98_ops = {
 	.d_read =	ptsread,
 	.d_write =	ptswrite,
 	.d_ioctl =	ptyioctl,
-	.d_kqfilter =	ttykqfilter,
 	.d_revoke =	ttyrevoke
 };
 
@@ -121,7 +123,6 @@ static struct dev_ops ptc98_ops = {
 	.d_read =	ptcread,
 	.d_write =	ptcwrite,
 	.d_ioctl =	ptyioctl,
-	.d_kqfilter =	ptckqfilter,
 	.d_revoke =	ttyrevoke
 };
 #endif
@@ -133,7 +134,6 @@ static struct dev_ops pts_ops = {
 	.d_read =	ptsread,
 	.d_write =	ptswrite,
 	.d_ioctl =	ptyioctl,
-	.d_kqfilter =	ttykqfilter,
 	.d_revoke =	ttyrevoke
 };
 
@@ -145,8 +145,16 @@ static struct dev_ops ptc_ops = {
 	.d_read =	ptcread,
 	.d_write =	ptcwrite,
 	.d_ioctl =	ptyioctl,
-	.d_kqfilter =	ptckqfilter,
 	.d_revoke =	ttyrevoke
+};
+
+static struct kev_filter_ops kev_pts_fops = {
+	.fop_read = { tty_filter_read },
+	.fop_write = { tty_filter_write }
+};
+static struct kev_filter_ops kev_ptc_fops = {
+	.fop_read = { ptc_filter_read },
+	.fop_write = { ptc_filter_write }
 };
 
 #define BUFSIZ 100		/* Chunk size iomoved to/from user */
@@ -155,7 +163,6 @@ struct	pt_ioctl {
 	int	pt_flags;
 	int	pt_refs;	/* Structural references interlock S/MOPEN */
 	int	pt_uminor;
-	struct	kqinfo pt_kqr, pt_kqw;
 	u_char	pt_send;
 	u_char	pt_ucntl;
 	struct tty pt_tty;
@@ -185,6 +192,9 @@ struct	pt_ioctl {
 #define	PF_MOPEN	0x0400
 #define PF_SCLOSED	0x0800
 #define PF_TERMINATED	0x8000
+
+/* Macro to test flags (for kev filters, from tty.c) */
+#define ISSET(t, f)     ((t) & (f))
 
 /*
  * This function creates and initializes a pts/ptc pair
@@ -218,6 +228,10 @@ ptyinit(int n)
 	devs->si_tty = devc->si_tty = &pt->pt_tty;
 	devs->si_flags |= SI_OVERRIDE;	/* uid, gid, perms from dev */
 	devc->si_flags |= SI_OVERRIDE;	/* uid, gid, perms from dev */
+
+	kev_dev_filter_init(pt->devs, &kev_pts_fops, (caddr_t)pt->devs);
+	kev_dev_filter_init(pt->devc, &kev_ptc_fops, (caddr_t)pt->devc);
+
 	ttyregister(&pt->pt_tty);
 }
 
@@ -260,6 +274,9 @@ ptyclone(struct dev_clone_args *ap)
 	pt->pt_uminor = unit;
 	pt->devs->si_drv1 = pt->devc->si_drv1 = pt;
 	pt->devs->si_tty = pt->devc->si_tty = &pt->pt_tty;
+
+	kev_dev_filter_init(pt->devs, &kev_pts_fops, (caddr_t)pt->devs);
+	kev_dev_filter_init(pt->devc, &kev_ptc_fops, (caddr_t)pt->devc);
 
 	ttyregister(&pt->pt_tty);
 
@@ -590,11 +607,11 @@ ptcwakeup(struct tty *tp, int flag)
 
 	if (flag & FREAD) {
 		wakeup(TSA_PTC_READ(tp));
-		KNOTE(&tp->t_rkq.ki_note, 0);
+		kev_filter(&tp->t_filter, EVFILT_READ, 0);
 	}
 	if (flag & FWRITE) {
 		wakeup(TSA_PTC_WRITE(tp));
-		KNOTE(&tp->t_wkq.ki_note, 0);
+		kev_filter(&tp->t_filter, EVFILT_WRITE, 0);
 	}
 }
 
@@ -843,82 +860,80 @@ ptsunhold(struct tty *tp)
 	lwkt_reltoken(&tty_token);
 }
 
+static boolean_t
+tty_filter_read(struct kev_filter_note *fn, long hint, caddr_t hook)
+{
+	struct tty *tp = ((cdev_t)hook)->si_tty;
+
+	lwkt_gettoken(&tty_token);
+	fn->fn_data = ttnread(tp);
+	if (ISSET(tp->t_state, TS_ZOMBIE)) {
+		fn->fn_flags |= EV_EOF;
+		lwkt_reltoken(&tty_token);
+		return (TRUE);
+	}
+	lwkt_reltoken(&tty_token);
+	return ((fn->fn_data > 0) ? TRUE : FALSE);
+}
+
+static boolean_t
+tty_filter_write(struct kev_filter_note *fn, long hint, caddr_t hook)
+{
+	struct tty *tp = ((cdev_t)hook)->si_tty;
+	boolean_t ret = FALSE;
+
+	lwkt_gettoken(&tty_token);
+	fn->fn_data = tp->t_outq.c_cc;
+	if (ISSET(tp->t_state, TS_ZOMBIE) ||
+	    (fn->fn_data <= tp->t_olowat &&
+	    ISSET(tp->t_state, TS_CONNECTED)))
+	{
+		ret = TRUE;
+	}
+	lwkt_reltoken(&tty_token);
+	return (ret);
+}
+
 /*
  * kqueue ops for pseudo-terminals.
  */
-static struct filterops ptcread_filtops =
-	{ FILTEROP_ISFD|FILTEROP_MPSAFE, NULL, filt_ptcrdetach, filt_ptcread };
-static struct filterops ptcwrite_filtops =
-	{ FILTEROP_ISFD|FILTEROP_MPSAFE, NULL, filt_ptcwdetach, filt_ptcwrite };
-
-static	int
-ptckqfilter(struct dev_kqfilter_args *ap)
+static boolean_t
+ptc_filter_read(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	cdev_t dev = ap->a_head.a_dev;
-	struct knote *kn = ap->a_kn;
-	struct tty *tp = dev->si_tty;
-	struct klist *klist;
-
-	lwkt_gettoken(&tty_token);
-	ap->a_result = 0;
-	switch (kn->kn_filter) {
-	case EVFILT_READ:
-		klist = &tp->t_rkq.ki_note;
-		kn->kn_fop = &ptcread_filtops;
-		break;
-	case EVFILT_WRITE:
-		klist = &tp->t_wkq.ki_note;
-		kn->kn_fop = &ptcwrite_filtops;
-		break;
-	default:
-		ap->a_result = EOPNOTSUPP;
-		lwkt_reltoken(&tty_token);
-		return (0);
-	}
-
-	kn->kn_hook = (caddr_t)dev;
-	knote_insert(klist, kn);
-	lwkt_reltoken(&tty_token);
-	return (0);
-}
-
-static int
-filt_ptcread (struct knote *kn, long hint)
-{
-	struct tty *tp = ((cdev_t)kn->kn_hook)->si_tty;
-	struct pt_ioctl *pti = ((cdev_t)kn->kn_hook)->si_drv1;
+	struct tty *tp = ((cdev_t)hook)->si_tty;
+	struct pt_ioctl *pti = ((cdev_t)hook)->si_drv1;
 
 	lwkt_gettoken(&tty_token);
 	if ((tp->t_state & TS_ZOMBIE) || (pti->pt_flags & PF_SCLOSED)) {
-		kn->kn_flags |= EV_EOF;
+		fn->fn_flags |= EV_EOF;
 		lwkt_reltoken(&tty_token);
-		return (1);
+		return (TRUE);
 	}
 
 	if ((tp->t_state & TS_ISOPEN) &&
 	    ((tp->t_outq.c_cc && (tp->t_state & TS_TTSTOP) == 0) ||
 	     ((pti->pt_flags & PF_PKT) && pti->pt_send) ||
 	     ((pti->pt_flags & PF_UCNTL) && pti->pt_ucntl))) {
-		kn->kn_data = tp->t_outq.c_cc;
+		fn->fn_data = tp->t_outq.c_cc;
 		lwkt_reltoken(&tty_token);
-		return(1);
+		return (TRUE);
 	} else {
 		lwkt_reltoken(&tty_token);
-		return(0);
+		return (FALSE);
 	}
 }
 
-static int
-filt_ptcwrite (struct knote *kn, long hint)
+static boolean_t
+ptc_filter_write(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	struct tty *tp = ((cdev_t)kn->kn_hook)->si_tty;
-	struct pt_ioctl *pti = ((cdev_t)kn->kn_hook)->si_drv1;
+	struct tty *tp = ((cdev_t)hook)->si_tty;
+	struct pt_ioctl *pti = ((cdev_t)hook)->si_drv1;
 
 	lwkt_gettoken(&tty_token);
 	if (tp->t_state & TS_ZOMBIE) {
-		kn->kn_flags |= EV_EOF;
+		fn->fn_flags |= EV_EOF;
 		lwkt_reltoken(&tty_token);
-		return (1);
+		return (TRUE);
 	}
 
 	if (tp->t_state & TS_ISOPEN &&
@@ -926,30 +941,14 @@ filt_ptcwrite (struct knote *kn, long hint)
 	     (tp->t_canq.c_cc == 0) :
 	     ((tp->t_rawq.c_cc + tp->t_canq.c_cc < TTYHOG - 2) ||
 	      (tp->t_canq.c_cc == 0 && (tp->t_lflag & ICANON))))) {
-		kn->kn_data = tp->t_canq.c_cc + tp->t_rawq.c_cc;
+		fn->fn_data = tp->t_canq.c_cc + tp->t_rawq.c_cc;
 		lwkt_reltoken(&tty_token);
-		return(1);
+		return (TRUE);
 	} else {
 		lwkt_reltoken(&tty_token);
-		return(0);
+		return (FALSE);
 	}
 	/* NOTREACHED */
-}
-
-static void
-filt_ptcrdetach (struct knote *kn)
-{
-	struct tty *tp = ((cdev_t)kn->kn_hook)->si_tty;
-
-	knote_remove(&tp->t_rkq.ki_note, kn);
-}
-
-static void
-filt_ptcwdetach (struct knote *kn)
-{
-	struct tty *tp = ((cdev_t)kn->kn_hook)->si_tty;
-
-	knote_remove(&tp->t_wkq.ki_note, kn);
 }
 
 /*
