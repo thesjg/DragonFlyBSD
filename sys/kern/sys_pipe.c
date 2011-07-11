@@ -73,7 +73,6 @@ static int pipe_write (struct file *fp, struct uio *uio,
 		struct ucred *cred, int flags);
 static int pipe_close (struct file *fp);
 static int pipe_shutdown (struct file *fp, int how);
-static int pipe_kqfilter (struct file *fp, struct knote *kn);
 static int pipe_stat (struct file *fp, struct stat *sb, struct ucred *cred);
 static int pipe_ioctl (struct file *fp, u_long cmd, caddr_t data,
 		struct ucred *cred, struct sysmsg *msg);
@@ -82,20 +81,15 @@ static struct fileops pipeops = {
 	.fo_read = pipe_read, 
 	.fo_write = pipe_write,
 	.fo_ioctl = pipe_ioctl,
-	.fo_kqfilter = pipe_kqfilter,
 	.fo_stat = pipe_stat,
 	.fo_close = pipe_close,
 	.fo_shutdown = pipe_shutdown
 };
 
-static void	filt_pipedetach(struct knote *kn);
-static int	filt_piperead(struct knote *kn, long hint);
-static int	filt_pipewrite(struct knote *kn, long hint);
-
-static struct filterops pipe_rfiltops =
-	{ FILTEROP_ISFD|FILTEROP_MPSAFE, NULL, filt_pipedetach, filt_piperead };
-static struct filterops pipe_wfiltops =
-	{ FILTEROP_ISFD|FILTEROP_MPSAFE, NULL, filt_pipedetach, filt_pipewrite };
+static boolean_t	pipe_filter_read(struct kev_filter_note *fn, long hint,
+    caddr_t hook);
+static boolean_t	pipe_filter_write(struct kev_filter_note *fn,
+    long hint, caddr_t hook);
 
 MALLOC_DEFINE(M_PIPE, "pipe", "pipe structures");
 
@@ -161,7 +155,7 @@ pipewakeup(struct pipe *cpipe, int dosigio)
 		pgsigio(cpipe->pipe_sigio, SIGIO, 0);
 		lwkt_reltoken(&proc_token);
 	}
-	KNOTE(&cpipe->pipe_kq.ki_note, 0);
+	kev_filter(&cpipe->pipe_filter, 0, 0);
 }
 
 /*
@@ -333,6 +327,10 @@ static int
 pipe_create(struct pipe **cpipep)
 {
 	globaldata_t gd = mycpu;
+	static struct kev_filter_ops kev_fops = {
+		.fop_read = { pipe_filter_read },
+		.fop_write = { pipe_filter_write }
+	};
 	struct pipe *cpipe;
 	int error;
 
@@ -352,6 +350,7 @@ pipe_create(struct pipe **cpipep)
 	cpipe->pipe_mtime = cpipe->pipe_ctime;
 	lwkt_token_init(&cpipe->pipe_rlock, "piper");
 	lwkt_token_init(&cpipe->pipe_wlock, "pipew");
+	kev_filter_init(&cpipe->pipe_filter, &kev_fops, (caddr_t)cpipe);
 	return (0);
 }
 
@@ -1148,8 +1147,7 @@ pipeclose(struct pipe *cpipe)
 			ppipe->pipe_state &= ~(PIPE_WANTR | PIPE_WANTW);
 			wakeup(ppipe);
 		}
-		if (SLIST_FIRST(&ppipe->pipe_kq.ki_note))
-			KNOTE(&ppipe->pipe_kq.ki_note, 0);
+		kev_filter(&ppipe->pipe_filter, 0, 0);
 		lwkt_reltoken(&ppipe->pipe_wlock);
 		lwkt_reltoken(&ppipe->pipe_rlock);
 	}
@@ -1195,103 +1193,64 @@ pipeclose(struct pipe *cpipe)
 	}
 }
 
-static int
-pipe_kqfilter(struct file *fp, struct knote *kn)
+static boolean_t
+pipe_filter_read(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	struct pipe *cpipe;
-
-	cpipe = (struct pipe *)kn->kn_fp->f_data;
-
-	switch (kn->kn_filter) {
-	case EVFILT_READ:
-		kn->kn_fop = &pipe_rfiltops;
-		break;
-	case EVFILT_WRITE:
-		kn->kn_fop = &pipe_wfiltops;
-		if (cpipe->pipe_peer == NULL) {
-			/* other end of pipe has been closed */
-			return (EPIPE);
-		}
-		break;
-	default:
-		return (EOPNOTSUPP);
-	}
-	kn->kn_hook = (caddr_t)cpipe;
-
-	knote_insert(&cpipe->pipe_kq.ki_note, kn);
-
-	return (0);
-}
-
-static void
-filt_pipedetach(struct knote *kn)
-{
-	struct pipe *cpipe = (struct pipe *)kn->kn_hook;
-
-	knote_remove(&cpipe->pipe_kq.ki_note, kn);
-}
-
-/*ARGSUSED*/
-static int
-filt_piperead(struct knote *kn, long hint)
-{
-	struct pipe *rpipe = (struct pipe *)kn->kn_fp->f_data;
-	int ready = 0;
+	struct pipe *rpipe = (struct pipe *)hook;
+	boolean_t ready = FALSE;
 
 	lwkt_gettoken(&rpipe->pipe_rlock);
 	lwkt_gettoken(&rpipe->pipe_wlock);
 
-	kn->kn_data = rpipe->pipe_buffer.windex - rpipe->pipe_buffer.rindex;
+	fn->fn_data = rpipe->pipe_buffer.windex - rpipe->pipe_buffer.rindex;
 
 	/*
 	 * Only set EOF if all data has been exhausted
 	 */
-	if ((rpipe->pipe_state & PIPE_REOF) && kn->kn_data == 0) {
-		kn->kn_flags |= EV_EOF; 
-		ready = 1;
+	if ((rpipe->pipe_state & PIPE_REOF) && fn->fn_data == 0) {
+		fn->fn_flags |= EV_EOF;
+		ready = TRUE;
 	}
-
 	lwkt_reltoken(&rpipe->pipe_wlock);
 	lwkt_reltoken(&rpipe->pipe_rlock);
 
-	if (!ready)
-		ready = kn->kn_data > 0;
+	if (ready == FALSE)
+		ready = (fn->fn_data > 0) ? TRUE : FALSE;
 
 	return (ready);
 }
 
-/*ARGSUSED*/
-static int
-filt_pipewrite(struct knote *kn, long hint)
+static boolean_t
+pipe_filter_write(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	struct pipe *rpipe = (struct pipe *)kn->kn_fp->f_data;
+	struct pipe *rpipe = (struct pipe *)hook;
 	struct pipe *wpipe = rpipe->pipe_peer;
-	int ready = 0;
+	boolean_t ready = FALSE;
 
-	kn->kn_data = 0;
+	fn->fn_data = 0;
 	if (wpipe == NULL) {
-		kn->kn_flags |= EV_EOF;
-		return (1);
+		fn->fn_flags |= EV_EOF;
+		return (TRUE);
 	}
 
 	lwkt_gettoken(&wpipe->pipe_rlock);
 	lwkt_gettoken(&wpipe->pipe_wlock);
 
 	if (wpipe->pipe_state & PIPE_WEOF) {
-		kn->kn_flags |= EV_EOF; 
-		ready = 1;
+		fn->fn_flags |= EV_EOF;
+		ready = TRUE;
 	}
 
-	if (!ready)
-		kn->kn_data = wpipe->pipe_buffer.size -
+	if (ready == FALSE)
+		fn->fn_data = wpipe->pipe_buffer.size -
 			      (wpipe->pipe_buffer.windex -
-			       wpipe->pipe_buffer.rindex);
+			      wpipe->pipe_buffer.rindex);
 
 	lwkt_reltoken(&wpipe->pipe_wlock);
 	lwkt_reltoken(&wpipe->pipe_rlock);
 
-	if (!ready)
-		ready = kn->kn_data >= PIPE_BUF;
+	if (ready == FALSE)
+		ready = (fn->fn_data >= PIPE_BUF) ? TRUE : FALSE;
 
 	return (ready);
 }
