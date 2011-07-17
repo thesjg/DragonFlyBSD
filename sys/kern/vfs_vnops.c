@@ -65,7 +65,7 @@ static int vn_ioctl (struct file *fp, u_long com, caddr_t data,
 		struct ucred *cred, struct sysmsg *msg);
 static int vn_read (struct file *fp, struct uio *uio, 
 		struct ucred *cred, int flags);
-static int vn_kqfilter (struct file *fp, struct knote *kn);
+static int vn_kev_filter (struct file *fp, struct kev_filter *filt);
 static int vn_statfile (struct file *fp, struct stat *sb, struct ucred *cred);
 static int vn_write (struct file *fp, struct uio *uio, 
 		struct ucred *cred, int flags);
@@ -74,7 +74,7 @@ struct fileops vnode_fileops = {
 	.fo_read = vn_read,
 	.fo_write = vn_write,
 	.fo_ioctl = vn_ioctl,
-	.fo_kqfilter = vn_kqfilter,
+	.fo_kev_filter = vn_kev_filter,
 	.fo_stat = vn_statfile,
 	.fo_close = vn_closefile,
 	.fo_shutdown = nofo_shutdown
@@ -1077,10 +1077,11 @@ vn_closefile(struct file *fp)
  * MPSAFE
  */
 static int
-vn_kqfilter(struct file *fp, struct knote *kn)
+vn_kev_filter(struct file *fp, struct kev_filter *filt)
 {
 	int error;
 
-	error = VOP_KQFILTER(((struct vnode *)fp->f_data), kn);
+	error = VOP_KEV_FILTER(((struct vnode *)fp->f_data), filt);
 	return (error);
 }
+

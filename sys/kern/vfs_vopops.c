@@ -102,7 +102,7 @@ VNODEOP_DESC_INIT(read);
 VNODEOP_DESC_INIT(write);
 VNODEOP_DESC_INIT(ioctl);
 VNODEOP_DESC_INIT(poll);
-VNODEOP_DESC_INIT(kqfilter);
+VNODEOP_DESC_INIT(kev_filter);
 VNODEOP_DESC_INIT(mmap);
 VNODEOP_DESC_INIT(fsync);
 VNODEOP_DESC_INIT(old_remove);
@@ -481,19 +481,20 @@ vop_poll(struct vop_ops *ops, struct vnode *vp, int events, struct ucred *cred)
  * MPSAFE
  */
 int
-vop_kqfilter(struct vop_ops *ops, struct vnode *vp, struct knote *kn)
+vop_kev_filter(struct vop_ops *ops, struct vnode *vp,
+    struct kev_filter *filt)
 {
-	struct vop_kqfilter_args ap;
+	struct vop_kev_filter_args ap;
 	VFS_MPLOCK_DECLARE;
 	int error;
 
-	ap.a_head.a_desc = &vop_kqfilter_desc;
+	ap.a_head.a_desc = &vop_kev_filter_desc;
 	ap.a_head.a_ops = ops;
 	ap.a_vp = vp;
-	ap.a_kn = kn;
+	ap.a_filt = filt;
 
 	VFS_MPLOCK1(vp->v_mount);
-	DO_OPS(ops, error, &ap, vop_kqfilter);
+	DO_OPS(ops, error, &ap, vop_kev_filter);
 	VFS_MPUNLOCK(vp->v_mount);
 	return(error);
 }
@@ -1709,11 +1710,11 @@ vop_poll_ap(struct vop_poll_args *ap)
 }
 
 int
-vop_kqfilter_ap(struct vop_kqfilter_args *ap)
+vop_kev_filter_ap(struct vop_kev_filter_args *ap)
 {
 	int error;
 
-	DO_OPS(ap->a_head.a_ops, error, ap, vop_kqfilter);
+	DO_OPS(ap->a_head.a_ops, error, ap, vop_kev_filter);
 	return(error);
 }
 

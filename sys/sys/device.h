@@ -173,11 +173,11 @@ struct dev_revoke_args {
 };
 
 /*
- * int d_kev_filter(cdev_t dev, struct kev_filter **filt);
+ * int d_kev_filter(cdev_t dev, struct kev_filter *filt);
  */
 struct dev_kev_filter_args {
 	struct dev_generic_args a_head;
-	struct kev_filter **a_filt;
+	struct kev_filter *a_filt;
 };
 
 /*

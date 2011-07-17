@@ -700,7 +700,7 @@ dev_kev_filter(struct dev_kev_filter_args *ap)
         if (dev->si_filter == NULL)
                 return (ENODEV);
 
-        *ap->a_filt = dev->si_filter;
+        ap->a_filt = dev->si_filter;
         return (0);
 }
 

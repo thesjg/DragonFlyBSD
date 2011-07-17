@@ -195,7 +195,7 @@ struct vop_poll_args {
 struct vop_kev_filter_args {
 	struct vop_generic_args a_head;
 	struct vnode *a_vp;
-	struct kev_filter **a_filt;
+	struct kev_filter *a_filt;
 };
 
 struct vop_mmap_args {

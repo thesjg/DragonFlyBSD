@@ -106,6 +106,8 @@ static struct 	kev_filter_entry *kev_filter_entry_alloc(void);
 static void	kev_filter_entry_free(struct kev_filter_entry *fe);
 static struct 	kev_filter_note *kev_filter_note_alloc(void);
 static void	kev_filter_note_free(struct kev_filter_note *fn);
+static struct	kev_filter *kev_filter_alloc(void);
+static void	kev_filter_free(struct kev_filter *filt);
 
 //static int 		kq_ncallouts = 0;
 static int 		kq_calloutmax = (4 * 1024);
@@ -130,7 +132,7 @@ SYSCTL_INT(_kern, OID_AUTO, kq_checkloop, CTLFLAG_RW,
  */
 static
 int
-file_vector_lookup(struct kev_filter **filt, struct kev_filter_note *fn, void *arg)
+file_vector_lookup(struct kev_filter *filt, struct kev_filter_note *fn, void *arg)
 {
 	struct file *fp = (struct file *)arg;
 
@@ -140,14 +142,14 @@ file_vector_lookup(struct kev_filter **filt, struct kev_filter_note *fn, void *a
 /* filt_procattach (formerly) */
 static
 int
-proc_vector_lookup(struct kev_filter **filt, struct kev_filter_note *fn, void *arg)
+proc_vector_lookup(struct kev_filter *filt, struct kev_filter_note *fn, void *arg)
 {
 	return (EOPNOTSUPP);
 }
 
 static
 int
-signal_vector_lookup(struct kev_filter **filt, struct kev_filter_note *fn, void *arg)
+signal_vector_lookup(struct kev_filter *filt, struct kev_filter_note *fn, void *arg)
 {
 	return (EOPNOTSUPP);
 }
@@ -155,7 +157,7 @@ signal_vector_lookup(struct kev_filter **filt, struct kev_filter_note *fn, void 
 /* filt_timerattach (formerly) */
 static
 int
-timer_vector_lookup(struct kev_filter **filt, struct kev_filter_note *fn, void *arg)
+timer_vector_lookup(struct kev_filter *filt, struct kev_filter_note *fn, void *arg)
 {
 	return (EOPNOTSUPP);
 }
@@ -629,11 +631,11 @@ kqueue_register_filter_note(struct kqueue *kq, uintptr_t ident,
 	struct filedesc *fdp = kq->kq_fdp;
 	struct kev_filter_entry *fe;
 	struct file *fp = NULL;
-	struct kev_filter *filter;
+	struct kev_filter *filter = NULL; /* XXX, SJG: Verify allocation/free */
 	u_int filter_idx;
 	int error = 0;
 
-	int (*vector_lookup)(struct kev_filter **, struct kev_filter_note *, void *);
+	int (*vector_lookup)(struct kev_filter *, struct kev_filter_note *, void *);
 	void *vector_lookup_arg;
 	boolean_t isfd;
 
@@ -707,11 +709,16 @@ kqueue_register_filter_note(struct kqueue *kq, uintptr_t ident,
 			else
 				vector_lookup_arg = NULL;
 
+/* XXX, SJG:
+We must verify filter ...
+*/
+			filter = kev_filter_alloc();
+
 			/*
 			 * Look up the vector and validate that it supports
 			 * the operations we need.
 			 */
-			error = vector_lookup(&filter, fn, vector_lookup_arg);
+			error = vector_lookup(filter, fn, vector_lookup_arg);
 			if (error != 0)
 				goto done;
 
@@ -843,6 +850,9 @@ kqueue_register_filter_note(struct kqueue *kq, uintptr_t ident,
 	/* kn may be invalid now */
 
 done:
+	if (filter != NULL)
+		kev_filter_free(filter);
+
 	lwkt_reltoken(&kq_token);
 	if (fp != NULL)
 		fdrop(fp);
@@ -1256,9 +1266,6 @@ restart:
 		 */
 		fe->fe_status |= KFE_PROCESSING;
 		if ((fe->fe_status & KFE_DELETING) == 0) {
-
-/* XXX: SJG, implement kev_filter_entry_activate */
-
 			if (poll_filter_entry(fe, filter_type, hint))
 				KEV_FILTER_ENTRY_ACTIVATE(fe);
 		}
@@ -1354,7 +1361,7 @@ kev_filter_entry_enqueue(struct kev_filter_entry *fe)
 static struct kev_filter_entry *
 kev_filter_entry_alloc(void)
 {
-	return kmalloc(sizeof(struct kev_filter_entry), M_KQUEUE, M_WAITOK);
+	return (kmalloc(sizeof(struct kev_filter_entry), M_KQUEUE, M_WAITOK));
 }
 
 static void
@@ -1366,7 +1373,7 @@ kev_filter_entry_free(struct kev_filter_entry *fe)
 static struct kev_filter_note *
 kev_filter_note_alloc(void)
 {
-	return kmalloc(sizeof(struct kev_filter_note), M_KQUEUE, M_WAITOK);
+	return (kmalloc(sizeof(struct kev_filter_note), M_KQUEUE, M_WAITOK));
 }
 
 static void
@@ -1375,3 +1382,14 @@ kev_filter_note_free(struct kev_filter_note *fn)
 	kfree(fn, M_KQUEUE);
 }
 
+static struct kev_filter *
+kev_filter_alloc(void)
+{
+	return (kmalloc(sizeof(struct kev_filter), M_KQUEUE, M_WAITOK));
+}
+
+static void
+kev_filter_free(struct kev_filter *filt)
+{
+	kfree(filt, M_KQUEUE);
+}

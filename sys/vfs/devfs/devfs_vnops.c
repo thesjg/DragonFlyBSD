@@ -113,7 +113,7 @@ static int devfs_fo_write(struct file *, struct uio *, struct ucred *, int);
 static int devfs_fo_stat(struct file *, struct stat *, struct ucred *);
 static int devfs_fo_ioctl(struct file *, u_long, caddr_t,
 				struct ucred *, struct sysmsg *);
-static int devfs_fo_kev_filter(struct file *, struct kev_filter **);
+static int devfs_fo_kev_filter(struct file *, struct kev_filter *);
 static __inline int sequential_heuristic(struct uio *, struct file *);
 
 extern struct lock devfs_lock;
@@ -1360,7 +1360,7 @@ devfs_fo_stat(struct file *fp, struct stat *sb, struct ucred *cred)
 }
 
 static int
-devfs_fo_kev_filter(struct file *fp, struct kev_filter **filt)
+devfs_fo_kev_filter(struct file *fp, struct kev_filter *filt)
 {
 	struct vnode *vp;
 	int error;
