@@ -42,6 +42,8 @@
 #include <sys/types.h>
 #endif
 
+struct sockaddr;
+
 #if defined(_KERNEL) || defined(_KERNEL_STRUCTURES)
 
 /*
