@@ -107,22 +107,21 @@ define _infotok
 	set $token = ($arg0)
 	set $tokref = $token->t_ref
 	if ($tokref != 0)
-		printf "%-15s 0x%08x %10d 0x%08x 0x%08x\n", $token->t_desc, \
-			$token->t_flags, $token->t_collisions, $tokref->tr_owner, \
-			$tokref->tr_stallpc
+		printf "%-15s %10d 0x%08x\n", $token->t_desc, \
+			$token->t_collisions, $tokref->tr_owner
 	else
-		printf "%-15s 0x%08x %10d not held\n", $token->t_desc, \
-			$token->t_flags, $token->t_collisions
+		printf "%-15s %10d not held\n", $token->t_desc, \
+			$token->t_collisions
 	end
 end
 
 define infotok
-	printf "\nToken           flags      collisions owner      stallpc\n"
+	printf "\nToken           collisions owner\n"
 	_infotok ($arg0)
 end
 
 define lstok
-	printf "\nToken           flags      collisions owner      stallpc\n"
+	printf "\nToken           collisions owner\n"
 	_infotok &pmap_token
 	_infotok &dev_token
 	_infotok &vm_token
@@ -132,6 +131,27 @@ define lstok
 	_infotok &tty_token
 	_infotok &vnode_token
 	_infotok &vmobj_token
+end
+
+define dmesg
+	set $bufp = msgbufp->msg_ptr
+	set $size = msgbufp->msg_size
+	set $rseq = msgbufp->msg_bufr % $size
+	set $wseq = msgbufp->msg_bufx % $size
+	if ( $bufp != 0 && $size != 0 && $rseq != $wseq )
+		while ( $rseq < $wseq )
+			set $c = $bufp + $rseq
+			printf "%c", *$c
+			set $rseq = $rseq + 1
+			if ( $rseq == msgbufp->msg_size )
+				set $rseq = 0
+			end
+		end
+		if ( *$c == '\n' )
+			printf "\n"
+		end
+		printf "\n"
+	end
 end
 
 # Documentation, usable within GDB using the 'help' command.
@@ -159,7 +179,7 @@ Print command name of the given thread pointer (first argument).
 end
 
 document psx
-Output a list of processes with wait-channel (wchan) informaiton.
+Output a list of processes with wait-channel (wchan) information.
 end
 
 document running_threads
@@ -177,4 +197,8 @@ end
 document infotok
 Takes one argument, a struct lwkt_token * (pointer) and prints some
 information about that token.
+end
+
+document dmesg
+Shows the unread portion of the kernel message buffer.
 end

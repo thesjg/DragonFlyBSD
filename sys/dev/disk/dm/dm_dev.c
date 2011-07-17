@@ -1,6 +1,7 @@
 /*        $NetBSD: dm_dev.c,v 1.8 2010/01/04 00:19:08 haad Exp $      */
 
 /*
+ * Copyright (c) 2010-2011 Alex Hornung <alex@alexhornung.com>
  * Copyright (c) 2008 The NetBSD Foundation, Inc.
  * All rights reserved.
  *
@@ -249,6 +250,12 @@ dm_dev_create(dm_dev_t **dmvp, const char *name, const char *uuid, int flags)
 	dmv->devt = disk_create_named(name_buf, dm_minor, dmv->diskp, &dm_ops);
 	reference_dev(dmv->devt);
 
+	/* Make sure the device are immediately available */
+	sync_devs();
+
+	dmv->devt->si_drv1 = dmv;
+	dmv->devt->si_drv2 = dmv->diskp;
+
 	dmv->minor = minor(dmv->devt);
 	udev_dict_set_cstr(dmv->devt, "subsystem", "disk");
 
@@ -319,7 +326,12 @@ dm_dev_remove_all(int gentle)
 
 	lockmgr(&dm_dev_mutex, LK_EXCLUSIVE);
 
-	TAILQ_FOREACH_MUTABLE(dmv, &dm_dev_list, next_devlist, dmv2) {
+	/*
+	 * Process in reverse order so that it can deal with inter-depentent
+	 * devices.
+	 */
+	TAILQ_FOREACH_REVERSE_MUTABLE(dmv, &dm_dev_list, dm_dev_head,
+	    next_devlist, dmv2) {
 		if (gentle && dmv->is_open) {
 			r = EBUSY;
 			continue;

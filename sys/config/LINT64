@@ -143,8 +143,12 @@ cpu		HAMMER_CPU
 #
 # CPU_DISABLE_SSE disables SSE/MMX2 instructions support.
 #
+# CPU_ENABLE_EST enables support for Enhanced SpeedStep technology
+# found in Pentium(tm) M processors.
+#
 options		CPU_AMD64X2_INTR_SPAM
 #options 	CPU_DISABLE_SSE
+options		CPU_ENABLE_EST
 
 #####################################################################
 # COMPATIBILITY OPTIONS
@@ -307,6 +311,14 @@ options 	NCP			#NetWare Core protocol
 options 	MPLS			#Multi-Protocol Label Switching
 
 options 	NETATALK		#Appletalk communications protocols
+
+#
+# SMB/CIFS requester
+# NETSMB enables support for SMB protocol, it requires LIBMCHAIN and LIBICONV
+# options.
+# NETSMBCRYPTO enables support for encrypted passwords.
+options 	NETSMB			#SMB/CIFS requester
+options 	NETSMBCRYPTO		#encrypted password support for SMB
 
 # mchain library. It can be either loaded as KLD or compiled into kernel
 options 	LIBMCHAIN		#mbuf management library
@@ -580,6 +592,7 @@ options 	NULLFS			#NULL filesystem
 options 	NWFS			#NetWare filesystem
 options 	PORTAL			#Portal filesystem
 options 	PROCFS			#Process filesystem
+options 	SMBFS			#SMB/CIFS filesystem
 options		UDF			#UDF filesystem
 options		HAMMER			#HAMMER filesystem
 options 	TMPFS			#Temporary filesystem
@@ -2473,7 +2486,6 @@ options 	DEBUG_CRIT_SECTIONS
 options 	DEBUG_INTERRUPTS
 #options 	DISABLE_PSE
 options		BCE_DEBUG
-options		BCE_NVRAM_WRITE_SUPPORT
 options		EMX_RSS_DEBUG
 options		JME_RSS_DEBUG
 #options	ED_NO_MIIBUS
@@ -2525,14 +2537,18 @@ options		VM_PAGE_DEBUG
 options 	XBONEHACK
 
 options	KTR
+options KTR_ALL
+options	KTR_ENTRIES=1024
+options	KTR_VERBOSE=1
 #options KTR_CTXSW
+#options KTR_DMCRYPT
 #options KTR_ETHERNET
 #options KTR_HAMMER
+#options KTR_IFQ
 #options KTR_IF_BGE
 #options KTR_IF_EM
 #options KTR_IF_EMX
 #options KTR_IF_START
-#options KTR_IFQ
 #options KTR_IPIQ
 #options KTR_KERNENTRY
 #options KTR_MEMORY
@@ -2542,9 +2558,6 @@ options	KTR
 #options KTR_TESTLOG
 #options KTR_TOKENS
 #options KTR_USB_MEMORY
-options KTR_ALL
-options	KTR_ENTRIES=1024
-options	KTR_VERBOSE=1
 
 # ALTQ
 options 	ALTQ		#alternate queueing

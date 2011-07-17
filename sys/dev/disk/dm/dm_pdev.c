@@ -1,6 +1,7 @@
 /*        $NetBSD: dm_pdev.c,v 1.6 2010/01/04 00:19:08 haad Exp $      */
 
 /*
+ * Copyright (c) 2010-2011 Alex Hornung <alex@alexhornung.com>
  * Copyright (c) 2008 The NetBSD Foundation, Inc.
  * All rights reserved.
  *
@@ -76,9 +77,14 @@ dm_dk_lookup(const char *dev_name, struct vnode **vpp)
 
 	error = nlookup_init(&nd, dev_name, UIO_SYSSPACE, NLC_FOLLOW);
 	if (error)
-	    return error;
+		return error;
 
 	error = vn_open(&nd, NULL, FREAD|FWRITE, 0);
+	if (error) {
+		nlookup_done(&nd);
+		return error;
+	}
+
 	*vpp = nd.nl_open_vp;
 	nd.nl_open_vp = NULL;
 	nlookup_done(&nd);
