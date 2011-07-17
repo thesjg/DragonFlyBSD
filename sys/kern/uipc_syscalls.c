@@ -317,7 +317,7 @@ kern_accept(int s, int fflags, struct sockaddr **name, int *namelen, int *res)
 	fflag = lfp->f_flag;
 
 	/* connection has been removed from the listen queue */
-	KNOTE(&head->so_rcv.ssb_kq.ki_note, 0);
+	kev_filter(&head->so_rcv.ssb_filter, 0, 0);
 
 	if (head->so_sigio != NULL)
 		fsetown(fgetown(&head->so_sigio), &so->so_sigio);

@@ -53,6 +53,9 @@
 #ifndef _SYS_SOCKBUF_H_
 #include <sys/sockbuf.h>
 #endif
+#ifndef _NET_NETISR_H_
+#include <net/netisr.h>
+#endif
 
 #if defined(_KERNEL) || defined(_KERNEL_STRUCTURES)
 
@@ -68,6 +71,7 @@ struct accept_filter;
 struct signalsockbuf {
 	struct sockbuf sb;
 	struct kev_filter ssb_filter;	/* process selecting read/write */
+	struct notifymsglist ssb_mlist;	/* list of pending predicate messages */
 	uint32_t ssb_flags;	/* flags, see below (use atomic ops) */
 	u_int	ssb_timeo;	/* timeout for read/write */
 	long	ssb_lowat;	/* low water mark */
@@ -369,7 +373,7 @@ int	soo_shutdown (struct file *fp, int how);
 int	soo_ioctl (struct file *fp, u_long cmd, caddr_t data,
 			struct ucred *cred, struct sysmsg *msg);
 int	soo_stat (struct file *fp, struct stat *ub, struct ucred *cred);
-int	sokqfilter (struct file *fp, struct knote *kn);
+int	so_filter (struct file *fp, struct kev_filter *filt);
 
 /*
  * From uipc_socket and friends

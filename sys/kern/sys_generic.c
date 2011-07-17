@@ -52,6 +52,7 @@
 #include <sys/file.h>
 #include <sys/proc.h>
 #include <sys/signalvar.h>
+#include <sys/socket.h>
 #include <sys/socketvar.h>
 #include <sys/uio.h>
 #include <sys/kernel.h>
@@ -996,7 +997,7 @@ static int
 select_copyout(void *arg, struct kevent *kevp, int count, int *res)
 {
 	struct select_kevent_copyin_args *skap;
-	struct kevent kev;
+	struct kev_filter_note fn;
 	int i = 0;
 
 	skap = (struct select_kevent_copyin_args *)arg;
@@ -1007,9 +1008,11 @@ select_copyout(void *arg, struct kevent *kevp, int count, int *res)
 		 */
 		if ((u_int)(uintptr_t)kevp[i].udata !=
 		    skap->lwp->lwp_kqueue_serial) {
-			kev = kevp[i];
-			kev.flags = EV_DISABLE|EV_DELETE;
-			kqueue_register(&skap->lwp->lwp_kqueue, &kev);
+			fn.fn_filter = kevp[i].filter;
+			fn.fn_ufflags = EV_DISABLE|EV_DELETE;
+			kqueue_register_filter_note(&skap->lwp->lwp_kqueue,
+			    kevp[i].ident, &fn);
+
 			if (nseldebug)
 				kprintf("select fd %ju mismatched serial %d\n",
 					(uintmax_t)kevp[i].ident,
@@ -1298,7 +1301,7 @@ poll_copyout(void *arg, struct kevent *kevp, int count, int *res)
 {
 	struct poll_kevent_copyin_args *pkap;
 	struct pollfd *pfd;
-	struct kevent kev;
+	struct kev_filter_note fn;
 	int count_res;
 	int i;
 	u_int pi;
@@ -1315,9 +1318,11 @@ poll_copyout(void *arg, struct kevent *kevp, int count, int *res)
 		     (u_int)pkap->lwp->lwp_kqueue_serial;
 
 		if (pi >= pkap->nfds) {
-			kev = kevp[i];
-			kev.flags = EV_DISABLE|EV_DELETE;
-			kqueue_register(&pkap->lwp->lwp_kqueue, &kev);
+			fn.fn_filter = kevp[i].filter;
+			fn.fn_ufflags = EV_DISABLE|EV_DELETE;
+			kqueue_register_filter_note(&pkap->lwp->lwp_kqueue,
+			    kevp[i].ident, &fn);
+
 			if (nseldebug)
 				kprintf("poll index %d out of range against serial %d\n",
 					pi, pkap->lwp->lwp_kqueue_serial);
@@ -1480,6 +1485,9 @@ dopoll(int nfds, struct pollfd *fds, struct timespec *ts, int *res)
 	return (error);
 }
 
+/*
+XXX, SJG:
+
 static int
 socket_wait_copyin(void *arg, struct kevent *kevp, int maxevents, int *events)
 {
@@ -1492,6 +1500,7 @@ socket_wait_copyout(void *arg, struct kevent *kevp, int count, int *res)
 	++*res;
 	return (0);
 }
+*/
 
 extern	struct fileops socketops;
 
@@ -1505,7 +1514,7 @@ socket_wait(struct socket *so, struct timespec *ts, int *res)
 	struct thread *td = curthread;
 	struct file *fp;
 	struct kqueue kq;
-	struct kevent kev;
+//	struct kevent kev;
 	int error, fd;
 
 	if ((error = falloc(td->td_lwp, &fp, &fd)) != 0)
@@ -1518,6 +1527,9 @@ socket_wait(struct socket *so, struct timespec *ts, int *res)
 	fsetfd(td->td_lwp->lwp_proc->p_fd, fp, fd);
 
 	kqueue_init(&kq, td->td_lwp->lwp_proc->p_fd);
+/*
+XXX, SJG:
+
 	EV_SET(&kev, fd, EVFILT_READ, EV_ADD|EV_ENABLE, 0, 0, NULL);
 	if ((error = kqueue_register(&kq, &kev)) != 0) {
 		fdrop(fp);
@@ -1529,6 +1541,7 @@ socket_wait(struct socket *so, struct timespec *ts, int *res)
 
 	EV_SET(&kev, fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
 	kqueue_register(&kq, &kev);
+*/
 	fp->f_ops = &badfileops;
 	fdrop(fp);
 

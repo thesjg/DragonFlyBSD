@@ -458,7 +458,6 @@ socantrcvmore(struct socket *so)
 void
 sowakeup(struct socket *so, struct signalsockbuf *ssb)
 {
-	struct kqinfo *kqinfo = &ssb->ssb_kq;
 	uint32_t flags;
 
 	/*
@@ -493,11 +492,11 @@ sowakeup(struct socket *so, struct signalsockbuf *ssb)
 		pgsigio(so->so_sigio, SIGIO, 0);
 	if (ssb->ssb_flags & SSB_UPCALL)
 		(*so->so_upcall)(so, so->so_upcallarg, MB_DONTWAIT);
-	KNOTE(&kqinfo->ki_note, 0);
+	kev_filter(&ssb->ssb_filter, 0, 0);
 
 	/*
 	 * This is a bit of a hack.  Multiple threads can wind up scanning
-	 * ki_mlist concurrently due to the fact that this function can be
+	 * ssb_mlist concurrently due to the fact that this function can be
 	 * called on a foreign socket, so we can't afford to block here.
 	 *
 	 * We need the pool token for (so) (likely the listne socket if
@@ -509,14 +508,14 @@ sowakeup(struct socket *so, struct signalsockbuf *ssb)
 
 		lwkt_gettoken(&kq_token);
 		lwkt_getpooltoken(so);
-		TAILQ_FOREACH_MUTABLE(msg, &kqinfo->ki_mlist, nm_list, nmsg) {
+		TAILQ_FOREACH_MUTABLE(msg, &ssb->ssb_mlist, nm_list, nmsg) {
 			if (msg->nm_predicate(msg)) {
-				TAILQ_REMOVE(&kqinfo->ki_mlist, msg, nm_list);
+				TAILQ_REMOVE(&ssb->ssb_mlist, msg, nm_list);
 				lwkt_replymsg(&msg->base.lmsg,
 					      msg->base.lmsg.ms_error);
 			}
 		}
-		if (TAILQ_EMPTY(&ssb->ssb_kq.ki_mlist))
+		if (TAILQ_EMPTY(&ssb->ssb_mlist))
 			atomic_clear_int(&ssb->ssb_flags, SSB_MEVENT);
 		lwkt_relpooltoken(so);
 		lwkt_reltoken(&kq_token);

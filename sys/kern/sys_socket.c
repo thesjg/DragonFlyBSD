@@ -60,10 +60,10 @@ struct	fileops socketops = {
 	.fo_read = soo_read,
 	.fo_write = soo_write,
 	.fo_ioctl = soo_ioctl,
-	.fo_kqfilter = sokqfilter,
 	.fo_stat = soo_stat,
 	.fo_close = soo_close,
-	.fo_shutdown = soo_shutdown
+	.fo_shutdown = soo_shutdown,
+	.fo_kev_filter = so_filter
 };
 
 /*

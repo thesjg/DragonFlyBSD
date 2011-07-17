@@ -103,20 +103,12 @@
 static int	 do_setopt_accept_filter(struct socket *so, struct sockopt *sopt);
 #endif /* INET */
 
-static void 	filt_sordetach(struct knote *kn);
-static int 	filt_soread(struct knote *kn, long hint);
-static void 	filt_sowdetach(struct knote *kn);
-static int	filt_sowrite(struct knote *kn, long hint);
-static int	filt_solisten(struct knote *kn, long hint);
-
-static struct filterops solisten_filtops = 
-	{ FILTEROP_ISFD, NULL, filt_sordetach, filt_solisten };
-static struct filterops soread_filtops =
-	{ FILTEROP_ISFD, NULL, filt_sordetach, filt_soread };
-static struct filterops sowrite_filtops = 
-	{ FILTEROP_ISFD, NULL, filt_sowdetach, filt_sowrite };
-static struct filterops soexcept_filtops =
-	{ FILTEROP_ISFD, NULL, filt_sordetach, filt_soread };
+static boolean_t	so_filter_read(struct kev_filter_note *fn, long hint,
+    caddr_t hook);
+static boolean_t	so_filter_write(struct kev_filter_note *fn, long hint,
+    caddr_t hook);
+static boolean_t	so_filter_listen(struct kev_filter_note *fn, long hint,
+    caddr_t hook);
 
 MALLOC_DEFINE(M_SOCKET, "socket", "socket struct");
 MALLOC_DEFINE(M_SONAME, "soname", "socket name");
@@ -152,8 +144,8 @@ soalloc(int waitok)
 	if (so) {
 		/* XXX race condition for reentrant kernel */
 		TAILQ_INIT(&so->so_aiojobq);
-		TAILQ_INIT(&so->so_rcv.ssb_kq.ki_mlist);
-		TAILQ_INIT(&so->so_snd.ssb_kq.ki_mlist);
+		TAILQ_INIT(&so->so_rcv.ssb_mlist);
+		TAILQ_INIT(&so->so_snd.ssb_mlist);
 		lwkt_token_init(&so->so_rcv.ssb_token, "rcvtok");
 		lwkt_token_init(&so->so_snd.ssb_token, "sndtok");
 		so->so_state = SS_NOFDREF;
@@ -1746,119 +1738,86 @@ sohasoutofband(struct socket *so)
 {
 	if (so->so_sigio != NULL)
 		pgsigio(so->so_sigio, SIGURG, 0);
-	KNOTE(&so->so_rcv.ssb_kq.ki_note, NOTE_OOB);
+	kev_filter(&so->so_rcv.ssb_filter, EVFILT_READ, NOTE_OOB);
 }
 
-int
-sokqfilter(struct file *fp, struct knote *kn)
+static boolean_t
+so_filter_read(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	struct socket *so = (struct socket *)kn->kn_fp->f_data;
-	struct signalsockbuf *ssb;
+	struct socket *so = (struct socket *)fn->fn_entry->fe_ptr.p_fp->f_data;
 
-	switch (kn->kn_filter) {
-	case EVFILT_READ:
-		if (so->so_options & SO_ACCEPTCONN)
-			kn->kn_fop = &solisten_filtops;
-		else
-			kn->kn_fop = &soread_filtops;
-		ssb = &so->so_rcv;
-		break;
-	case EVFILT_WRITE:
-		kn->kn_fop = &sowrite_filtops;
-		ssb = &so->so_snd;
-		break;
-	case EVFILT_EXCEPT:
-		kn->kn_fop = &soexcept_filtops;
-		ssb = &so->so_rcv;
-		break;
-	default:
-		return (EOPNOTSUPP);
-	}
-
-	knote_insert(&ssb->ssb_kq.ki_note, kn);
-	atomic_set_int(&ssb->ssb_flags, SSB_KNOTE);
-	return (0);
-}
-
-static void
-filt_sordetach(struct knote *kn)
-{
-	struct socket *so = (struct socket *)kn->kn_fp->f_data;
-
-	knote_remove(&so->so_rcv.ssb_kq.ki_note, kn);
-	if (SLIST_EMPTY(&so->so_rcv.ssb_kq.ki_note))
-		atomic_clear_int(&so->so_rcv.ssb_flags, SSB_KNOTE);
-}
-
-/*ARGSUSED*/
-static int
-filt_soread(struct knote *kn, long hint)
-{
-	struct socket *so = (struct socket *)kn->kn_fp->f_data;
-
-	if (kn->kn_sfflags & NOTE_OOB) {
+	if (fn->fn_ufflags & NOTE_OOB) {
 		if ((so->so_oobmark || (so->so_state & SS_RCVATMARK))) {
-			kn->kn_fflags |= NOTE_OOB;
-			return (1);
+			fn->fn_fflags |= NOTE_OOB;
+			return (TRUE);
 		}
-		return (0);
+		return (FALSE);
 	}
-	kn->kn_data = so->so_rcv.ssb_cc;
+	fn->fn_data = so->so_rcv.ssb_cc;
 
 	/*
 	 * Only set EOF if all data has been exhausted.
 	 */
-	if ((so->so_state & SS_CANTRCVMORE) && kn->kn_data == 0) {
-		kn->kn_flags |= EV_EOF; 
-		kn->kn_fflags = so->so_error;
-		return (1);
+	if ((so->so_state & SS_CANTRCVMORE) && fn->fn_data == 0) {
+		fn->fn_flags |= EV_EOF;
+		fn->fn_fflags = so->so_error;
+		return (TRUE);
 	}
 	if (so->so_error)	/* temporary udp error */
-		return (1);
-	if (kn->kn_sfflags & NOTE_LOWAT)
-		return (kn->kn_data >= kn->kn_sdata);
-	return ((kn->kn_data >= so->so_rcv.ssb_lowat) ||
-		!TAILQ_EMPTY(&so->so_comp));
+		return (TRUE);
+	if (fn->fn_ufflags & NOTE_LOWAT)
+		return ((fn->fn_data >= fn->fn_udata) ? TRUE : FALSE);
+	return (((fn->fn_data >= so->so_rcv.ssb_lowat) ||
+		!TAILQ_EMPTY(&so->so_comp)) ? TRUE : FALSE);
 }
 
-static void
-filt_sowdetach(struct knote *kn)
+static boolean_t
+so_filter_write(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	struct socket *so = (struct socket *)kn->kn_fp->f_data;
+	struct socket *so = (struct socket *)fn->fn_entry->fe_ptr.p_fp->f_data;
 
-	knote_remove(&so->so_snd.ssb_kq.ki_note, kn);
-	if (SLIST_EMPTY(&so->so_snd.ssb_kq.ki_note))
-		atomic_clear_int(&so->so_snd.ssb_flags, SSB_KNOTE);
-}
-
-/*ARGSUSED*/
-static int
-filt_sowrite(struct knote *kn, long hint)
-{
-	struct socket *so = (struct socket *)kn->kn_fp->f_data;
-
-	kn->kn_data = ssb_space(&so->so_snd);
+	fn->fn_data = ssb_space(&so->so_snd);
 	if (so->so_state & SS_CANTSENDMORE) {
-		kn->kn_flags |= EV_EOF; 
-		kn->kn_fflags = so->so_error;
+		fn->fn_flags |= EV_EOF;
+		fn->fn_fflags = so->so_error;
 		return (1);
 	}
 	if (so->so_error)	/* temporary udp error */
-		return (1);
+		return (TRUE);
 	if (((so->so_state & SS_ISCONNECTED) == 0) &&
 	    (so->so_proto->pr_flags & PR_CONNREQUIRED))
-		return (0);
-	if (kn->kn_sfflags & NOTE_LOWAT)
-		return (kn->kn_data >= kn->kn_sdata);
-	return (kn->kn_data >= so->so_snd.ssb_lowat);
+		return (FALSE);
+	if (fn->fn_ufflags & NOTE_LOWAT)
+		return ((fn->fn_data >= fn->fn_udata) ? TRUE : FALSE);
+	return ((fn->fn_data >= so->so_snd.ssb_lowat) ? TRUE : FALSE);
 }
 
-/*ARGSUSED*/
-static int
-filt_solisten(struct knote *kn, long hint)
+static boolean_t
+so_filter_listen(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	struct socket *so = (struct socket *)kn->kn_fp->f_data;
+	struct socket *so = (struct socket *)fn->fn_entry->fe_ptr.p_fp->f_data;
 
-	kn->kn_data = so->so_qlen;
-	return (! TAILQ_EMPTY(&so->so_comp));
+	fn->fn_data = so->so_qlen;
+	return ((!TAILQ_EMPTY(&so->so_comp)) ? TRUE : FALSE);
 }
+
+int
+so_filter(struct file *fp, struct kev_filter *filt)
+{
+	struct socket *so = (struct socket *)fp->f_data;
+	static struct kev_filter_ops kev_fops = {
+		.fop_read = { so_filter_read, KEV_FILTOP_NOTMPSAFE },
+		.fop_write = { so_filter_write, KEV_FILTOP_NOTMPSAFE }
+	};
+	static struct kev_filter_ops kev_fops_listen = {
+		.fop_read = { so_filter_listen, KEV_FILTOP_NOTMPSAFE }
+	};
+
+	if (so->so_options & SO_ACCEPTCONN)
+		filt->kf_ops = &kev_fops_listen;
+	else
+		filt->kf_ops = &kev_fops;
+
+	return (0);
+}
+

@@ -427,7 +427,7 @@ netmsg_so_notify(netmsg_t msg)
 			      msg->base.lmsg.ms_error);
 	} else {
 		lwkt_gettoken(&kq_token);
-		TAILQ_INSERT_TAIL(&ssb->ssb_kq.ki_mlist, &msg->notify, nm_list);
+		TAILQ_INSERT_TAIL(&ssb->ssb_mlist, &msg->notify, nm_list);
 		atomic_set_int(&ssb->ssb_flags, SSB_MEVENT);
 		lwkt_reltoken(&kq_token);
 	}
@@ -491,7 +491,7 @@ netmsg_so_notify_abort(netmsg_t msg)
 				&nmsg->base.nm_so->so_rcv :
 				&nmsg->base.nm_so->so_snd;
 		lwkt_gettoken(&kq_token);
-		TAILQ_REMOVE(&ssb->ssb_kq.ki_mlist, nmsg, nm_list);
+		TAILQ_REMOVE(&ssb->ssb_mlist, nmsg, nm_list);
 		lwkt_reltoken(&kq_token);
 		lwkt_replymsg(&nmsg->base.lmsg, EINTR);
 	}
