@@ -74,22 +74,17 @@ static int	fifo_close (struct vop_close_args *);
 static int	fifo_read (struct vop_read_args *);
 static int	fifo_write (struct vop_write_args *);
 static int	fifo_ioctl (struct vop_ioctl_args *);
-static int	fifo_kqfilter (struct vop_kqfilter_args *);
+static int	fifo_kev_filter (struct vop_kev_filter_args *);
 static int	fifo_inactive (struct  vop_inactive_args *);
 static int	fifo_bmap (struct vop_bmap_args *);
 static int	fifo_pathconf (struct vop_pathconf_args *);
 static int	fifo_advlock (struct vop_advlock_args *);
 
-static void	filt_fifordetach(struct knote *kn);
-static int	filt_fiforead(struct knote *kn, long hint);
-static void	filt_fifowdetach(struct knote *kn);
-static int	filt_fifowrite(struct knote *kn, long hint);
+static boolean_t	fifo_filter_read(struct kev_filter_note *fn, long hint,
+    caddr_t hook);
+static boolean_t	fifo_filter_write(struct kev_filter_note *fn, long hint,
+    caddr_t hook);
 
-static struct filterops fiforead_filtops =
-	{ FILTEROP_ISFD, NULL, filt_fifordetach, filt_fiforead };
-static struct filterops fifowrite_filtops =
-	{ FILTEROP_ISFD, NULL, filt_fifowdetach, filt_fifowrite };
-  
 struct vop_ops fifo_vnode_vops = {
 	.vop_default =		vop_defaultop,
 	.vop_access =		(void *)vop_ebadf,
@@ -100,7 +95,6 @@ struct vop_ops fifo_vnode_vops = {
 	.vop_getattr =		(void *)vop_ebadf,
 	.vop_inactive =		fifo_inactive,
 	.vop_ioctl =		fifo_ioctl,
-	.vop_kqfilter =		fifo_kqfilter,
 	.vop_old_link =		(void *)fifo_badop,
 	.vop_old_lookup =	fifo_lookup,
 	.vop_old_mkdir =	(void *)fifo_badop,
@@ -118,7 +112,8 @@ struct vop_ops fifo_vnode_vops = {
 	.vop_old_rmdir =	(void *)fifo_badop,
 	.vop_setattr =		(void *)vop_ebadf,
 	.vop_old_symlink =	(void *)fifo_badop,
-	.vop_write =		fifo_write
+	.vop_write =		fifo_write,
+	.vop_kev_filter =	fifo_kev_filter
 };
 
 VNODEOP_SET(fifo_vnode_vops);
@@ -366,99 +361,58 @@ fifo_ioctl(struct vop_ioctl_args *ap)
 	return (0);
 }
 
+static boolean_t
+fifo_filter_read(struct kev_filter_note *fn, long hint, caddr_t hook)
+{
+	struct vnode *vp = (void *)hook;
+	struct socket *so = vp->v_fifoinfo->fi_readsock;
+
+	lwkt_gettoken(&vp->v_token);
+	fn->fn_data = so->so_rcv.ssb_cc;
+	if ((so->so_state & SS_ISDISCONNECTED) && fn->fn_data == 0) {
+		fn->fn_flags |= EV_EOF;
+		lwkt_reltoken(&vp->v_token);
+		return (TRUE);
+	}
+	fn->fn_flags &= ~EV_EOF;
+	lwkt_reltoken(&vp->v_token);
+	return ((fn->fn_data > 0) ? TRUE : FALSE);
+}
+
+static boolean_t
+fifo_filter_write(struct kev_filter_note *fn, long hint, caddr_t hook)
+{
+	struct vnode *vp = (void *)hook;
+	struct socket *so = vp->v_fifoinfo->fi_writesock;
+
+	lwkt_gettoken(&vp->v_token);
+	fn->fn_data = ssb_space(&so->so_snd);
+	if (so->so_state & SS_ISDISCONNECTED) {
+		fn->fn_flags |= EV_EOF;
+		lwkt_reltoken(&vp->v_token);
+		return (TRUE);
+	}
+	fn->fn_flags &= ~EV_EOF;
+	lwkt_reltoken(&vp->v_token);
+	return (fn->fn_data >= so->so_snd.ssb_lowat);
+}
+
 /*
- * fifo_kqfilter(struct vnode *a_vp, struct knote *a_kn)
+ * fifo_kev_filter(struct vnode *a_vp, struct kev_filter *a_filt);
  */
-/* ARGSUSED */
 static int
-fifo_kqfilter(struct vop_kqfilter_args *ap)
+fifo_kev_filter(struct vop_kev_filter_args *ap)
 {
 	struct vnode *vp = ap->a_vp;
-	struct fifoinfo *fi = vp->v_fifoinfo;
-	struct socket *so;
-	struct signalsockbuf *ssb;
+	static struct kev_filter_ops kev_fops = {
+		.fop_read = { fifo_filter_read, KEV_FILTOP_NOTMPSAFE },
+		.fop_write = { fifo_filter_write, KEV_FILTOP_NOTMPSAFE }
+	};
 
-	lwkt_gettoken(&vp->v_token);
+	ap->a_filt->kf_hook = (caddr_t)vp;
+	ap->a_filt->kf_ops = &kev_fops;
 
-	switch (ap->a_kn->kn_filter) {
-	case EVFILT_READ:
-		ap->a_kn->kn_fop = &fiforead_filtops;
-		so = fi->fi_readsock;
-		ssb = &so->so_rcv;
-		break;
-	case EVFILT_WRITE:
-		ap->a_kn->kn_fop = &fifowrite_filtops;
-		so = fi->fi_writesock;
-		ssb = &so->so_snd;
-		break;
-	default:
-		lwkt_reltoken(&vp->v_token);
-		return (EOPNOTSUPP);
-	}
-
-	ap->a_kn->kn_hook = (caddr_t)vp;
-	ssb_insert_knote(ssb, ap->a_kn);
-
-	lwkt_reltoken(&vp->v_token);
 	return (0);
-}
-
-static void
-filt_fifordetach(struct knote *kn)
-{
-	struct vnode *vp = (void *)kn->kn_hook;
-	struct socket *so = vp->v_fifoinfo->fi_readsock;
-
-	lwkt_gettoken(&vp->v_token);
-	ssb_remove_knote(&so->so_rcv, kn);
-	lwkt_reltoken(&vp->v_token);
-}
-
-static int
-filt_fiforead(struct knote *kn, long hint)
-{
-	struct vnode *vp = (void *)kn->kn_hook;
-	struct socket *so = vp->v_fifoinfo->fi_readsock;
-
-	lwkt_gettoken(&vp->v_token);
-	kn->kn_data = so->so_rcv.ssb_cc;
-	if ((so->so_state & SS_ISDISCONNECTED) && kn->kn_data == 0) {
-		kn->kn_flags |= EV_EOF;
-		lwkt_reltoken(&vp->v_token);
-		return (1);
-	}
-	kn->kn_flags &= ~EV_EOF;
-	lwkt_reltoken(&vp->v_token);
-	return (kn->kn_data > 0);
-}
-
-static void
-filt_fifowdetach(struct knote *kn)
-{
-	struct vnode *vp = (void *)kn->kn_hook;
-	struct socket *so = vp->v_fifoinfo->fi_writesock;
-
-	lwkt_gettoken(&vp->v_token);
-	ssb_remove_knote(&so->so_snd, kn);
-	lwkt_reltoken(&vp->v_token);
-}
-
-static int
-filt_fifowrite(struct knote *kn, long hint)
-{
-	struct vnode *vp = (void *)kn->kn_hook;
-	struct socket *so = vp->v_fifoinfo->fi_writesock;
-
-	lwkt_gettoken(&vp->v_token);
-	kn->kn_data = ssb_space(&so->so_snd);
-	if (so->so_state & SS_ISDISCONNECTED) {
-		kn->kn_flags |= EV_EOF;
-		lwkt_reltoken(&vp->v_token);
-		return (1);
-	}
-	kn->kn_flags &= ~EV_EOF;
-	lwkt_reltoken(&vp->v_token);
-	return (kn->kn_data >= so->so_snd.ssb_lowat);
 }
 
 /*
