@@ -75,14 +75,6 @@
 #define MRT6_PIM                107     /* enable pim code */
 #define MRT6_INIT		108	/* initialize forwarder (mrt6msg) */
 
-#if BSD >= 199103
-#define GET_TIME(t)	microtime(&t)
-#elif defined(sun)
-#define GET_TIME(t)	uniqtime(&t)
-#else
-#define GET_TIME(t)	((t) = time)
-#endif
-
 /*
  * Types and macros for handling bitmaps with one bit per multicast interface.
  */

@@ -830,7 +830,7 @@ add_vif(struct vifctl *vifcp)
     lwkt_gettoken(&mroute_token);
     /* define parameters for the tbf structure */
     vifp->v_tbf = v_tbf;
-    GET_TIME(vifp->v_tbf->tbf_last_pkt_t);
+    microtime(&vifp->v_tbf->tbf_last_pkt_t);
     vifp->v_tbf->tbf_n_tok = 0;
     vifp->v_tbf->tbf_q_len = 0;
     vifp->v_tbf->tbf_max_q_len = MAXQSIZE;
@@ -1513,7 +1513,7 @@ ip_mdq(struct mbuf *m, struct ifnet *ifp, struct mfc *rt, vifi_t xmt_vif)
 	    if (rt->mfc_flags[vifi] & MRT_MFC_FLAGS_DISABLE_WRONGVIF)
 		return 0;	/* WRONGVIF disabled: ignore the packet */
 
-	    GET_TIME(now);
+	    microtime(&now);
 
 	    TV_DELTA(rt->mfc_last_assert, now, delta);
 
@@ -1585,7 +1585,7 @@ ip_mdq(struct mbuf *m, struct ifnet *ifp, struct mfc *rt, vifi_t xmt_vif)
 	struct bw_meter *x;
 	struct timeval now;
 
-	GET_TIME(now);
+	microtime(&now);
 	for (x = rt->mfc_bw_meter; x != NULL; x = x->bm_mfc_next)
 	    bw_meter_receive_packet(x, plen, &now);
     }
@@ -1969,7 +1969,7 @@ tbf_update_tokens(struct vif *vifp)
 
     lwkt_gettoken(&mroute_token);
 
-    GET_TIME(tp);
+    microtime(&tp);
 
     TV_DELTA(tp, t->tbf_last_pkt_t, tm);
 
@@ -2308,7 +2308,7 @@ add_bw_upcall(struct bw_upcall *req)
     
     /* Set the new bw_meter entry */
     x->bm_threshold.b_time = req->bu_threshold.b_time;
-    GET_TIME(now);
+    microtime(&now);
     x->bm_start_time = now;
     x->bm_threshold.b_packets = req->bu_threshold.b_packets;
     x->bm_threshold.b_bytes = req->bu_threshold.b_bytes;
@@ -2694,7 +2694,7 @@ bw_meter_process(void)
     int i;
     struct timeval now, process_endtime;
     
-    GET_TIME(now);
+    microtime(&now);
     if (last_tv_sec == now.tv_sec)
 	return;		/* nothing to do */
 

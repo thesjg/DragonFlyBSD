@@ -76,8 +76,6 @@
 #define MRT_DEL_BW_UPCALL 112	/* delete bandwidth monitor */
 
 
-#define GET_TIME(t)	microtime(&t)
-
 /*
  * Types and macros for handling bitmaps with one bit per virtual interface.
  */
