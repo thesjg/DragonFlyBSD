@@ -127,8 +127,8 @@ static int	bpf_setf(struct bpf_d *, struct bpf_program *, u_long cmd);
 static int	bpf_getdltlist(struct bpf_d *, struct bpf_dltlist *);
 static int	bpf_setdlt(struct bpf_d *, u_int);
 static void	bpf_drvinit(void *unused);
-static void	bpf_filter_detach(struct knote *kn);
-static int	bpf_filter_read(struct knote *kn, long hint);
+static boolean_t	bpf_filter_read(struct kev_filter_note *fn, long hint,
+    caddr_t hook);
 
 static d_open_t		bpfopen;
 static d_clone_t	bpfclone;
@@ -136,7 +136,6 @@ static d_close_t	bpfclose;
 static d_read_t		bpfread;
 static d_write_t	bpfwrite;
 static d_ioctl_t	bpfioctl;
-static d_kqfilter_t	bpfkqfilter;
 
 #define CDEV_MAJOR 23
 static struct dev_ops bpf_ops = {
@@ -145,8 +144,7 @@ static struct dev_ops bpf_ops = {
 	.d_close =	bpfclose,
 	.d_read =	bpfread,
 	.d_write =	bpfwrite,
-	.d_ioctl =	bpfioctl,
-	.d_kqfilter =	bpfkqfilter
+	.d_ioctl =	bpfioctl
 };
 
 
@@ -520,7 +518,7 @@ bpf_wakeup(struct bpf_d *d)
 		pgsigio(d->bd_sigio, d->bd_sig, 0);
 
 	get_mplock();
-	KNOTE(&d->bd_kq.ki_note, 0);
+	kev_filter(&d->bd_filter, 0, 0);
 	rel_mplock();
 }
 
@@ -1065,63 +1063,17 @@ bpf_setif(struct bpf_d *d, struct ifreq *ifr)
 	return(ENXIO);
 }
 
-static struct filterops bpf_read_filtops =
-	{ FILTEROP_ISFD, NULL, bpf_filter_detach, bpf_filter_read };
-
-static int
-bpfkqfilter(struct dev_kqfilter_args *ap)
+static boolean_t
+bpf_filter_read(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	cdev_t dev = ap->a_head.a_dev;
-	struct knote *kn = ap->a_kn;
-	struct klist *klist;
-	struct bpf_d *d;
-
-	d = dev->si_drv1;
-	if (d->bd_bif == NULL) {
-		ap->a_result = 1;
-		return (0);
-	}
-
-	ap->a_result = 0;
-	switch (kn->kn_filter) {
-	case EVFILT_READ:
-		kn->kn_fop = &bpf_read_filtops;
-		kn->kn_hook = (caddr_t)d;
-		break;
-	default:
-		ap->a_result = EOPNOTSUPP;
-		return (0);
-	}
-
-	klist = &d->bd_kq.ki_note;
-	knote_insert(klist, kn);
-
-	return (0);
-}
-
-static void
-bpf_filter_detach(struct knote *kn)
-{
-	struct klist *klist;
-	struct bpf_d *d;
-
-	d = (struct bpf_d *)kn->kn_hook;
-	klist = &d->bd_kq.ki_note;
-	knote_remove(klist, kn);
-}
-
-static int
-bpf_filter_read(struct knote *kn, long hint)
-{
-	struct bpf_d *d;
-	int ready = 0;
+	struct bpf_d *d = (struct bpf_d *)hook;
+	boolean_t ready = FALSE;
 
 	crit_enter();
-	d = (struct bpf_d *)kn->kn_hook;
 	if (d->bd_hlen != 0 ||
 	    ((d->bd_immediate || d->bd_state == BPF_TIMED_OUT) &&
 	    d->bd_slen != 0)) {
-		ready = 1;
+		ready = TRUE;
 	} else {
 		/* Start the read timeout if necessary. */
 		if (d->bd_rtout > 0 && d->bd_state == BPF_IDLE) {
@@ -1134,7 +1086,6 @@ bpf_filter_read(struct knote *kn, long hint)
 
 	return (ready);
 }
-
 
 /*
  * Process the packet pkt of length pktlen.  The packet is parsed
@@ -1571,12 +1522,29 @@ static void
 bpf_drvinit(void *unused)
 {
 	int i;
+	cdev_t dev;
+        struct bpf_d *d;
+	static struct kev_filter_ops kev_fops = {
+		.fop_read = { bpf_filter_read, KEV_FILTOP_NOTMPSAFE }
+	};
 
 	make_autoclone_dev(&bpf_ops, &DEVFS_CLONE_BITMAP(bpf),
 		bpfclone, 0, 0, 0600, "bpf");
 	for (i = 0; i < BPF_PREALLOCATED_UNITS; i++) {
-		make_dev(&bpf_ops, i, 0, 0, 0600, "bpf%d", i);
+		dev = make_dev(&bpf_ops, i, 0, 0, 0600, "bpf%d", i);
 		devfs_clone_bitmap_set(&DEVFS_CLONE_BITMAP(bpf), i);
+
+		/*
+		 * XXX, SJG
+		 *
+		 * We need to have the interface descriptor
+		 * (struct bpf_d *)->bd_bif
+		 * setup in order to poll on a bpf device, in this case
+		 * we should pass through the setup/constructor call
+		 * to this bpf driver so we can return in error?
+		 */
+		d = dev->si_drv1;
+		kev_dev_filter_init(dev, &kev_fops, (caddr_t)d);
 	}
 }
 

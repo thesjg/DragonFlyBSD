@@ -85,7 +85,7 @@ struct bpf_d {
 	int		bd_sig;		/* signal to send upon packet reception */
 	struct sigio *	bd_sigio;	/* information for async I/O */
 	u_char		bd_pad;		/* explicit alignment */
-	struct kqinfo	bd_kq;		/* bsd kqueue info */
+	struct kev_filter bd_filter;	/* kqueue filter info */
 	struct callout	bd_callout;	/* for BPF timeouts with select */
 	int		bd_locked;	/* true if descriptor is locked */
 };
