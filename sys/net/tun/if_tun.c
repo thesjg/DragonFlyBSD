@@ -77,16 +77,16 @@ static int tunoutput (struct ifnet *, struct mbuf *, struct sockaddr *,
 static int tunifioctl (struct ifnet *, u_long, caddr_t, struct ucred *);
 static int tuninit (struct ifnet *);
 static void tunstart(struct ifnet *);
-static void tun_filter_detach(struct knote *);
-static int tun_filter_read(struct knote *, long);
-static int tun_filter_write(struct knote *, long);
+static boolean_t	tun_filter_read(struct kev_filter_note *fn, long hint,
+    caddr_t hook);
+static boolean_t	tun_filter_write(struct kev_filter_note *fn, long hint,
+    caddr_t hook);
 
 static	d_open_t	tunopen;
 static	d_close_t	tunclose;
 static	d_read_t	tunread;
 static	d_write_t	tunwrite;
 static	d_ioctl_t	tunioctl;
-static	d_kqfilter_t	tunkqfilter;
 
 static d_clone_t tunclone;
 DEVFS_DECLARE_CLONE_BITMAP(tun);
@@ -103,19 +103,25 @@ static struct dev_ops tun_ops = {
 	.d_close =	tunclose,
 	.d_read =	tunread,
 	.d_write =	tunwrite,
-	.d_ioctl =	tunioctl,
-	.d_kqfilter =	tunkqfilter
+	.d_ioctl =	tunioctl
 };
 
 static void
 tunattach(void *dummy)
 {
 	int i;
+	cdev_t dev;
+	static struct kev_filter_ops kev_fops = {
+		.fop_read = { tun_filter_read },
+		.fop_write = { tun_filter_write }
+	};
+
 	make_autoclone_dev(&tun_ops, &DEVFS_CLONE_BITMAP(tun),
 		tunclone, UID_UUCP, GID_DIALER, 0600, "tun");
 	for (i = 0; i < TUN_PREALLOCATED_UNITS; i++) {
-		make_dev(&tun_ops, i, UID_UUCP, GID_DIALER, 0600, "tun%d", i);
+		dev = make_dev(&tun_ops, i, UID_UUCP, GID_DIALER, 0600, "tun%d", i);
 		devfs_clone_bitmap_set(&DEVFS_CLONE_BITMAP(tun), i);
+		kev_dev_filter_init(dev, &kev_fops, (caddr_t)dev->si_drv1);
 	}
 	/* Doesn't need uninit because unloading is not possible, see PSEUDO_SET */
 }
@@ -217,7 +223,7 @@ tunclose(struct dev_close_args *ap)
 	if_purgeaddrs_nolink(ifp);
 
 	funsetown(&tp->tun_sigio);
-	KNOTE(&tp->tun_rkq.ki_note, 0);
+	kev_filter(&tp->tun_filter, 0, 0);
 
 	TUNDEBUG(ifp, "closed\n");
 #if 0
@@ -398,7 +404,7 @@ tunoutput_serialized(struct ifnet *ifp, struct mbuf *m0, struct sockaddr *dst,
 			pgsigio(tp->tun_sigio, SIGIO, 0);
 		rel_mplock();
 		ifnet_deserialize_all(ifp);
-		KNOTE(&tp->tun_rkq.ki_note, 0);
+		kev_filter(&tp->tun_filter, 0, 0);
 		ifnet_serialize_all(ifp);
 	}
 	return (error);
@@ -700,72 +706,25 @@ tunwrite(struct dev_write_args *ap)
 	return (0);
 }
 
-static struct filterops tun_read_filtops =
-	{ FILTEROP_ISFD, NULL, tun_filter_detach, tun_filter_read };
-static struct filterops tun_write_filtops =
-	{ FILTEROP_ISFD, NULL, tun_filter_detach, tun_filter_write };
-
-static int
-tunkqfilter(struct dev_kqfilter_args *ap)
+static boolean_t
+tun_filter_read(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	cdev_t dev = ap->a_head.a_dev;
-	struct tun_softc *tp = dev->si_drv1;
-	struct knote *kn = ap->a_kn;
-	struct klist *klist;
-
-	ap->a_result = 0;
-	ifnet_serialize_all(&tp->tun_if);
-
-	switch (kn->kn_filter) {
-	case EVFILT_READ:
-		kn->kn_fop = &tun_read_filtops;
-		kn->kn_hook = (caddr_t)tp;
-		break;
-	case EVFILT_WRITE:
-		kn->kn_fop = &tun_write_filtops;
-		kn->kn_hook = (caddr_t)tp;
-		break;
-	default:
-		ifnet_deserialize_all(&tp->tun_if);
-		ap->a_result = EOPNOTSUPP;
-		return (0);
-	}
-
-	klist = &tp->tun_rkq.ki_note;
-	knote_insert(klist, kn);
-	ifnet_deserialize_all(&tp->tun_if);
-
-	return (0);
-}
-
-static void
-tun_filter_detach(struct knote *kn)
-{
-	struct tun_softc *tp = (struct tun_softc *)kn->kn_hook;
-	struct klist *klist = &tp->tun_rkq.ki_note;
-
-	knote_remove(klist, kn);
-}
-
-static int
-tun_filter_write(struct knote *kn, long hint)
-{
-	/* Always ready for a write */
-	return (1);
-}
-
-static int
-tun_filter_read(struct knote *kn, long hint)
-{
-	struct tun_softc *tp = (struct tun_softc *)kn->kn_hook;
-	int ready = 0;
+	struct tun_softc *tp = (struct tun_softc *)hook;
+	boolean_t ready = FALSE;
 
 	ifnet_serialize_all(&tp->tun_if);
 	if (!ifq_is_empty(&tp->tun_if.if_snd))
-		ready = 1;
+		ready = TRUE;
 	ifnet_deserialize_all(&tp->tun_if);
 
 	return (ready);
+}
+
+static boolean_t
+tun_filter_write(struct kev_filter_note *fn, long hint, caddr_t hook)
+{
+	/* Always ready for a write */
+	return (TRUE);
 }
 
 /*
@@ -792,7 +751,7 @@ tunstart(struct ifnet *ifp)
 		if (tp->tun_flags & TUN_ASYNC && tp->tun_sigio)
 			pgsigio(tp->tun_sigio, SIGIO, 0);
 		ifnet_deserialize_tx(ifp);
-		KNOTE(&tp->tun_rkq.ki_note, 0);
+		kev_filter(&tp->tun_filter, 0, 0);
 		ifnet_serialize_tx(ifp);
 	}
 }
