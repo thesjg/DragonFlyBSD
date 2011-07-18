@@ -105,7 +105,7 @@ struct ugen_endpoint {
 #define UGEN_SHORT_OK	0x04	/* short xfers are OK */
 	usbd_pipe_handle pipeh;
 	struct clist q;
-	struct kqinfo rkq;
+	struct kev_filter filter;
 	u_char *ibuf;		/* start of buffer (circular for isoc) */
 	u_char *fill;		/* location for input (isoc) */
 	u_char *limit;		/* end of circular buffer (isoc) */
@@ -137,11 +137,9 @@ d_close_t ugenclose;
 d_read_t  ugenread;
 d_write_t ugenwrite;
 d_ioctl_t ugenioctl;
-d_kqfilter_t ugenkqfilter;
 
-static void ugen_filt_detach(struct knote *);
-static int ugen_filt_read(struct knote *, long);
-static int ugen_filt_write(struct knote *, long);
+static boolean_t ugen_filter_read(struct kev_filter_note *, long, caddr_t);
+static boolean_t ugen_filter_write(struct kev_filter_note *, long, caddr_t);
 
 static struct dev_ops ugen_ops = {
 	{ "ugen", 0, 0 },
@@ -149,8 +147,7 @@ static struct dev_ops ugen_ops = {
 	.d_close =	ugenclose,
 	.d_read =	ugenread,
 	.d_write =	ugenwrite,
-	.d_ioctl =	ugenioctl,
-	.d_kqfilter = 	ugenkqfilter
+	.d_ioctl =	ugenioctl
 };
 
 static void ugenintr(usbd_xfer_handle xfer, usbd_private_handle addr,
@@ -218,6 +215,11 @@ ugen_attach(device_t self)
 	usbd_device_handle udev;
 	usbd_status err;
 	int conf;
+	cdev_t dev;
+	static struct kev_filter_ops kev_fops = {
+		.fop_read = { ugen_filter_read, KEV_FILTOP_NOTMPSAFE },
+		.fop_write = { ugen_filter_write, KEV_FILTOP_NOTMPSAFE }
+	};
 
 	sc->sc_dev = self;
 	sc->sc_udev = udev = uaa->device;
@@ -244,11 +246,13 @@ ugen_attach(device_t self)
 	}
 
 	/* the main device, ctrl endpoint */
-	make_dev(&ugen_ops, UGENMINOR(device_get_unit(sc->sc_dev), 0),
+	dev = make_dev(&ugen_ops, UGENMINOR(device_get_unit(sc->sc_dev), 0),
 		 UID_ROOT, GID_OPERATOR, 0644,
 		 "%s", device_get_nameunit(sc->sc_dev));
 
 	usbd_add_drv_event(USB_EVENT_DRIVER_ATTACH, sc->sc_udev, sc->sc_dev);
+	kev_dev_filter_init(dev, &kev_fops, (caddr_t)dev);
+
 	return 0;
 }
 
@@ -910,7 +914,7 @@ ugen_detach(device_t self)
 			sce = &sc->sc_endpoints[i][dir];
 			if (sce && sce->pipeh)
 				usbd_abort_pipe(sce->pipeh);
-			KNOTE(&sce->rkq.ki_note, 0);
+			kev_filter(&sce->filter, 0, 0);
 		}
 	}
 	crit_enter();
@@ -964,7 +968,7 @@ ugenintr(usbd_xfer_handle xfer, usbd_private_handle addr, usbd_status status)
 		DPRINTFN(5, ("ugen_intr: waking %p\n", sce));
 		wakeup(sce);
 	}
-	KNOTE(&sce->rkq.ki_note, 0);
+	kev_filter(&sce->filter, 0, 0);
 }
 
 static void
@@ -1024,7 +1028,7 @@ ugen_isoc_rintr(usbd_xfer_handle xfer, usbd_private_handle addr,
 		DPRINTFN(5, ("ugen_isoc_rintr: waking %p\n", sce));
 		wakeup(sce);
 	}
-	KNOTE(&sce->rkq.ki_note, 0);
+	kev_filter(&sce->filter, 0, 0);
 }
 
 static usbd_status
@@ -1422,11 +1426,13 @@ ugenioctl(struct dev_ioctl_args *ap)
 	return (error);
 }
 
-static struct filterops ugen_filtops_read =
-	{ FILTEROP_ISFD, NULL, ugen_filt_detach, ugen_filt_read };
-static struct filterops ugen_filtops_write =
-	{ FILTEROP_ISFD, NULL, ugen_filt_detach, ugen_filt_write };
-
+#if 0
+/*
+ * XXX, SJG:
+ *
+ * Should we do pass-through setup on this device so we can retain the checks
+ * as below?
+ */
 int
 ugenkqfilter(struct dev_kqfilter_args *ap)
 {
@@ -1472,41 +1478,15 @@ ugenkqfilter(struct dev_kqfilter_args *ap)
 
 	return (0);
 }
+#endif
 
-static void
-ugen_filt_detach(struct knote *kn)
+static boolean_t
+ugen_filter_read(struct kev_filter_note *fn , long hint, caddr_t hook)
 {
-	cdev_t dev = (cdev_t)kn->kn_hook;
-        struct ugen_softc *sc;
-        struct ugen_endpoint *sce;
-	struct klist *klist;
-
-        sc = devclass_get_softc(ugen_devclass, UGENUNIT(dev));
-
-	switch (kn->kn_filter) {
-	case EVFILT_READ:
-		sce = &sc->sc_endpoints[UGENENDPOINT(dev)][IN];
-		break;
-	case EVFILT_WRITE:
-		sce = &sc->sc_endpoints[UGENENDPOINT(dev)][OUT];
-		break;
-	default:
-		return;
-	}
-
-	if (sce->edesc != NULL || sce->pipeh != NULL) {
-		klist = &sce->rkq.ki_note;
-		knote_remove(klist, kn);
-	}
-}
-
-static int
-ugen_filt_read(struct knote *kn, long hint)
-{
-	cdev_t dev = (cdev_t)kn->kn_hook;
+	cdev_t dev = (cdev_t)hook;
 	struct ugen_softc *sc;
 	struct ugen_endpoint *sce;
-	int ready = 0;
+	boolean_t ready = FALSE;
 
 	sc = devclass_get_softc(ugen_devclass, UGENUNIT(dev));
 	sce = &sc->sc_endpoints[UGENENDPOINT(dev)][IN];
@@ -1514,14 +1494,14 @@ ugen_filt_read(struct knote *kn, long hint)
 	switch (sce->edesc->bmAttributes & UE_XFERTYPE) {
 	case UE_INTERRUPT:
 		if (sce->q.c_cc > 0)
-			ready = 1;
+			ready = TRUE;
 		break;
 	case UE_ISOCHRONOUS:
 		if (sce->cur != sce->fill)
-			ready = 1;
+			ready = TRUE;
 		break;
 	case UE_BULK:
-		ready = 1;
+		ready = TRUE;
 		break;
 	default:
 		break;
@@ -1530,13 +1510,13 @@ ugen_filt_read(struct knote *kn, long hint)
 	return (ready);
 }
 
-static int
-ugen_filt_write(struct knote *kn, long hint)
+static boolean_t
+ugen_filter_write(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	cdev_t dev = (cdev_t)kn->kn_hook;
+	cdev_t dev = (cdev_t)hook;
 	struct ugen_softc *sc;
 	struct ugen_endpoint *sce;
-	int ready = 0;
+	boolean_t ready = FALSE;
 
 	sc = devclass_get_softc(ugen_devclass, UGENUNIT(dev));
 	sce = &sc->sc_endpoints[UGENENDPOINT(dev)][OUT];
@@ -1544,14 +1524,14 @@ ugen_filt_write(struct knote *kn, long hint)
 	switch (sce->edesc->bmAttributes & UE_XFERTYPE) {
 	case UE_INTERRUPT:
 		if (sce->q.c_cc > 0)
-			ready = 1;
+			ready = TRUE;
 		break;
 	case UE_ISOCHRONOUS:
 		if (sce->cur != sce->fill)
-			ready = 1;
+			ready = TRUE;
 		break;
 	case UE_BULK:
-		ready = 1;
+		ready = TRUE;
 		break;
 	default:
 		break;

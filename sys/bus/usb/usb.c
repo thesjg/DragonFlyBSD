@@ -147,18 +147,16 @@ d_open_t  usbopen;
 d_close_t usbclose;
 d_read_t usbread;
 d_ioctl_t usbioctl;
-d_kqfilter_t usbkqfilter;
 
-static void usbfilt_detach(struct knote *);
-static int usbfilt(struct knote *, long);
+static boolean_t	usb_filter_read(struct kev_filter_note *fn, long hint,
+    caddr_t hook);
 
 static struct dev_ops usb_ops = {
 	{ "usb", 0, 0 },
 	.d_open =	usbopen,
 	.d_close =	usbclose,
 	.d_read =	usbread,
-	.d_ioctl =	usbioctl,
-	.d_kqfilter = 	usbkqfilter
+	.d_ioctl =	usbioctl
 };
 
 static void	usb_discover(device_t);
@@ -181,7 +179,7 @@ struct usb_event_q {
 static TAILQ_HEAD(, usb_event_q) usb_events =
 	TAILQ_HEAD_INITIALIZER(usb_events);
 static int usb_nevents = 0;
-static struct kqinfo usb_kqevent;
+static struct kev_filter usb_filter;
 static struct proc *usb_async_proc;  /* process that wants USB SIGIO */
 static int usb_dev_open = 0;
 static void usb_add_event(int, struct usb_event *);
@@ -234,6 +232,9 @@ usb_attach(device_t self)
 	int usbrev;
 	int speed;
 	struct usb_event ue;
+	static struct kev_filter_ops kev_fops = {
+		.fop_read = { usb_filter_read, KEV_FILTOP_NOTMPSAFE }
+	};
 
 	TUNABLE_INT_FETCH("hw.usb.hack_defer_exploration",
 	    &hack_defer_exploration);
@@ -325,11 +326,13 @@ usb_attach(device_t self)
 			   UID_ROOT, GID_OPERATOR, 0660,
 			   "usb%d", device_get_unit(self));
 	sc->sc_usbdev = reference_dev(tmp_dev);
+	kev_dev_filter_init(tmp_dev, &kev_fops, (caddr_t)tmp_dev);
 	if (usb_ndevs++ == 0) {
 		/* The device spitting out events */
 		tmp_dev = make_dev(&usb_ops, USB_DEV_MINOR,
 				   UID_ROOT, GID_OPERATOR, 0660, "usb");
 		usb_dev = reference_dev(tmp_dev);
+		kev_dev_filter_init(tmp_dev, &kev_fops, (caddr_t)tmp_dev);
 	}
 
 	return 0;
@@ -699,54 +702,17 @@ usbioctl(struct dev_ioctl_args *ap)
 	return (0);
 }
 
-static struct filterops usbfiltops =
-	{ FILTEROP_ISFD, NULL, usbfilt_detach, usbfilt };
-
-int
-usbkqfilter(struct dev_kqfilter_args *ap)
+static boolean_t
+usb_filter_read(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	cdev_t dev = ap->a_head.a_dev;
-	struct knote *kn = ap->a_kn;
-	struct klist *klist;
-
-	ap->a_result = 0;
-
-	switch (kn->kn_filter) {
-	case EVFILT_READ:
-		kn->kn_fop = &usbfiltops;
-		kn->kn_hook = (caddr_t)dev;
-		break;
-	default:
-		ap->a_result = EOPNOTSUPP;
-		return (0);
-	}
-
-	klist = &usb_kqevent.ki_note;
-	knote_insert(klist, kn);
-
-	return (0);
-}
-
-static void
-usbfilt_detach(struct knote *kn)
-{
-	struct klist *klist;
-
-	klist = &usb_kqevent.ki_note;
-	knote_remove(klist, kn);
-}
-
-static int
-usbfilt(struct knote *kn, long hint)
-{
-	cdev_t dev = (cdev_t)kn->kn_hook;
+	cdev_t dev = (cdev_t)hook;
 	int unit = USBUNIT(dev);
-	int ready = 0;
+	boolean_t ready = FALSE;
 
 	if (unit == USB_DEV_MINOR) {
 		crit_enter();
-		if (usb_nevents > 0)
-			ready = 1;
+		if (usb_nevents > 0);
+			ready = TRUE;
 		crit_exit();
 	}
 
@@ -869,7 +835,7 @@ usb_add_event(int type, struct usb_event *uep)
 	TAILQ_INSERT_TAIL(&usb_events, ueq, next);
 	usb_nevents++;
 	wakeup(&usb_events);
-	KNOTE(&usb_kqevent.ki_note, 0);
+	kev_filter(&usb_filter, 0, 0);
 	if (usb_async_proc != NULL) {
 		ksignal(usb_async_proc, SIGIO);
 	}

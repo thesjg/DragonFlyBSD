@@ -108,7 +108,7 @@ struct uhid_softc {
 	int sc_repdesc_size;
 
 	struct clist sc_q;
-	struct kqinfo sc_rkq;
+	struct kev_filter sc_filter;
 	struct proc *sc_async;	/* process that wants SIGIO */
 	u_char sc_state;	/* driver state */
 #define	UHID_OPEN	0x01	/* device is open */
@@ -129,11 +129,9 @@ d_close_t	uhidclose;
 d_read_t	uhidread;
 d_write_t	uhidwrite;
 d_ioctl_t	uhidioctl;
-d_kqfilter_t	uhidkqfilter;
 
-static void uhidfilt_detach(struct knote *);
-static int uhidfilt_read(struct knote *, long);
-static int uhidfilt_write(struct knote *, long);
+static boolean_t uhid_filter_read(struct kev_filter_note *, long, caddr_t);
+static boolean_t uhid_filter_write(struct kev_filter_note *, long, caddr_t);
 
 static struct dev_ops uhid_ops = {
 	{ "uhid", 0, 0 },
@@ -141,8 +139,7 @@ static struct dev_ops uhid_ops = {
 	.d_close =	uhidclose,
 	.d_read =	uhidread,
 	.d_write =	uhidwrite,
-	.d_ioctl =	uhidioctl,
-	.d_kqfilter =	uhidkqfilter
+	.d_ioctl =	uhidioctl
 };
 
 static void uhid_intr(usbd_xfer_handle, usbd_private_handle,
@@ -199,6 +196,11 @@ uhid_attach(device_t self)
 	int size;
 	void *desc;
 	usbd_status err;
+	cdev_t dev;
+	static struct kev_filter_ops kev_fops = {
+		.fop_read = { uhid_filter_read, KEV_FILTOP_NOTMPSAFE },
+		.fop_write = { uhid_filter_write, KEV_FILTOP_NOTMPSAFE }
+	};
 
 	sc->sc_udev = uaa->device;
 	sc->sc_iface = iface;
@@ -257,9 +259,10 @@ uhid_attach(device_t self)
 	sc->sc_repdesc = desc;
 	sc->sc_repdesc_size = size;
 
-	make_dev(&uhid_ops, device_get_unit(self),
+	dev = make_dev(&uhid_ops, device_get_unit(self),
 		 UID_ROOT, GID_OPERATOR,
 		 0644, "uhid%d", device_get_unit(self));
+	kev_dev_filter_init(dev, &kev_fops, (caddr_t)sc);
 
 	return 0;
 }
@@ -329,7 +332,7 @@ uhid_intr(usbd_xfer_handle xfer, usbd_private_handle addr, usbd_status status)
 		DPRINTFN(5, ("uhid_intr: waking %p\n", &sc->sc_q));
 		wakeup(&sc->sc_q);
 	}
-	KNOTE(&sc->sc_rkq.ki_note, 0);
+	kev_filter(&sc->sc_filter, 0, 0);
 	if (sc->sc_async != NULL) {
 		DPRINTFN(3, ("uhid_intr: sending SIGIO %p\n", sc->sc_async));
 		ksignal(sc->sc_async, SIGIO);
@@ -665,82 +668,45 @@ uhidioctl(struct dev_ioctl_args *ap)
 	return (error);
 }
 
-static struct filterops uhidfiltops_read =
-	{ FILTEROP_ISFD, NULL, uhidfilt_detach, uhidfilt_read };
-static struct filterops uhidfiltops_write =
-	{ FILTEROP_ISFD, NULL, uhidfilt_detach, uhidfilt_write };
-
+#if 0
+/*
+ * XXX, SJG:
+ *
+ * Maintain the sc_dying check?
+ */
 int
 uhidkqfilter(struct dev_kqfilter_args *ap)
 {
-	cdev_t dev = ap->a_head.a_dev;
-	struct knote *kn = ap->a_kn;
-	struct uhid_softc *sc;
-	struct klist *klist;
-
+...
 	sc = devclass_get_softc(uhid_devclass, UHIDUNIT(dev));
-
 	if (sc->sc_dying) {
 		ap->a_result = 1;
 		return (0);
 	}
-
-	ap->a_result = 0;
-
-	switch (kn->kn_filter) {
-	case EVFILT_READ:
-		kn->kn_fop = &uhidfiltops_read;
-		kn->kn_hook = (caddr_t)sc;
-		break;
-	case EVFILT_WRITE:
-		kn->kn_fop = &uhidfiltops_write;
-		kn->kn_hook = (caddr_t)sc;
-		break;
-	default:
-		ap->a_result = EOPNOTSUPP;
-		return (0);
-	}
-
-	klist = &sc->sc_rkq.ki_note;
-	knote_insert(klist, kn);
-
-	return (0);
 }
+#endif
 
-static void
-uhidfilt_detach(struct knote *kn)
+static boolean_t
+uhid_filter_read(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	cdev_t dev = (cdev_t)kn->kn_hook;
+	cdev_t dev = (cdev_t)hook;
 	struct uhid_softc *sc;
-	struct klist *klist;
-
-	sc = devclass_get_softc(uhid_devclass, UHIDUNIT(dev));
-
-	klist = &sc->sc_rkq.ki_note;
-	knote_remove(klist, kn);
-}
-
-static int
-uhidfilt_read(struct knote *kn, long hint)
-{
-	cdev_t dev = (cdev_t)kn->kn_hook;
-	struct uhid_softc *sc;
-	int ready = 0;
+	boolean_t ready = FALSE;
 
 	sc = devclass_get_softc(uhid_devclass, UHIDUNIT(dev));
 
 	crit_enter();
 	if (sc->sc_q.c_cc > 0)
-		ready = 1;
+		ready = TRUE;
 	crit_exit();
 
 	return (ready);
 }
 
-static int
-uhidfilt_write(struct knote *kn, long hint)
+static boolean_t
+uhid_filter_write(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	return (1);
+	return (TRUE);
 }
 
 DRIVER_MODULE(uhid, uhub, uhid_driver, uhid_devclass, usbd_driver_load, NULL);

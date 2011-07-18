@@ -119,7 +119,7 @@ struct ums_softc {
 
 	int		state;
 #	  define	UMS_ASLEEP	0x01	/* readFromDevice is waiting */
-	struct kqinfo	rkq;		/* process waiting in select/poll/kq */
+	struct kev_filter	filter;		/* process waiting in select/poll/kq */
 };
 
 #define MOUSE_FLAGS_MASK (HIO_CONST|HIO_RELATIVE)
@@ -139,18 +139,15 @@ static d_open_t  ums_open;
 static d_close_t ums_close;
 static d_read_t  ums_read;
 static d_ioctl_t ums_ioctl;
-static d_kqfilter_t ums_kqfilter;
 
-static void ums_filt_detach(struct knote *);
-static int ums_filt(struct knote *, long);
+static boolean_t ums_filter_read(struct kev_filter_note *, long, caddr_t);
 
 static struct dev_ops ums_ops = {
 	{ "ums", 0, 0 },
 	.d_open =	ums_open,
 	.d_close =	ums_close,
 	.d_read =	ums_read,
-	.d_ioctl =	ums_ioctl,
-	.d_kqfilter =	ums_kqfilter
+	.d_ioctl =	ums_ioctl
 };
 
 static device_probe_t ums_match;
@@ -216,6 +213,9 @@ ums_attach(device_t self)
 	u_int32_t flags;
 	int i;
 	struct hid_location loc_btn;
+	static struct kev_filter_ops kev_fops = {
+		.fop_read = { ums_filter_read, KEV_FILTOP_NOTMPSAFE }
+	};
 
 	sc->sc_disconnected = 1;
 	sc->sc_iface = iface;
@@ -344,6 +344,7 @@ ums_attach(device_t self)
 		 	       UID_ROOT, GID_OPERATOR,
 		 	       0644, "ums%d", device_get_unit(self));
 	reference_dev(sc->sc_cdev);
+	kev_dev_filter_init(sc->sc_cdev, &kev_fops, (caddr_t)sc);
 
 	if (usbd_get_quirks(uaa->device)->uq_flags & UQ_SPUR_BUT_UP) {
 		DPRINTF(("%s: Spurious button up events\n",
@@ -382,7 +383,14 @@ ums_detach(device_t self)
 	}
 
 	dev_ops_remove_minor(&ums_ops, /*-1, */device_get_unit(self));
-	devfs_assume_knotes(sc->sc_cdev, &sc->rkq);
+
+	/*
+	 * XXX, SJG
+	 *
+	 * Notify kevent subsystem of teardown, formerly:
+	 *     devfs_assume_knotes(sc->sc_cdev, &sc->rkq);
+	 */
+
 	release_dev(sc->sc_cdev);
         sc->sc_cdev = NULL;
 
@@ -514,7 +522,7 @@ ums_add_to_queue(struct ums_softc *sc, int dx, int dy, int dz, int buttons)
 		sc->state &= ~UMS_ASLEEP;
 		wakeup(sc);
 	}
-	KNOTE(&sc->rkq.ki_note, 0);
+	kev_filter(&sc->filter, 0, 0);
 }
 
 static int
@@ -667,55 +675,15 @@ ums_read(struct dev_read_args *ap)
 	return 0;
 }
 
-static struct filterops ums_filtops =
-	{ FILTEROP_ISFD, NULL, ums_filt_detach, ums_filt };
-
-static int
-ums_kqfilter(struct dev_kqfilter_args *ap)
+static boolean_t
+ums_filter_read(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	cdev_t dev = ap->a_head.a_dev;
-	struct knote *kn = ap->a_kn;
-	struct ums_softc *sc;
-	struct klist *klist;
-
-	ap->a_result = 0;
-
-	switch (kn->kn_filter) {
-	case EVFILT_READ:
-		sc = devclass_get_softc(ums_devclass, UMSUNIT(dev));
-		kn->kn_fop = &ums_filtops;
-		kn->kn_hook = (caddr_t)sc;
-		break;
-	default:
-		ap->a_result = EOPNOTSUPP;
-		return (0);
-	}
-
-	klist = &sc->rkq.ki_note;
-	knote_insert(klist, kn);
-
-	return (0);
-}
-
-static void
-ums_filt_detach(struct knote *kn)
-{
-	struct ums_softc *sc = (struct ums_softc *)kn->kn_hook;
-	struct klist *klist;
-
-	klist = &sc->rkq.ki_note;
-	knote_remove(klist, kn);
-}
-
-static int
-ums_filt(struct knote *kn, long hint)
-{
-	struct ums_softc *sc = (struct ums_softc *)kn->kn_hook;
-	int ready = 0;
+	struct ums_softc *sc = (struct ums_softc *)hook;
+	boolean_t ready = FALSE;
 
 	crit_enter();
 	if (sc->qcount)
-		ready = 1;
+		ready = TRUE;
 	crit_exit();
 
 	return (ready);
