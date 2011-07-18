@@ -117,7 +117,7 @@ struct dev_ops default_dev_ops = {
 	.d_psize = nopsize,
 	.d_clone = noclone,
 	.d_revoke = norevoke,
-//	.d_kev_filter = dev_kev_filter
+	.d_kev_filter = dev_kev_filter
 };
 
 static __inline
@@ -419,6 +419,31 @@ dev_dpsize(cdev_t dev)
 	if (error == 0)
 		return (ap.a_result);
 	return(-1);
+}
+
+/*
+ * Pass-thru to the device kev_filter.
+ *
+ * Note: Used in devfs_vnops.c only
+ */
+int
+dev_dkev_filter(cdev_t dev, struct kev_filter *filt)
+{
+	struct dev_kev_filter_args ap;
+	int needmplock = dev_needmplock(dev);
+	int error;
+
+	ap.a_head.a_desc = &dev_kev_filter_desc;
+	ap.a_head.a_dev = dev;
+	ap.a_filt = filt;
+
+	if (needmplock)
+		get_mplock();
+	error = dev->si_ops->d_kev_filter(&ap);
+	if (needmplock)
+		rel_mplock();
+
+	return(error);
 }
 
 /************************************************************************

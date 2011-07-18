@@ -291,6 +291,7 @@ int dev_dwrite(cdev_t dev, struct uio *uio, int ioflag);
 int dev_dmmap(cdev_t dev, vm_offset_t offset, int nprot);
 int dev_dclone(cdev_t dev);
 int dev_drevoke(cdev_t dev);
+int dev_dkev_filter(cdev_t dev, struct kev_filter *filt);
 
 int dev_drefs(cdev_t dev);
 const char *dev_dname(cdev_t dev);
@@ -326,6 +327,7 @@ extern struct syslink_desc dev_psize_desc;
 extern struct syslink_desc dev_mmap_desc;
 extern struct syslink_desc dev_strategu_desc;
 extern struct syslink_desc dev_clone_desc;
+extern struct syslink_desc dev_kev_filter_desc;
 
 void compile_dev_ops(struct dev_ops *);
 int dev_ops_remove_all(struct dev_ops *ops);

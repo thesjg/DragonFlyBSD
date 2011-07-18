@@ -83,12 +83,12 @@ static int hammer_vop_nsymlink(struct vop_nsymlink_args *);
 static int hammer_vop_nwhiteout(struct vop_nwhiteout_args *);
 static int hammer_vop_ioctl(struct vop_ioctl_args *);
 static int hammer_vop_mountctl(struct vop_mountctl_args *);
-static int hammer_vop_kqfilter (struct vop_kqfilter_args *);
+static int hammer_vop_kev_filter (struct vop_kev_filter_args *);
 
 static int hammer_vop_fifoclose (struct vop_close_args *);
 static int hammer_vop_fiforead (struct vop_read_args *);
 static int hammer_vop_fifowrite (struct vop_write_args *);
-static int hammer_vop_fifokqfilter (struct vop_kqfilter_args *);
+static int hammer_vop_fifokev_filter (struct vop_kev_filter_args *);
 
 struct vop_ops hammer_vnode_vops = {
 	.vop_default =		vop_defaultop,
@@ -125,7 +125,7 @@ struct vop_ops hammer_vnode_vops = {
 	.vop_nwhiteout =	hammer_vop_nwhiteout,
 	.vop_ioctl =		hammer_vop_ioctl,
 	.vop_mountctl =		hammer_vop_mountctl,
-	.vop_kqfilter =		hammer_vop_kqfilter
+	.vop_kev_filter =	hammer_vop_kev_filter
 };
 
 struct vop_ops hammer_spec_vops = {
@@ -154,7 +154,7 @@ struct vop_ops hammer_fifo_vops = {
 	.vop_inactive =		hammer_vop_inactive,
 	.vop_reclaim =		hammer_vop_reclaim,
 	.vop_setattr =		hammer_vop_setattr,
-	.vop_kqfilter =		hammer_vop_fifokqfilter
+	.vop_kev_filter =	hammer_vop_fifokev_filter
 };
 
 static __inline
@@ -162,7 +162,7 @@ void
 hammer_knote(struct vnode *vp, int flags)
 {
 	if (flags)
-		KNOTE(&vp->v_pollinfo.vpi_kqinfo.ki_note, flags);
+		kev_filter(&vp->v_filter, 0, flags);
 }
 
 #ifdef DEBUG_TRUNCATE
@@ -3589,108 +3589,90 @@ hammer_vop_fifowrite (struct vop_write_args *ap)
 
 static
 int
-hammer_vop_fifokqfilter(struct vop_kqfilter_args *ap)
+hammer_vop_fifokev_filter(struct vop_kev_filter_args *ap)
 {
 	int error;
 
 	error = VOCALL(&fifo_vnode_vops, &ap->a_head);
 	if (error)
-		error = hammer_vop_kqfilter(ap);
+		error = hammer_vop_kev_filter(ap);
 	return(error);
 }
 
 /************************************************************************
- *			    KQFILTER OPS				*
+ *			    KEVENT FILTER OPS				*
  ************************************************************************
  *
  */
-static void filt_hammerdetach(struct knote *kn);
-static int filt_hammerread(struct knote *kn, long hint);
-static int filt_hammerwrite(struct knote *kn, long hint);
-static int filt_hammervnode(struct knote *kn, long hint);
-
-static struct filterops hammerread_filtops =
-	{ FILTEROP_ISFD, NULL, filt_hammerdetach, filt_hammerread };
-static struct filterops hammerwrite_filtops =
-	{ FILTEROP_ISFD, NULL, filt_hammerdetach, filt_hammerwrite };
-static struct filterops hammervnode_filtops =
-	{ FILTEROP_ISFD, NULL, filt_hammerdetach, filt_hammervnode };
+static boolean_t	hammer_filter_read (struct kev_filter_note *fn,
+    long hint, caddr_t hook);
+static boolean_t	hammer_filter_write (struct kev_filter_note *fn,
+    long hint, caddr_t hook);
+static boolean_t	hammer_filter_vnode (struct kev_filter_note *fn,
+    long hint, caddr_t hook);
 
 static
-int
-hammer_vop_kqfilter(struct vop_kqfilter_args *ap)
+boolean_t
+hammer_filter_read(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	struct vnode *vp = ap->a_vp;
-	struct knote *kn = ap->a_kn;
-
-	switch (kn->kn_filter) {
-	case EVFILT_READ:
-		kn->kn_fop = &hammerread_filtops;
-		break;
-	case EVFILT_WRITE:
-		kn->kn_fop = &hammerwrite_filtops;
-		break;
-	case EVFILT_VNODE:
-		kn->kn_fop = &hammervnode_filtops;
-		break;
-	default:
-		return (EOPNOTSUPP);
-	}
-
-	kn->kn_hook = (caddr_t)vp;
-
-	knote_insert(&vp->v_pollinfo.vpi_kqinfo.ki_note, kn);
-
-	return(0);
-}
-
-static void
-filt_hammerdetach(struct knote *kn)
-{
-	struct vnode *vp = (void *)kn->kn_hook;
-
-	knote_remove(&vp->v_pollinfo.vpi_kqinfo.ki_note, kn);
-}
-
-static int
-filt_hammerread(struct knote *kn, long hint)
-{
-	struct vnode *vp = (void *)kn->kn_hook;
+	struct vnode *vp = (void *)hook;
 	hammer_inode_t ip = VTOI(vp);
 	hammer_mount_t hmp = ip->hmp;
 	off_t off;
 
 	if (hint == NOTE_REVOKE) {
-		kn->kn_flags |= (EV_EOF | EV_ONESHOT);
-		return(1);
+		fn->fn_flags |= (EV_EOF | EV_ONESHOT);
+		return (TRUE);
 	}
-	lwkt_gettoken(&hmp->fs_token);	/* XXX use per-ip-token */
-	off = ip->ino_data.size - kn->kn_fp->f_offset;
-	kn->kn_data = (off < INTPTR_MAX) ? off : INTPTR_MAX;
+	lwkt_gettoken(&hmp->fs_token);  /* XXX use per-ip-token */
+	off = ip->ino_data.size - fn->fn_entry->fe_ptr.p_fp->f_offset;
+	fn->fn_data = (off < INTPTR_MAX) ? off : INTPTR_MAX;
 	lwkt_reltoken(&hmp->fs_token);
-	if (kn->kn_sfflags & NOTE_OLDAPI)
-		return(1);
-	return (kn->kn_data != 0);
+	if (fn->fn_ufflags & NOTE_OLDAPI)
+		return (TRUE);
+	return (fn->fn_data != 0);
 }
 
-static int
-filt_hammerwrite(struct knote *kn, long hint)
+static
+boolean_t
+hammer_filter_write(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
 	if (hint == NOTE_REVOKE)
-		kn->kn_flags |= (EV_EOF | EV_ONESHOT);
-	kn->kn_data = 0;
-	return (1);
+		fn->fn_flags |= (EV_EOF | EV_ONESHOT);
+	fn->fn_data = 0;
+	return (TRUE);
 }
 
-static int
-filt_hammervnode(struct knote *kn, long hint)
+static
+boolean_t
+hammer_filter_vnode(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	if (kn->kn_sfflags & hint)
-		kn->kn_fflags |= hint;
-	if (hint == NOTE_REVOKE) {
-		kn->kn_flags |= EV_EOF;
-		return (1);
-	}
-	return (kn->kn_fflags != 0);
+        if (fn->fn_ufflags & hint)
+                fn->fn_fflags |= hint;
+        if (hint == NOTE_REVOKE) {
+                fn->fn_flags |= EV_EOF;
+                return (TRUE);
+        }
+        return ((fn->fn_fflags != 0) ? TRUE : FALSE);
+}
+
+/*
+ * hammer_vop_kev_filter(struct vnode *a_vp, struct kev_filter *a_filt);
+ */
+static
+int
+hammer_vop_kev_filter(struct vop_kev_filter_args *ap)
+{
+	struct vnode *vp = ap->a_vp;
+	static struct kev_filter_ops kev_fops = {
+		.fop_read = { hammer_filter_read, KEV_FILTOP_NOTMPSAFE },
+		.fop_write = { hammer_filter_write, KEV_FILTOP_NOTMPSAFE },
+		.fop_special = { hammer_filter_vnode, KEV_FILTOP_NOTMPSAFE }
+	};
+
+	ap->a_filt->kf_hook = (caddr_t)vp;
+	ap->a_filt->kf_ops = &kev_fops;
+
+	return (0);
 }
 

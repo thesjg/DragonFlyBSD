@@ -98,7 +98,7 @@ static int devfs_spec_fsync(struct vop_fsync_args *);
 static int devfs_spec_read(struct vop_read_args *);
 static int devfs_spec_write(struct vop_write_args *);
 static int devfs_spec_ioctl(struct vop_ioctl_args *);
-static int devfs_spec_kqfilter(struct vop_kqfilter_args *);
+static int devfs_spec_kev_filter(struct vop_kev_filter_args *);
 static int devfs_spec_strategy(struct vop_strategy_args *);
 static void devfs_spec_strategy_done(struct bio *);
 static int devfs_spec_freeblks(struct vop_freeblks_args *);
@@ -1377,7 +1377,7 @@ devfs_fo_kev_filter(struct file *fp, struct kev_filter *filt)
 	}
 	reference_dev(dev);
 
-	error = dev_kev_filter(dev, filt);
+	error = dev_dkev_filter(dev, filt);
 
 	release_dev(dev);
 
@@ -1611,7 +1611,7 @@ devfs_spec_kev_filter(struct vop_kev_filter_args *ap)
 		return (EBADF);		/* device was revoked (EBADF) */
 	node = DEVFS_NODE(vp);
 
-	return (dev_kev_filter(dev, ap->a_filt));
+	return (dev_dkev_filter(dev, ap->a_filt));
 }
 
 /*
