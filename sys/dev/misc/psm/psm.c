@@ -256,7 +256,7 @@ typedef struct synapticsaction {
 /* driver control block */
 struct psm_softc {		/* Driver status information */
 	int		unit;
-	struct kqinfo rkq;	   /* Processes with registered kevents */
+	struct kev_filter filter;	/* Processes with registered kevents */
 	u_char		state;		/* Mouse driver state */
 	int		config;		/* driver configuration flags */
 	int		flags;		/* other flags */
@@ -378,7 +378,6 @@ static d_close_t	psmclose;
 static d_read_t		psmread;
 static d_write_t	psmwrite;
 static d_ioctl_t	psmioctl;
-static d_kqfilter_t psmkqfilter;
 
 static int	enable_aux_dev(KBDC);
 static int	disable_aux_dev(KBDC);
@@ -399,8 +398,8 @@ static char	*model_name(int);
 static void	psmsoftintr(void *);
 static void	psmintr(void *);
 static void	psmtimeout(void *);
-static void    psmfilter_detach(struct knote *);
-static int     psmfilter(struct knote *, long);
+static boolean_t        psm_filter_read(struct kev_filter_note *fn, long hint,
+    caddr_t hook);
 static int	timeelapsed(const struct timeval *, int, int,
 		    const struct timeval *);
 static void	dropqueue(struct psm_softc *);
@@ -494,8 +493,7 @@ static struct dev_ops psm_ops = {
 	.d_close =  psmclose,
 	.d_read =   psmread,
 	.d_write =  psmwrite,
-	.d_ioctl =  psmioctl,
-	.d_kqfilter =	 psmkqfilter
+	.d_ioctl =  psmioctl
 };
 
 /* device I/O routines */
@@ -1422,6 +1420,10 @@ psmattach(device_t dev)
 	int error;
 	intptr_t irq;
 	int rid;
+	cdev_t cdev;
+	static struct kev_filter_ops kev_fops = {
+		.fop_read = { psm_filter_read, KEV_FILTOP_NOTMPSAFE }
+	};
 
 	/* Setup initial state */
 	sc->state = PSM_VALID;
@@ -1444,8 +1446,13 @@ psmattach(device_t dev)
 	}
 
 	/* Done */
-	make_dev(&psm_ops, PSM_MKMINOR(unit, FALSE), 0, 0, 0666, "psm%d", unit);
-	make_dev(&psm_ops, PSM_MKMINOR(unit, TRUE), 0, 0, 0666, "bpsm%d", unit);
+	cdev = make_dev(&psm_ops, PSM_MKMINOR(unit, FALSE), 0, 0, 0666, "psm%d",
+	    unit);
+	kev_dev_filter_init(cdev, &kev_fops, (caddr_t)sc);
+
+	cdev = make_dev(&psm_ops, PSM_MKMINOR(unit, TRUE), 0, 0, 0666, "bpsm%d",
+	    unit);
+	kev_dev_filter_init(cdev, &kev_fops, (caddr_t)sc);
 
 	if (!verbose)
 		kprintf("psm%d: model %s, device ID %d\n",
@@ -3487,60 +3494,21 @@ next:
 		sc->state &= ~PSM_ASLP;
 		wakeup(sc);
 	}
-	KNOTE(&sc->rkq.ki_note, 0);
+	kev_filter(&sc->filter, 0, 0);
 
 	sc->state &= ~PSM_SOFTARMED;
 	crit_exit();
 }
 
-static struct filterops psmfiltops =
-	{ FILTEROP_ISFD, NULL, psmfilter_detach, psmfilter };
-
-static int
-psmkqfilter(struct dev_kqfilter_args *ap)
+static boolean_t
+psm_filter_read(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	cdev_t dev = ap->a_head.a_dev;
-	struct psm_softc *sc = PSM_SOFTC(PSM_UNIT(dev));
-	struct knote *kn = ap->a_kn;
-	struct klist *klist;
-
-	ap->a_result = 0;
-
-	switch (kn->kn_filter) {
-		case EVFILT_READ:
-			kn->kn_fop = &psmfiltops;
-			kn->kn_hook = (caddr_t)sc;
-			break;
-		default:
-			ap->a_result = EOPNOTSUPP;
-			return (0);
-	}
-
-	klist = &sc->rkq.ki_note;
-	knote_insert(klist, kn);
-
-	return (0);
-}
-
-static void
-psmfilter_detach(struct knote *kn)
-{
-	struct psm_softc *sc = (struct psm_softc *)kn->kn_hook;
-	struct klist *klist;
-
-	klist = &sc->rkq.ki_note;
-	knote_remove(klist, kn);
-}
-
-static int
-psmfilter(struct knote *kn, long hint)
-{
-	struct psm_softc *sc = (struct psm_softc *)kn->kn_hook;
-	int ready = 0;
+	struct psm_softc *sc = (struct psm_softc *)hook;
+	boolean_t ready = FALSE;
 
 	crit_enter();
 	if (sc->queue.count > 0)
-		ready = 1;
+		ready = TRUE;
 	crit_exit();
 
 	return (ready);

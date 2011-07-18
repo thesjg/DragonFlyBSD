@@ -244,7 +244,6 @@ static struct dev_ops sc_ops = {
 	.d_write =	ttywrite,
 	.d_ioctl =	scioctl,
 	.d_mmap =	scmmap,
-	.d_kqfilter =	ttykqfilter,
 	.d_revoke =	ttyrevoke
 };
 
@@ -363,6 +362,7 @@ sc_attach_unit(int unit, int flags)
 			      "ttyv%r", sc_console_unit*MAXCONS);
 	sc->dev[0]->si_tty = ttymalloc(sc->dev[0]->si_tty);
 	sc->dev[0]->si_drv1 = sc_console;
+	kev_dev_filter_init(sc->dev[0], &tty_fops, (caddr_t)sc->dev[0]);
     }
 
     /*
@@ -434,11 +434,13 @@ sc_attach_unit(int unit, int flags)
 			UID_ROOT, GID_WHEEL,
 			0600, "ttyv%r", vc + unit * MAXCONS);
 	sc->dev[vc] = dev;
+	kev_dev_filter_init(dev, &tty_fops, (caddr_t)dev);
     }
     cctl_dev = make_dev(&sc_ops, SC_CONSOLECTL,
 			UID_ROOT, GID_WHEEL, 0600, "consolectl");
     cctl_dev->si_tty = sc_console_tty = ttymalloc(sc_console_tty);
     cctl_dev->si_drv1 = sc_console;
+    kev_dev_filter_init(cctl_dev, &tty_fops, (caddr_t)cctl_dev);
     return 0;
 }
 
@@ -2874,6 +2876,7 @@ scinit(int unit, int flags)
 	    sc->dev[0]->si_tty = ttymalloc(sc->dev[0]->si_tty);
 	    scp = alloc_scp(sc, sc->first_vty);
 	    sc->dev[0]->si_drv1 = scp;
+	    kev_dev_filter_init(sc->dev[0], &tty_fops, (caddr_t)sc->dev[0]);
 	}
 	sc->cur_scp = scp;
 

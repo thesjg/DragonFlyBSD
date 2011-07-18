@@ -63,7 +63,6 @@ static struct dev_ops sm_ops = {
 	.d_close =	smclose,
 	.d_read =	ttyread,
 	.d_ioctl =	smioctl,
-	.d_kqfilter =	ttykqfilter,
 	.d_revoke =	ttyrevoke
 };
 
@@ -288,6 +287,7 @@ sm_attach_mouse(void *unused)
 
 	dev = make_dev(&sm_ops, SC_MOUSE, UID_ROOT, GID_WHEEL,
 		       0600, "sysmouse");
+	kev_dev_filter_init(dev, &tty_fops, (caddr_t)dev);
 	/* sysmouse doesn't have scr_stat */
 }
 

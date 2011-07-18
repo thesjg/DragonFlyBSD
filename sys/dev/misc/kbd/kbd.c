@@ -70,7 +70,7 @@
 struct genkbd_softc {
 	int		gkb_flags;	/* flag/status bits */
 #define KB_ASLEEP	(1 << 0)
-	struct kqinfo	gkb_rkq;
+	struct kev_filter	gkb_filter;
 	char		gkb_q[KB_QSIZE];		/* input queue */
 	unsigned int	gkb_q_start;
 	unsigned int	gkb_q_length;
@@ -575,10 +575,8 @@ static d_close_t	genkbdclose;
 static d_read_t		genkbdread;
 static d_write_t	genkbdwrite;
 static d_ioctl_t	genkbdioctl;
-static d_kqfilter_t	genkbdkqfilter;
 
-static void genkbdfiltdetach(struct knote *);
-static int genkbdfilter(struct knote *, long);
+static boolean_t genkbd_filter_read(struct kev_filter_note *, long, caddr_t);
 
 static struct dev_ops kbd_ops = {
 	{ "kbd", 0, 0 },
@@ -586,8 +584,7 @@ static struct dev_ops kbd_ops = {
 	.d_close =	genkbdclose,
 	.d_read =	genkbdread,
 	.d_write =	genkbdwrite,
-	.d_ioctl =	genkbdioctl,
-	.d_kqfilter =	genkbdkqfilter
+	.d_ioctl =	genkbdioctl
 };
 
 /*
@@ -600,6 +597,9 @@ int
 kbd_attach(keyboard_t *kbd)
 {
 	cdev_t dev;
+	static struct kev_filter_ops kev_fops = {
+		.fop_read = { genkbd_filter_read, KEV_FILTOP_NOTMPSAFE }
+	};
 
 	lwkt_gettoken(&tty_token);
 	if (kbd->kb_index >= keyboards) {
@@ -615,6 +615,8 @@ kbd_attach(keyboard_t *kbd)
 		kbd->kb_dev = make_dev(&kbd_ops, kbd->kb_index,
 				       UID_ROOT, GID_WHEEL, 0600,
 				       "kbd%r", kbd->kb_index);
+		kev_dev_filter_init(kbd->kb_dev, &kev_fops,
+		    (caddr_t)kbd->kb_dev);
 	}
 	dev = kbd->kb_dev;
 	if (dev->si_drv1 == NULL) {
@@ -869,66 +871,24 @@ genkbdioctl(struct dev_ioctl_args *ap)
 	return error;
 }
 
-static struct filterops genkbdfiltops =
-	{ FILTEROP_ISFD, NULL, genkbdfiltdetach, genkbdfilter };
-
-static int
-genkbdkqfilter(struct dev_kqfilter_args *ap)
+static boolean_t
+genkbd_filter_read(struct kev_filter_note *fn, long hint , caddr_t hook)
 {
-	cdev_t dev = ap->a_head.a_dev;
-	struct knote *kn = ap->a_kn;
-	genkbd_softc_t sc;
-	struct klist *klist;
-
-	ap->a_result = 0;
-
-	switch (kn->kn_filter) {
-	case EVFILT_READ:
-		kn->kn_fop = &genkbdfiltops;
-		kn->kn_hook = (caddr_t)dev;
-		break;
-	default:
-		ap->a_result = EOPNOTSUPP;
-		return (0);
-	}
-
-	sc = dev->si_drv1;
-	klist = &sc->gkb_rkq.ki_note;
-	knote_insert(klist, kn);
-
-	return (0);
-}
-
-static void
-genkbdfiltdetach(struct knote *kn)
-{
-	cdev_t dev = (cdev_t)kn->kn_hook;
-	genkbd_softc_t sc;
-	struct klist *klist;
-
-	sc = dev->si_drv1;
-	klist = &sc->gkb_rkq.ki_note;
-	knote_remove(klist, kn);
-}
-
-static int
-genkbdfilter(struct knote *kn, long hint)
-{
-	cdev_t dev = (cdev_t)kn->kn_hook;
+	cdev_t dev = (cdev_t)hook;
 	keyboard_t *kbd;
 	genkbd_softc_t sc;
-	int ready = 0;
+	boolean_t ready = FALSE;
 
 	crit_enter();
 	lwkt_gettoken(&tty_token);
 	sc = dev->si_drv1;
         kbd = kbd_get_keyboard(KBD_INDEX(dev));
 	if ((sc == NULL) || (kbd == NULL) || !KBD_IS_VALID(kbd)) {
-		kn->kn_flags |= EV_EOF;	/* the keyboard has gone */
-		ready = 1;
+		fn->fn_flags |= EV_EOF;	/* the keyboard has gone */
+		ready = TRUE;
 	} else {
 		if (sc->gkb_q_length > 0)
-                        ready = 1;
+                        ready = TRUE;
         }
 	lwkt_reltoken(&tty_token);
 	crit_exit();
@@ -959,7 +919,7 @@ genkbd_event(keyboard_t *kbd, int event, void *arg)
 			sc->gkb_flags &= ~KB_ASLEEP;
 			wakeup((caddr_t)sc);
 		}
-		KNOTE(&sc->gkb_rkq.ki_note, 0);
+		kev_filter(&sc->gkb_filter, 0, 0);
 		lwkt_reltoken(&tty_token);
 		return 0;
 	default:
@@ -1031,7 +991,7 @@ genkbd_event(keyboard_t *kbd, int event, void *arg)
 			sc->gkb_flags &= ~KB_ASLEEP;
 			wakeup((caddr_t)sc);
 		}
-		KNOTE(&sc->gkb_rkq.ki_note, 0);
+		kev_filter(&sc->gkb_filter, 0, 0);
 	}
 
 	lwkt_reltoken(&tty_token);

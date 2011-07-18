@@ -148,7 +148,7 @@ static struct dev_ops ptc_ops = {
 	.d_revoke =	ttyrevoke
 };
 
-static struct kev_filter_ops kev_pts_fops = {
+struct kev_filter_ops tty_fops = {
 	.fop_read = { tty_filter_read },
 	.fop_write = { tty_filter_write }
 };
@@ -229,7 +229,7 @@ ptyinit(int n)
 	devs->si_flags |= SI_OVERRIDE;	/* uid, gid, perms from dev */
 	devc->si_flags |= SI_OVERRIDE;	/* uid, gid, perms from dev */
 
-	kev_dev_filter_init(pt->devs, &kev_pts_fops, (caddr_t)pt->devs);
+	kev_dev_filter_init(pt->devs, &tty_fops, (caddr_t)pt->devs);
 	kev_dev_filter_init(pt->devc, &kev_ptc_fops, (caddr_t)pt->devc);
 
 	ttyregister(&pt->pt_tty);
@@ -275,7 +275,7 @@ ptyclone(struct dev_clone_args *ap)
 	pt->devs->si_drv1 = pt->devc->si_drv1 = pt;
 	pt->devs->si_tty = pt->devc->si_tty = &pt->pt_tty;
 
-	kev_dev_filter_init(pt->devs, &kev_pts_fops, (caddr_t)pt->devs);
+	kev_dev_filter_init(pt->devs, &tty_fops, (caddr_t)pt->devs);
 	kev_dev_filter_init(pt->devc, &kev_ptc_fops, (caddr_t)pt->devc);
 
 	ttyregister(&pt->pt_tty);

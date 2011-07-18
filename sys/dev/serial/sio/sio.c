@@ -256,7 +256,6 @@ static struct dev_ops sio_ops = {
 	.d_read =	sioread,
 	.d_write =	siowrite,
 	.d_ioctl =	sioioctl,
-	.d_kqfilter =	ttykqfilter,
 	.d_revoke =	ttyrevoke
 };
 
@@ -974,6 +973,7 @@ sioattach(device_t dev, int xrid, u_long rclk)
 	struct resource *port;
 	int		ret;
 	static int	did_init;
+	cdev_t		cdev;
 
 	lwkt_gettoken(&tty_token);
 	if (did_init == 0) {
@@ -1196,18 +1196,24 @@ determined_type: ;
 		sio_registered = TRUE;
 	}
 	minorbase = UNIT_TO_MINOR(unit);
-	make_dev(&sio_ops, minorbase,
+	cdev = make_dev(&sio_ops, minorbase,
 	    UID_ROOT, GID_WHEEL, 0600, "ttyd%r", unit);
-	make_dev(&sio_ops, minorbase | CONTROL_INIT_STATE,
+	kev_dev_filter_init(cdev, &tty_fops, (caddr_t)cdev);
+	cdev = make_dev(&sio_ops, minorbase | CONTROL_INIT_STATE,
 	    UID_ROOT, GID_WHEEL, 0600, "ttyid%r", unit);
-	make_dev(&sio_ops, minorbase | CONTROL_LOCK_STATE,
+	kev_dev_filter_init(cdev, &tty_fops, (caddr_t)cdev);
+	cdev = make_dev(&sio_ops, minorbase | CONTROL_LOCK_STATE,
 	    UID_ROOT, GID_WHEEL, 0600, "ttyld%r", unit);
-	make_dev(&sio_ops, minorbase | CALLOUT_MASK,
+	kev_dev_filter_init(cdev, &tty_fops, (caddr_t)cdev);
+	cdev = make_dev(&sio_ops, minorbase | CALLOUT_MASK,
 	    UID_UUCP, GID_DIALER, 0660, "cuaa%r", unit);
-	make_dev(&sio_ops, minorbase | CALLOUT_MASK | CONTROL_INIT_STATE,
+	kev_dev_filter_init(cdev, &tty_fops, (caddr_t)cdev);
+	cdev = make_dev(&sio_ops, minorbase | CALLOUT_MASK | CONTROL_INIT_STATE,
 	    UID_UUCP, GID_DIALER, 0660, "cuaia%r", unit);
-	make_dev(&sio_ops, minorbase | CALLOUT_MASK | CONTROL_LOCK_STATE,
+	kev_dev_filter_init(cdev, &tty_fops, (caddr_t)cdev);
+	cdev = make_dev(&sio_ops, minorbase | CALLOUT_MASK | CONTROL_LOCK_STATE,
 	    UID_UUCP, GID_DIALER, 0660, "cuala%r", unit);
+	kev_dev_filter_init(cdev, &tty_fops, (caddr_t)cdev);
 	com->flags = flags;
 	com->pps.ppscap = PPS_CAPTUREASSERT | PPS_CAPTURECLEAR;
 	pps_init(&com->pps);

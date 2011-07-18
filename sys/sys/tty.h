@@ -244,6 +244,7 @@ struct speedtab {
 MALLOC_DECLARE(M_TTYS);
 
 extern	struct tty *constty;	/* Temporary virtual console. */
+extern	struct kev_filter_ops tty_fops;
 
 int	 b_to_q (char *cp, int cc, struct clist *q);
 void	 catq (struct clist *from, struct clist *to);
