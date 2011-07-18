@@ -106,14 +106,16 @@ static int ufs_strategy (struct vop_strategy_args *);
 static int ufs_symlink (struct vop_old_symlink_args *);
 static int ufs_whiteout (struct vop_old_whiteout_args *);
 static int ufsfifo_close (struct vop_close_args *);
-static int ufsfifo_kqfilter (struct vop_kqfilter_args *);
+static int ufsfifo_kev_filter (struct vop_kev_filter_args *);
 static int ufsfifo_read (struct vop_read_args *);
 static int ufsfifo_write (struct vop_write_args *);
-static int filt_ufsread (struct knote *kn, long hint);
-static int filt_ufswrite (struct knote *kn, long hint);
-static int filt_ufsvnode (struct knote *kn, long hint);
-static void filt_ufsdetach (struct knote *kn);
-static int ufs_kqfilter (struct vop_kqfilter_args *ap);
+static boolean_t	ufs_filter_read (struct kev_filter_note *fn, long hint,
+    caddr_t hook);
+static boolean_t	ufs_filter_write (struct kev_filter_note *fn,
+    long hint, caddr_t hook);
+static boolean_t	ufs_filter_vnode (struct kev_filter_note *fn,
+    long hint, caddr_t hook);
+static int ufs_kev_filter(struct vop_kev_filter_args *ap);
 
 union _qcvt {
 	int64_t qcvt;
@@ -132,7 +134,7 @@ union _qcvt {
 	(q) = tmp.qcvt; \
 }
 #define VN_KNOTE(vp, b) \
-	KNOTE(&vp->v_pollinfo.vpi_kqinfo.ki_note, (b))
+	kev_filter(&vp->v_filter, 0, (b))
 
 #define OFSFMT(vp)		((vp)->v_mount->mnt_maxsymlinklen <= 0)
 
@@ -1891,19 +1893,19 @@ ufsfifo_close(struct vop_close_args *ap)
 }
 
 /*
- * Kqfilter wrapper for fifos.
+ * filter wrapper for fifos.
  *
- * Fall through to ufs kqfilter routines if needed 
+ * Fall through to ufs filter routines if needed 
  */
 static
 int
-ufsfifo_kqfilter(struct vop_kqfilter_args *ap)
+ufsfifo_kev_filter(struct vop_kev_filter_args *ap)
 {
 	int error;
 
 	error = VOCALL(&fifo_vnode_vops, &ap->a_head);
 	if (error)
-		error = ufs_kqfilter(ap);
+		error = ufs_kev_filter(ap);
 	return (error);
 }
 
@@ -2118,105 +2120,73 @@ ufs_missingop(struct vop_generic_args *ap)
 	return (EOPNOTSUPP);
 }
 
-static struct filterops ufsread_filtops = 
-	{ FILTEROP_ISFD, NULL, filt_ufsdetach, filt_ufsread };
-static struct filterops ufswrite_filtops = 
-	{ FILTEROP_ISFD, NULL, filt_ufsdetach, filt_ufswrite };
-static struct filterops ufsvnode_filtops = 
-	{ FILTEROP_ISFD, NULL, filt_ufsdetach, filt_ufsvnode };
-
-/*
- * ufs_kqfilter(struct vnode *a_vp, struct knote *a_kn)
- */
-static int
-ufs_kqfilter(struct vop_kqfilter_args *ap)
+static boolean_t
+ufs_filter_read(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	struct vnode *vp = ap->a_vp;
-	struct knote *kn = ap->a_kn;
-
-	switch (kn->kn_filter) {
-	case EVFILT_READ:
-		kn->kn_fop = &ufsread_filtops;
-		break;
-	case EVFILT_WRITE:
-		kn->kn_fop = &ufswrite_filtops;
-		break;
-	case EVFILT_VNODE:
-		kn->kn_fop = &ufsvnode_filtops;
-		break;
-	default:
-		return (EOPNOTSUPP);
-	}
-
-	kn->kn_hook = (caddr_t)vp;
-
-	/* XXX: kq token actually protects the list */
-	lwkt_gettoken(&vp->v_token);
-	knote_insert(&vp->v_pollinfo.vpi_kqinfo.ki_note, kn);
-	lwkt_reltoken(&vp->v_token);
-
-	return (0);
-}
-
-static void
-filt_ufsdetach(struct knote *kn)
-{
-	struct vnode *vp = (struct vnode *)kn->kn_hook;
-
-	lwkt_gettoken(&vp->v_token);
-	knote_remove(&vp->v_pollinfo.vpi_kqinfo.ki_note, kn);
-	lwkt_reltoken(&vp->v_token);
-}
-
-/*ARGSUSED*/
-static int
-filt_ufsread(struct knote *kn, long hint)
-{
-	struct vnode *vp = (struct vnode *)kn->kn_hook;
+	struct vnode *vp = (struct vnode *)hook;
 	struct inode *ip = VTOI(vp);
 	off_t off;
 
 	/*
-	 * filesystem is gone, so set the EOF flag and schedule 
+	 * filesystem is gone, so set the EOF flag and schedule
 	 * the knote for deletion.
 	 */
 	if (hint == NOTE_REVOKE) {
-		kn->kn_flags |= (EV_EOF | EV_ONESHOT);
-		return (1);
+		fn->fn_flags |= (EV_EOF | EV_ONESHOT);
+		return (TRUE);
 	}
 
-	off = ip->i_size - kn->kn_fp->f_offset;
-	kn->kn_data = (off < INTPTR_MAX) ? off : INTPTR_MAX;
-	if (kn->kn_sfflags & NOTE_OLDAPI)
-		return(1);
-        return (kn->kn_data != 0);
+	off = ip->i_size - fn->fn_entry->fe_ptr.p_fp->f_offset;
+	fn->fn_data = (off < INTPTR_MAX) ? off : INTPTR_MAX;
+	if (fn->fn_ufflags & NOTE_OLDAPI)
+		return (TRUE);
+
+	return ((fn->fn_data != 0) ? TRUE : FALSE);
 }
 
-/*ARGSUSED*/
-static int
-filt_ufswrite(struct knote *kn, long hint)
+static boolean_t
+ufs_filter_write(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
 	/*
-	 * filesystem is gone, so set the EOF flag and schedule 
+	 * filesystem is gone, so set the EOF flag and schedule
 	 * the knote for deletion.
 	 */
 	if (hint == NOTE_REVOKE)
-		kn->kn_flags |= (EV_EOF | EV_ONESHOT);
+		fn->fn_flags |= (EV_EOF | EV_ONESHOT);
 
-        kn->kn_data = 0;
-        return (1);
+	fn->fn_data = 0;
+	return (TRUE);
 }
 
-static int
-filt_ufsvnode(struct knote *kn, long hint)
+static boolean_t
+ufs_filter_vnode(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	if (kn->kn_sfflags & hint)
-		kn->kn_fflags |= hint;
+	if (fn->fn_ufflags & hint)
+		fn->fn_fflags |= hint;
 	if (hint == NOTE_REVOKE) {
-		kn->kn_flags |= EV_EOF;
-		return (1);
+		fn->fn_flags |= EV_EOF;
+		return (TRUE);
 	}
-	return (kn->kn_fflags != 0);
+	return ((fn->fn_fflags != 0) ? TRUE : FALSE);
+}
+
+/*
+ * ufs_kev_filter(struct vnode *a_vp, struct kev_filter *a_filt);
+ */
+static int
+ufs_kev_filter(struct vop_kev_filter_args *ap)
+{
+	struct vnode *vp = ap->a_vp;
+	static struct kev_filter_ops kev_fops = {
+		.fop_read = { ufs_filter_read, KEV_FILTOP_NOTMPSAFE },
+		.fop_write = { ufs_filter_write, KEV_FILTOP_NOTMPSAFE },
+		.fop_special = { ufs_filter_vnode, KEV_FILTOP_NOTMPSAFE }
+	};
+
+	ap->a_filt->kf_hook = (caddr_t)vp;
+	ap->a_filt->kf_ops = &kev_fops;
+
+	return (0);
 }
 
 /* Global vfs data structures for ufs. */
@@ -2240,7 +2210,6 @@ static struct vop_ops ufs_vnode_vops = {
 	.vop_mmap =		ufs_mmap,
 	.vop_open =		vop_stdopen,
 	.vop_pathconf =		vop_stdpathconf,
-	.vop_kqfilter =		ufs_kqfilter,
 	.vop_print =		ufs_print,
 	.vop_readdir =		ufs_readdir,
 	.vop_readlink =		ufs_readlink,
@@ -2252,7 +2221,8 @@ static struct vop_ops ufs_vnode_vops = {
 	.vop_markatime =	ufs_markatime,
 	.vop_strategy =		ufs_strategy,
 	.vop_old_symlink =	ufs_symlink,
-	.vop_old_whiteout =	ufs_whiteout
+	.vop_old_whiteout =	ufs_whiteout,
+	.vop_kev_filter =	ufs_kev_filter
 };
 
 static struct vop_ops ufs_spec_vops = {
@@ -2277,7 +2247,7 @@ static struct vop_ops ufs_fifo_vops = {
 	.vop_close =		ufsfifo_close,
 	.vop_getattr =		ufs_getattr,
 	.vop_inactive =		ufs_inactive,
-	.vop_kqfilter =		ufsfifo_kqfilter,
+	.vop_kev_filter =	ufsfifo_kev_filter,
 	.vop_print =		ufs_print,
 	.vop_read =		ufsfifo_read,
 	.vop_reclaim =		ufs_reclaim,
