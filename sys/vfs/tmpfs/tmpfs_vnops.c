@@ -66,7 +66,7 @@ void
 tmpfs_knote(struct vnode *vp, int flags)
 {
 	if (flags)
-		KNOTE(&vp->v_pollinfo.vpi_kqinfo.ki_note, flags);
+		kev_filter(&vp->v_filter, 0, flags);
 }
 
 
@@ -1498,105 +1498,81 @@ tmpfs_pathconf(struct vop_pathconf_args *v)
 }
 
 /************************************************************************
- *                          KQFILTER OPS                                *
+ *                          KEVENT FILTER OPS                           *
  ************************************************************************/
 
-static void filt_tmpfsdetach(struct knote *kn);
-static int filt_tmpfsread(struct knote *kn, long hint);
-static int filt_tmpfswrite(struct knote *kn, long hint);
-static int filt_tmpfsvnode(struct knote *kn, long hint);
-
-static struct filterops tmpfsread_filtops =
-	{ FILTEROP_ISFD, NULL, filt_tmpfsdetach, filt_tmpfsread };
-static struct filterops tmpfswrite_filtops =
-	{ FILTEROP_ISFD, NULL, filt_tmpfsdetach, filt_tmpfswrite };
-static struct filterops tmpfsvnode_filtops =
-	{ FILTEROP_ISFD, NULL, filt_tmpfsdetach, filt_tmpfsvnode };
+static boolean_t	tmpfs_filter_read(struct kev_filter_note *fn,
+    long hint, caddr_t hook);
+static boolean_t	tmpfs_filter_write(struct kev_filter_note *fn,
+    long hint, caddr_t hook);
+static boolean_t	tmpfs_filter_vnode(struct kev_filter_note *fn,
+    long hint, caddr_t hook);
 
 static int
-tmpfs_kqfilter (struct vop_kqfilter_args *ap)
+tmpfs_kev_filter(struct vop_kev_filter_args *ap)
 {
 	struct vnode *vp = ap->a_vp;
-	struct knote *kn = ap->a_kn;
+	static struct kev_filter_ops kev_fops = {
+		.fop_read = { tmpfs_filter_read, KEV_FILTOP_NOTMPSAFE },
+		.fop_write = { tmpfs_filter_write, KEV_FILTOP_NOTMPSAFE },
+		.fop_special = { tmpfs_filter_vnode, KEV_FILTOP_NOTMPSAFE }
+	};
 
-	switch (kn->kn_filter) {
-	case EVFILT_READ:
-		kn->kn_fop = &tmpfsread_filtops;
-		break;
-	case EVFILT_WRITE:
-		kn->kn_fop = &tmpfswrite_filtops;
-		break;
-	case EVFILT_VNODE:
-		kn->kn_fop = &tmpfsvnode_filtops;
-		break;
-	default:
-		return (EOPNOTSUPP);
-	}
+	ap->a_filt->kf_hook = (caddr_t)vp;
+	ap->a_filt->kf_ops = &kev_fops;
 
-	kn->kn_hook = (caddr_t)vp;
-
-	knote_insert(&vp->v_pollinfo.vpi_kqinfo.ki_note, kn);
-
-	return(0);
+	return (0);
 }
 
-static void
-filt_tmpfsdetach(struct knote *kn)
+static boolean_t
+tmpfs_filter_read(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	struct vnode *vp = (void *)kn->kn_hook;
-
-	knote_remove(&vp->v_pollinfo.vpi_kqinfo.ki_note, kn);
-}
-
-static int
-filt_tmpfsread(struct knote *kn, long hint)
-{
-	struct vnode *vp = (void *)kn->kn_hook;
+	struct vnode *vp = (void *)hook;
 	struct tmpfs_node *node = VP_TO_TMPFS_NODE(vp);
 	off_t off;
 
 	if (hint == NOTE_REVOKE) {
-		kn->kn_flags |= (EV_EOF | EV_ONESHOT);
-		return(1);
+		fn->fn_flags |= (EV_EOF | EV_ONESHOT);
+		return (TRUE);
 	}
 
 	/*
 	 * Interlock against MP races when performing this function.
 	 */
 	lwkt_gettoken(&vp->v_mount->mnt_token);
-	off = node->tn_size - kn->kn_fp->f_offset;
-	kn->kn_data = (off < INTPTR_MAX) ? off : INTPTR_MAX;
-	if (kn->kn_sfflags & NOTE_OLDAPI) {
+	off = node->tn_size - fn->fn_entry->fe_ptr.p_fp->f_offset;
+	fn->fn_data = (off < INTPTR_MAX) ? off : INTPTR_MAX;
+	if (fn->fn_ufflags & NOTE_OLDAPI) {
 		lwkt_reltoken(&vp->v_mount->mnt_token);
-		return(1);
+		return (TRUE);
 	}
 
-	if (kn->kn_data == 0) {
-		kn->kn_data = (off < INTPTR_MAX) ? off : INTPTR_MAX;
+	if (fn->fn_data == 0) {
+		fn->fn_data = (off < INTPTR_MAX) ? off : INTPTR_MAX;
 	}
 	lwkt_reltoken(&vp->v_mount->mnt_token);
-	return (kn->kn_data != 0);
+	return ((fn->fn_data != 0) ? TRUE : FALSE);
 }
 
-static int
-filt_tmpfswrite(struct knote *kn, long hint)
+static boolean_t
+tmpfs_filter_write(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
 	if (hint == NOTE_REVOKE)
-		kn->kn_flags |= (EV_EOF | EV_ONESHOT);
-	kn->kn_data = 0;
-	return (1);
+		fn->fn_flags |= (EV_EOF | EV_ONESHOT);
+	fn->fn_data = 0;
+	return (TRUE);
 }
 
-static int
-filt_tmpfsvnode(struct knote *kn, long hint)
+static boolean_t
+tmpfs_filter_vnode(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	if (kn->kn_sfflags & hint)
-		kn->kn_fflags |= hint;
+	if (fn->fn_ufflags & hint)
+		fn->fn_fflags |= hint;
 	if (hint == NOTE_REVOKE) {
-		kn->kn_flags |= EV_EOF;
-		return (1);
+		fn->fn_flags |= EV_EOF;
+		return (TRUE);
 	}
-	return (kn->kn_fflags != 0);
+	return ((fn->fn_fflags != 0) ? TRUE : FALSE);
 }
 
 
@@ -1636,5 +1612,5 @@ struct vop_ops tmpfs_vnode_vops = {
 	.vop_bmap =			tmpfs_bmap,
 	.vop_strategy =			tmpfs_strategy,
 	.vop_advlock =			tmpfs_advlock,
-	.vop_kqfilter =			tmpfs_kqfilter
+	.vop_kev_filter =		tmpfs_kev_filter
 };

@@ -51,13 +51,16 @@
 /* --------------------------------------------------------------------- */
 
 static int
-tmpfs_fifo_kqfilter(struct vop_kqfilter_args *ap)
+tmpfs_fifo_kev_filter(struct vop_kev_filter_args *ap)
 {
 	struct vnode *vp;
 	struct tmpfs_node *node;
 
 	vp = ap->a_vp;
 	node = VP_TO_TMPFS_NODE(vp);
+/*
+XXX, SJG:
+What do we need to touch here?
 
 	switch (ap->a_kn->kn_filter){
 	case EVFILT_READ:
@@ -67,8 +70,8 @@ tmpfs_fifo_kqfilter(struct vop_kqfilter_args *ap)
 		node->tn_status |= TMPFS_NODE_MODIFIED;
 		break;
 	}
-
-	return fifo_vnode_vops.vop_kqfilter(ap);
+*/
+	return fifo_vnode_vops.vop_kev_filter(ap);
 }
 
 /* --------------------------------------------------------------------- */
@@ -94,5 +97,5 @@ struct vop_ops tmpfs_fifo_vops = {
 	.vop_access =			tmpfs_access,
 	.vop_getattr =			tmpfs_getattr,
 	.vop_setattr =			tmpfs_setattr,
-	.vop_kqfilter =			tmpfs_fifo_kqfilter,
+	.vop_kev_filter =		tmpfs_fifo_kev_filter
 };
