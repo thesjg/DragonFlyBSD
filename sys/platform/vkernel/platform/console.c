@@ -74,8 +74,7 @@ static struct dev_ops vcons_ops = {
 	.d_close =	vcons_close,
 	.d_read =	ttyread,
 	.d_write =	ttywrite,
-	.d_ioctl =	vcons_ioctl,
-	.d_kqfilter =	ttykqfilter,
+	.d_ioctl =	vcons_ioctl
 };
 
 static int
@@ -361,6 +360,7 @@ vconsinit_fini(struct consdev *cp)
 		if (i == 0) {
 			cp->cn_dev = dev;
 		}
+		kev_dev_filter_init(dev, &tty_fops, (caddr_t)dev);
 	}
 	EVENTHANDLER_REGISTER(shutdown_final, vconscleanup, NULL, SHUTDOWN_PRI_LAST);
 }
