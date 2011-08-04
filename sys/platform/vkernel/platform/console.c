@@ -361,6 +361,7 @@ vconsinit_fini(struct consdev *cp)
 			cp->cn_dev = dev;
 		}
 		kev_dev_filter_init(dev, &tty_fops, (caddr_t)dev);
+
 	}
 	EVENTHANDLER_REGISTER(shutdown_final, vconscleanup, NULL, SHUTDOWN_PRI_LAST);
 }

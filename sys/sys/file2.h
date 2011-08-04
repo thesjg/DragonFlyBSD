@@ -114,7 +114,7 @@ fo_shutdown(struct file *fp, int how)
 }
 
 static __inline int
-fo_kev_filter(struct file *fp, struct kev_filter *filt)
+fo_kev_filter(struct file *fp, struct kev_filter **filt)
 {
 	return ((*fp->f_ops->fo_kev_filter)(fp, filt));
 }

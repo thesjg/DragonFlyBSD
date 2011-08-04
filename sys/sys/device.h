@@ -177,7 +177,7 @@ struct dev_revoke_args {
  */
 struct dev_kev_filter_args {
 	struct dev_generic_args a_head;
-	struct kev_filter *a_filt;
+	struct kev_filter **a_filt;
 };
 
 /*
@@ -291,7 +291,7 @@ int dev_dwrite(cdev_t dev, struct uio *uio, int ioflag);
 int dev_dmmap(cdev_t dev, vm_offset_t offset, int nprot);
 int dev_dclone(cdev_t dev);
 int dev_drevoke(cdev_t dev);
-int dev_dkev_filter(cdev_t dev, struct kev_filter *filt);
+int dev_dkev_filter(cdev_t dev, struct kev_filter **filt);
 
 int dev_drefs(cdev_t dev);
 const char *dev_dname(cdev_t dev);

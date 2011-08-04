@@ -373,7 +373,7 @@ int	soo_shutdown (struct file *fp, int how);
 int	soo_ioctl (struct file *fp, u_long cmd, caddr_t data,
 			struct ucred *cred, struct sysmsg *msg);
 int	soo_stat (struct file *fp, struct stat *ub, struct ucred *cred);
-int	so_filter (struct file *fp, struct kev_filter *filt);
+int	so_filter (struct file *fp, struct kev_filter **filt);
 
 /*
  * From uipc_socket and friends

@@ -158,8 +158,8 @@ TAILQ_HEAD(kev_filter_entry_list, kev_filter_entry);
  * notified when I/O becomes possible.
  */
 struct kev_filter {
-	struct  kev_filter_entry_list	*kf_entry;
 	struct  kev_filter_ops		*kf_ops;
+	struct  kev_filter_entry_list	kf_entry;
 	caddr_t				kf_hook;
 };
 #endif
@@ -190,7 +190,8 @@ struct kev_filter_note {
 
 	short			fn_filter;	/* EVFILT_* filter type */
 
-	u_int			fn_ufflags;	/* flags from userland */
+	u_short			fn_uflags;	/* action flags from userland */
+	u_int			fn_ufflags;	/* filter flags from userland */
 	intptr_t		fn_udata;	/* data from userland */
 
 	/*

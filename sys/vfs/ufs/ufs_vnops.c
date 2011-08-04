@@ -1903,6 +1903,8 @@ ufsfifo_kev_filter(struct vop_kev_filter_args *ap)
 {
 	int error;
 
+kprintf("XXX, SJG: ufsfifo_kev_filter\n");
+
 	error = VOCALL(&fifo_vnode_vops, &ap->a_head);
 	if (error)
 		error = ufs_kev_filter(ap);
@@ -2183,8 +2185,10 @@ ufs_kev_filter(struct vop_kev_filter_args *ap)
 		.fop_special = { ufs_filter_vnode, KEV_FILTOP_NOTMPSAFE }
 	};
 
-	ap->a_filt->kf_hook = (caddr_t)vp;
-	ap->a_filt->kf_ops = &kev_fops;
+kprintf("XXX, SJG: ufs_kev_filter\n");
+
+	(*ap->a_filt)->kf_hook = (caddr_t)vp;
+	(*ap->a_filt)->kf_ops = &kev_fops;
 
 	return (0);
 }

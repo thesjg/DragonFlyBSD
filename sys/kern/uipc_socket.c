@@ -1802,7 +1802,7 @@ so_filter_listen(struct kev_filter_note *fn, long hint, caddr_t hook)
 }
 
 int
-so_filter(struct file *fp, struct kev_filter *filt)
+so_filter(struct file *fp, struct kev_filter **filt)
 {
 	struct socket *so = (struct socket *)fp->f_data;
 	static struct kev_filter_ops kev_fops = {
@@ -1814,9 +1814,9 @@ so_filter(struct file *fp, struct kev_filter *filt)
 	};
 
 	if (so->so_options & SO_ACCEPTCONN)
-		filt->kf_ops = &kev_fops_listen;
+		(*filt)->kf_ops = &kev_fops_listen;
 	else
-		filt->kf_ops = &kev_fops;
+		(*filt)->kf_ops = &kev_fops;
 
 	return (0);
 }

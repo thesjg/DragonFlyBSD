@@ -427,7 +427,7 @@ dev_dpsize(cdev_t dev)
  * Note: Used in devfs_vnops.c only
  */
 int
-dev_dkev_filter(cdev_t dev, struct kev_filter *filt)
+dev_dkev_filter(cdev_t dev, struct kev_filter **filt)
 {
 	struct dev_kev_filter_args ap;
 	int needmplock = dev_needmplock(dev);
@@ -439,10 +439,11 @@ dev_dkev_filter(cdev_t dev, struct kev_filter *filt)
 
 	if (needmplock)
 		get_mplock();
+kprintf("XXX, SJG: dev_dkev_filter: calling d_kev_filter for device %s\n", dev->si_name);
 	error = dev->si_ops->d_kev_filter(&ap);
 	if (needmplock)
 		rel_mplock();
-
+kprintf("XXX, SJG: dev_dkev_filter, (*filt)->kf_ops: %08x\n", (uint)(*filt)->kf_ops);
 	return(error);
 }
 
@@ -722,10 +723,14 @@ dev_kev_filter(struct dev_kev_filter_args *ap)
 {
 	struct cdev *dev = ap->a_head.a_dev;
 
-        if (dev->si_filter == NULL)
+//kprintf("XXX, SJG: dev_kev_filter, &dev->si_filter: %08x\n", (uint)&dev->si_filter);
+
+        if (&dev->si_filter == NULL)
                 return (ENODEV);
 
-        ap->a_filt = dev->si_filter;
+        *ap->a_filt = &dev->si_filter;
+kprintf("XXX, SJG: dev_kev_filter, dev->si_filter.kf_ops: %08x\n", (uint)dev->si_filter.kf_ops);
+kprintf("XXX, SJG: dev_kev_filter, (*ap)->a_filt->kf_ops: %08x\n", (uint)(*ap->a_filt)->kf_ops);
         return (0);
 }
 

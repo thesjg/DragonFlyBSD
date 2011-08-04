@@ -2899,7 +2899,7 @@ nofo_shutdown(struct file *fp, int how)
  * MPSAFE
  */
 int
-badfo_kev_filter(struct file *fp, struct kev_filter *filt)
+badfo_kev_filter(struct file *fp, struct kev_filter **filt)
 {
         return (EOPNOTSUPP);
 }

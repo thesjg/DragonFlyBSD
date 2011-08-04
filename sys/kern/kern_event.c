@@ -109,13 +109,18 @@ static void	kev_filter_note_free(struct kev_filter_note *fn);
 static struct	kev_filter *kev_filter_alloc(void);
 static void	kev_filter_free(struct kev_filter *filt);
 
-//static int 		kq_ncallouts = 0;
 static int 		kq_calloutmax = (4 * 1024);
 SYSCTL_INT(_kern, OID_AUTO, kq_calloutmax, CTLFLAG_RW,
     &kq_calloutmax, 0, "Maximum number of callouts allocated for kqueue");
 static int		kq_checkloop = 1000000;
 SYSCTL_INT(_kern, OID_AUTO, kq_checkloop, CTLFLAG_RW,
     &kq_checkloop, 0, "Maximum number of callouts allocated for kqueue");
+static int		kq_debug;
+SYSCTL_INT(_kern, OID_AUTO, kq_debug, CTLFLAG_RW, &kq_debug, 1,
+    "Enable debugging output for the KQ/KEV subsystem");
+static int		kq_debug_pid;
+SYSCTL_INT(_kern, OID_AUTO, kq_debug_pid, CTLFLAG_RW, &kq_debug_pid, 0,
+    "Restrict debugging to a specific process identifier");
 
 #define KEV_FILTER_ENTRY_ACTIVATE(fe) do { 				\
 	fe->fe_status |= KFE_ACTIVE;					\
@@ -132,7 +137,7 @@ SYSCTL_INT(_kern, OID_AUTO, kq_checkloop, CTLFLAG_RW,
  */
 static
 int
-file_vector_lookup(struct kev_filter *filt, struct kev_filter_note *fn, void *arg)
+file_vector_lookup(struct kev_filter **filt, struct kev_filter_note *fn, void *arg)
 {
 	struct file *fp = (struct file *)arg;
 
@@ -142,14 +147,14 @@ file_vector_lookup(struct kev_filter *filt, struct kev_filter_note *fn, void *ar
 /* filt_procattach (formerly) */
 static
 int
-proc_vector_lookup(struct kev_filter *filt, struct kev_filter_note *fn, void *arg)
+proc_vector_lookup(struct kev_filter **filt, struct kev_filter_note *fn, void *arg)
 {
 	return (EOPNOTSUPP);
 }
 
 static
 int
-signal_vector_lookup(struct kev_filter *filt, struct kev_filter_note *fn, void *arg)
+signal_vector_lookup(struct kev_filter **filt, struct kev_filter_note *fn, void *arg)
 {
 	return (EOPNOTSUPP);
 }
@@ -157,7 +162,7 @@ signal_vector_lookup(struct kev_filter *filt, struct kev_filter_note *fn, void *
 /* filt_timerattach (formerly) */
 static
 int
-timer_vector_lookup(struct kev_filter *filt, struct kev_filter_note *fn, void *arg)
+timer_vector_lookup(struct kev_filter **filt, struct kev_filter_note *fn, void *arg)
 {
 	return (EOPNOTSUPP);
 }
@@ -364,6 +369,7 @@ kern_kevent(struct kqueue *kq, int nevents, int *res, void *uap,
 				error = ENOMEM;
 			} else {
 				fn->fn_filter = kevp->filter;
+				fn->fn_uflags = kevp->flags;
 				fn->fn_ufflags = kevp->fflags;
 				fn->fn_udata = (intptr_t)kevp->udata;
 				error = kqueue_register_filter_note(kq,
@@ -550,49 +556,16 @@ sys_kevent(struct kevent_args *uap)
 }
 
 /*
- * Convert EVFILT_* filter to 0-base index and return the proper note
- * reference.
- */
-/*
-static
-struct kev_filter_note *
-kev_filter_entry_get_note(struct kev_filter_entry *fe, short filter)
-{
-	return (fe->fe_notes[~filter]);
-}
-*/
-
-/*
- * ...
- */
-//static
-//struct kev_filter_op *
-//kev_filter_entry_get_vector(struct kev_filter_entry *fe, short filter)
-//{
-//	struct kev_filter_op *ops[EVFILT_SYSCOUNT] = {
-//	    &fe->fe_filter->kf_ops->fop_read,		/* EVFILT_READ */
-//	    &fe->fe_filter->kf_ops->fop_write,		/* EVFILT_WRITE */
-//	    NULL,					/* EVFILT_AIO */
-//	    &fe->fe_filter->kf_ops->fop_special,	/* EVFILT_VNODE */
-//	    &fe->fe_filter->kf_ops->fop_special,	/* EVFILT_PROC */
-//	    &fe->fe_filter->kf_ops->fop_special,	/* EVFILT_SIGNAL */
-//	    &fe->fe_filter->kf_ops->fop_special,	/* EVFILT_TIMER */
-//	    &fe->fe_filter->kf_ops->fop_special		/* EVFILT_EXCEPT */
-//	};
-//
-//	return (ops[~filter]);
-//}
-
-/*
  * Look up a filter event and acquire it, caller is responsible for releasing
  * the filter event with kev_filter_entry_release().
+ *
+ * Note: Must be called with KQ token held.
  */
 struct kev_filter_entry *
 kqueue_lookup_filter_entry(struct kqueue *kq, uintptr_t ident, struct file *fp)
 {
 	struct kev_filter_entry *fe = NULL;
 
-	lwkt_gettoken(&kq_token);
 	if (fp != NULL) {
 again1:
 		TAILQ_FOREACH(fe, &fp->f_kflist, fe_link) {
@@ -619,7 +592,6 @@ again2:
 			}
 		}
 	}
-	lwkt_reltoken(&kq_token);
 
 	return (fe);
 }
@@ -630,15 +602,15 @@ kqueue_register_filter_note(struct kqueue *kq, uintptr_t ident,
 {
 	struct filedesc *fdp = kq->kq_fdp;
 	struct kev_filter_entry *fe;
+	struct kev_filter_entry_list *felist;
 	struct file *fp = NULL;
 	struct kev_filter *filter = NULL; /* XXX, SJG: Verify allocation/free */
 	u_int filter_idx;
 	int error = 0;
 
-	int (*vector_lookup)(struct kev_filter *, struct kev_filter_note *, void *);
+	int (*vector_lookup)(struct kev_filter **, struct kev_filter_note *, void *);
 	void *vector_lookup_arg;
 	boolean_t isfd;
-
 
 	if (fn->fn_filter > 0 || fn->fn_filter + EVFILT_SYSCOUNT <= 0)
 		return (EINVAL);	/* unknown or invalid filter */
@@ -688,13 +660,14 @@ kqueue_register_filter_note(struct kqueue *kq, uintptr_t ident,
 			return (EBADF);
 	}
 
+	lwkt_gettoken(&kq_token);
 	fe = kqueue_lookup_filter_entry(kq, ident, fp);
 
 	/*
 	 * NOTE: At this point if fe is non-NULL we will have acquired
-	 *	 it and set KFE_PROCESSING.
+	 *       it and set KFE_PROCESSING.
 	 */
-	if (fe == NULL && ((fn->fn_ufflags & EV_ADD) == 0)) {
+	if (fe == NULL && ((fn->fn_uflags & EV_ADD) == 0)) {
 		error = ENOENT;
 		goto done;
 	}
@@ -702,34 +675,67 @@ kqueue_register_filter_note(struct kqueue *kq, uintptr_t ident,
 	/*
 	 * fe now contains the matching filter_entry, or NULL if no match
 	 */
-	if (fn->fn_ufflags & EV_ADD) {
+	if (fn->fn_uflags & EV_ADD) {
 		if (fe == NULL) {
 			if (isfd)
 				vector_lookup_arg = fp;
 			else
 				vector_lookup_arg = NULL;
 
-/* XXX, SJG:
-We must verify filter ...
-*/
 			filter = kev_filter_alloc();
-
-			/*
-			 * Look up the vector and validate that it supports
-			 * the operations we need.
-			 */
-			error = vector_lookup(filter, fn, vector_lookup_arg);
-			if (error != 0)
-				goto done;
-
-			fe = kev_filter_entry_alloc();
-			if (fe == NULL) {
+			if (filter == NULL) {
 				error = ENOMEM;
 				goto done;
 			}
 
 			/*
-			 * Initialize the filter event
+			 * Look up the vector.
+			 *
+			 * Note: sets filter->kf_ops
+			 */
+kprintf("XXX, SJG: looking up kq vector for fd %d\n", ident);
+			error = vector_lookup(&filter, fn, vector_lookup_arg);
+kprintf("XXX, SJG: looked up kq vector\n");
+			if (error != 0)
+				goto error;
+			if (filter->kf_ops == NULL) {
+				kprintf("Improperly implemented kevent filter, returned NULL ops vector\n");
+				error = EOPNOTSUPP;
+				goto error;
+			}
+
+			/*
+			 * Validate that the vector supports the operations
+			 * we need.
+			 */
+			switch (fn->fn_filter) {
+			case EVFILT_READ:
+				if (filter->kf_ops->fop_read.fo_event == NULL) {
+					error = EOPNOTSUPP;
+					goto error;
+				}
+				break;
+			case EVFILT_WRITE:
+				if (filter->kf_ops->fop_write.fo_event == NULL) {
+					error = EOPNOTSUPP;
+					goto error;
+				}
+				break;
+			default:
+				if (filter->kf_ops->fop_special.fo_event == NULL) {
+					error = EOPNOTSUPP;
+					goto error;
+				}
+			}
+
+			fe = kev_filter_entry_alloc();
+			if (fe == NULL) {
+				error = ENOMEM;
+				goto error;
+			}
+
+			/*
+			 * Initialize the filter entry
 			 */
 			fe->fe_ident = ident;
 			fe->fe_fd = isfd;
@@ -744,6 +750,11 @@ We must verify filter ...
 			fp = NULL;
 
 			/*
+			 * Assign parentage
+			 */
+			fn->fn_entry = fe;
+
+			/*
 			 * Slot in the filter note
 			 */
 			fe->fe_notes[filter_idx] = fn;
@@ -755,23 +766,22 @@ We must verify filter ...
 			 */
 			fe->fe_status = KFE_PROCESSING;
 
-/* We already know whether it is an fd or not below, it is set in the kev_filter_entry (fe_fd) */
-/*
-        struct klist *list;
-        struct kqueue *kq = kn->kn_kq;
+			/*
+			 * Attach the filter entry
+			 */
+			if (isfd) {
+				KKASSERT(fe->fe_ptr.p_fp);
+				felist = &fe->fe_ptr.p_fp->f_kflist;
+			} else {
+				if (kq->kq_fehashmask == 0)
+					kq->kq_fehash = hashinit(KFE_HASHSIZE,
+					    M_KQUEUE, &kq->kq_fehashmask);
+				felist = &kq->kq_fehash[KFE_HASH(fe->fe_ident,
+				    kq->kq_fehashmask)];
+			}
 
-        if (isfd) {
-                KKASSERT(kn->kn_fp);
-                list = &kn->kn_fp->f_klist;
-        } else {
-                if (kq->kq_fehashmask == 0)
-                        kq->kq_fehash = hashinit(KFE_HASHSIZE, M_KQUEUE,
-                                                 &kq->kq_fehashmask);
-                list = &kq->kq_fehash[KFE_HASH(kn->kn_id, kq->kq_fehashmask)];
-        }
-        SLIST_INSERT_HEAD(list, kn, kn_link);
-        TAILQ_INSERT_HEAD(&kq->kq_knlist, kn, kn_kqlink);
-*/
+			TAILQ_INSERT_HEAD(felist, fe, fe_link);
+			TAILQ_INSERT_HEAD(&kq->kq_felist, fe, fe_kqlink);
 
 			/*
 			 * Interlock against close races which we may have
@@ -781,22 +791,55 @@ We must verify filter ...
 			if ((isfd) && checkfdclosed(fdp, ident, fe->fe_ptr.p_fp)) {
 				fe->fe_status |= KFE_DELETING | KFE_REPROCESS;
 			}
+
+			if (kq_debug) {
+				struct lwp *lwp = curthread->td_lwp;
+				if (kq_debug_pid == 0 || kq_debug_pid == lwp->lwp_proc->p_pid)
+					kprintf("kq EV_ADD filter %d for fd %d (existing entry)\n",
+						fn->fn_filter, ident);
+			}
 		} else {
-			/*
-			 * Handle changing various filter values after the
-			 * initial EV_ADD, but doing so will not reset any
-			 * filter which have already been triggered.
-			 */
-/* ??? */		KKASSERT(fe->fe_status & KFE_PROCESSING);
+			if (fe->fe_notes[filter_idx] == NULL) {
+				/*
+				 * Assign parentage
+				 */
+				fn->fn_entry = fe;
 
-			fe->fe_notes[filter_idx]->fn_ufflags = fn->fn_ufflags;
-			fe->fe_notes[filter_idx]->fn_udata = fn->fn_udata;
+				/*
+				 * Slot in the filter note
+				 */
+				fe->fe_notes[filter_idx] = fn;
+			} else {
+				/*
+				 * Handle changing various filter values after the
+				 * initial EV_ADD, but doing so will not reset any
+				 * filter which have already been triggered.
+				 */
+				KKASSERT(fe->fe_status & KFE_PROCESSING);
 
-			/*
-			 * We no longer need the note allocated in the calling
-			 * function, we updated the existing note.
-			 */
-                        kev_filter_note_free(fn);
+				fe->fe_notes[filter_idx]->fn_uflags = fn->fn_uflags;
+				fe->fe_notes[filter_idx]->fn_ufflags = fn->fn_ufflags;
+				fe->fe_notes[filter_idx]->fn_udata = fn->fn_udata;
+
+				/*
+				 * We no longer need the note allocated in the calling
+				 * function, we updated the existing note.
+				 */
+	                        kev_filter_note_free(fn);
+
+				/*
+				 * Give the remainder of the function a note
+				 * to work with.
+				 */
+				fn = fe->fe_notes[filter_idx];
+			}
+
+			if (kq_debug) {
+				struct lwp *lwp = curthread->td_lwp;
+				if (kq_debug_pid == 0 || kq_debug_pid == lwp->lwp_proc->p_pid)
+					kprintf("kq EV_ADD filter %d for fd %d\n",
+						fn->fn_filter, ident);
+			}
 		}
 
 		/*
@@ -807,10 +850,12 @@ We must verify filter ...
 		 * we might run the filter on a deleted event.
 		 */
 		if ((fe->fe_status & KFE_REPROCESS) == 0) {
-			if (poll_filter_entry(fe, 0, 0))
+			if (poll_filter_entry(fe, 0, 0)) {
 				KEV_FILTER_ENTRY_ACTIVATE(fe);
+			}
 		}
-	} else if (fn->fn_ufflags & EV_DELETE) {
+	} else if (fn->fn_uflags & EV_DELETE) {
+
 		/*
 		 * Delete existing kev_filter_entry and associated
 		 * kev_filter_note's.
@@ -819,43 +864,44 @@ We must verify filter ...
 		goto done;
 	}
 
-
-
-/* XXX, SJG: REWRITE ... */
-
 	/*
 	 * Disablement does not deactivate a knote here.
 	 */
-/*	if ((kev->flags & EV_DISABLE) &&
-	    ((kn->kn_status & KN_DISABLED) == 0)) {
-		kn->kn_status |= KN_DISABLED;
+	if ((fn->fn_uflags & EV_DISABLE) &&
+	    ((fe->fe_status & KFE_DISABLED) == 0)) {
+		kprintf("XXX, SJG: Disable filter note\n");
+/*		fe->fe_status |= KFE_DISABLED; */
 	}
-*/
+/* XXX, SJG: DISABLE/ENABLE acts on a whole filter entry, must make it per-note */
 	/*
 	 * Re-enablement may have to immediately enqueue an active knote.
 	 */
-/*	if ((kev->flags & EV_ENABLE) && (kn->kn_status & KN_DISABLED)) {
-		kn->kn_status &= ~KN_DISABLED;
-		if ((kn->kn_status & KN_ACTIVE) &&
-		    ((kn->kn_status & KN_QUEUED) == 0)) {
-			knote_enqueue(kn);
+	if ((fn->fn_uflags & EV_ENABLE) && (fe->fe_status & KFE_DISABLED)) {
+		fe->fe_status &= ~KFE_DISABLED;
+		if ((fe->fe_status & KFE_ACTIVE) &&
+		    ((fe->fe_status & KFE_QUEUED) == 0)) {
+			kev_filter_entry_enqueue(fe);
 		}
 	}
-*/
 
 	/*
 	 * Handle any required reprocessing
 	 */
 	kev_filter_entry_release(fe);
-	/* kn may be invalid now */
+	/* fe may be invalid now */
 
+error:
+	if (error) {
+		if (filter != NULL)
+			kev_filter_free(filter);
+		if (fe != NULL)
+			kev_filter_entry_free(fe);
+	}
 done:
-	if (filter != NULL)
-		kev_filter_free(filter);
-
 	lwkt_reltoken(&kq_token);
 	if (fp != NULL)
 		fdrop(fp);
+
 	return (error);
 }
 
@@ -980,8 +1026,6 @@ kqueue_scan(struct kqueue *kq, struct kevent *kevp, int count,
 			 * the event may be immediately triggered.
 			 */
 			fe->fe_status &= ~KFE_QUEUED;
-/* XXX, SJG: kn_flags! */
-
 		} else {
 			for (i = 0; i < EVFILT_SYSCOUNT; ++i) {
 				if (fe->fe_notes[i] != NULL) {
@@ -1015,15 +1059,22 @@ Might have to filter these out soemwhere else?
 						++total;
 						--count;
 
-						if (fn->fn_flags & EV_ONESHOT) {
+						if (kq_debug) {
+							struct lwp *lwp = curthread->td_lwp;
+							if (kq_debug_pid == 0 || kq_debug_pid == lwp->lwp_proc->p_pid)
+								kprintf("kq posting fd %d for filter %d during scan\n",
+									fe->fe_ident, fn->fn_filter);
+						}
+
 //							fe->fe_status &= ~KFE_QUEUED;
 //							fe->fe_status |= KFE_DELETING | KFE_REPROCESS;
 /*
 XXX, SJG:
 Can't nuke the whole event for a single note ...
 move oneshot into the note..?
+... move disabled into the note too..
 */
-						} else if (fn->fn_flags & EV_CLEAR) {
+						if (fn->fn_flags & EV_CLEAR) {
 							fn->fn_data = 0;
 							fn->fn_fflags = 0;
 							fe->fe_status &= ~(KFE_QUEUED | KFE_ACTIVE);
@@ -1151,15 +1202,16 @@ poll_filter_entry(struct kev_filter_entry *fe, short filter_type, long hint)
 	struct kev_filter_note *notes[EVFILT_SYSCOUNT];
 	struct kev_filter_note *fn;
 	struct kev_filter_op *fop;
-	int note_count, i, error;
+	int note_count, i, ret = 0;
+	boolean_t check;
 
 	if (filter_type) {
 		notes[0] = fe->fe_notes[~filter_type];
 		note_count = 1;
 	} else {
 		for (i = 0, note_count = 0; i < EVFILT_SYSCOUNT; ++i) {
-			if (fe->fe_notes[~i] != NULL) {
-				notes[note_count] = fe->fe_notes[~i];
+			if (fe->fe_notes[i] != NULL) {
+				notes[note_count] = fe->fe_notes[i];
 				++note_count;
 			}
 		}
@@ -1175,42 +1227,43 @@ poll_filter_entry(struct kev_filter_entry *fe, short filter_type, long hint)
 		case EVFILT_WRITE:
 			fop = &fe->fe_filter->kf_ops->fop_write;
 			break;
-		default:
+		case EVFILT_AIO:
+		case EVFILT_VNODE:
+		case EVFILT_PROC:
+		case EVFILT_SIGNAL:
+		case EVFILT_TIMER:
+		case EVFILT_EXCEPT:
 			fop = &fe->fe_filter->kf_ops->fop_special;
 			break;
+		default:
+			panic("Unknown kernel event filter");
 		}
-
 		if (fop->fo_flags & KEV_FILTOP_NOTMPSAFE) {
 			get_mplock();
-			fop->fo_event(notes[i], hint, fe->fe_filter->kf_hook);
+			check = fop->fo_event(notes[i], hint, fe->fe_filter->kf_hook);
 			rel_mplock();
 		} else {
-			fop->fo_event(notes[i], hint, fe->fe_filter->kf_hook);
+			check = fop->fo_event(notes[i], hint, fe->fe_filter->kf_hook);
 		}
 
-		/* XXX, SJG:
-			Accumulate the return values from fop()
-			calls and return ...
-		*/
-
+		if (check)
+			ret++;
 	}	
 
-/* XXX, SJG: */	error = 0;
-
-	return (error);
+	return (ret);
 }
 
 void
 kev_dev_filter_init(cdev_t cdev, struct kev_filter_ops *fops, caddr_t hook)
 {
-	kev_filter_init(cdev->si_filter, fops, hook);
+	kev_filter_init(&cdev->si_filter, fops, hook);
 }
 
 void
 kev_filter_init(struct kev_filter *filter, struct kev_filter_ops *fops,
 	caddr_t hook)
 {
-	TAILQ_INIT(filter->kf_entry);
+	TAILQ_INIT(&filter->kf_entry);
 	filter->kf_ops = fops;
 	filter->kf_hook = hook;
 }
@@ -1231,7 +1284,7 @@ kev_filter(struct kev_filter *filter, short filter_type, long hint)
 
 	lwkt_gettoken(&kq_token);
 restart:
-	TAILQ_FOREACH(fe, filter->kf_entry, fe_link) {
+	TAILQ_FOREACH(fe, &filter->kf_entry, fe_link) {
 		if (fe->fe_status & KFE_PROCESSING) {
 			/*
 			 * Someone else is processing the filter event, ask
@@ -1356,6 +1409,13 @@ kev_filter_entry_enqueue(struct kev_filter_entry *fe)
 		pgsigio(kq->kq_sigio, SIGIO, 0);
 
 	kqueue_wakeup(kq);
+
+	if (kq_debug) {
+		struct lwp *lwp = curthread->td_lwp;
+		if (kq_debug_pid == 0 || kq_debug_pid == lwp->lwp_proc->p_pid)
+			kprintf("kq enqueueing entry for fd %d\n",
+				fe->fe_ident);
+	}
 }
 
 static struct kev_filter_entry *

@@ -65,7 +65,7 @@ static int vn_ioctl (struct file *fp, u_long com, caddr_t data,
 		struct ucred *cred, struct sysmsg *msg);
 static int vn_read (struct file *fp, struct uio *uio, 
 		struct ucred *cred, int flags);
-static int vn_kev_filter (struct file *fp, struct kev_filter *filt);
+static int vn_kev_filter (struct file *fp, struct kev_filter **filt);
 static int vn_statfile (struct file *fp, struct stat *sb, struct ucred *cred);
 static int vn_write (struct file *fp, struct uio *uio, 
 		struct ucred *cred, int flags);
@@ -1077,7 +1077,7 @@ vn_closefile(struct file *fp)
  * MPSAFE
  */
 static int
-vn_kev_filter(struct file *fp, struct kev_filter *filt)
+vn_kev_filter(struct file *fp, struct kev_filter **filt)
 {
 	int error;
 

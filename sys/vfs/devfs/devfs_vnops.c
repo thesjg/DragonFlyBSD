@@ -113,7 +113,7 @@ static int devfs_fo_write(struct file *, struct uio *, struct ucred *, int);
 static int devfs_fo_stat(struct file *, struct stat *, struct ucred *);
 static int devfs_fo_ioctl(struct file *, u_long, caddr_t,
 				struct ucred *, struct sysmsg *);
-static int devfs_fo_kev_filter(struct file *, struct kev_filter *);
+static int devfs_fo_kev_filter(struct file *, struct kev_filter **);
 static __inline int sequential_heuristic(struct uio *, struct file *);
 
 extern struct lock devfs_lock;
@@ -1360,11 +1360,13 @@ devfs_fo_stat(struct file *fp, struct stat *sb, struct ucred *cred)
 }
 
 static int
-devfs_fo_kev_filter(struct file *fp, struct kev_filter *filt)
+devfs_fo_kev_filter(struct file *fp, struct kev_filter **filt)
 {
 	struct vnode *vp;
 	int error;
 	cdev_t dev;
+
+kprintf("XXX, SJG: devfs_fo_kev_filter\n");
 
 	vp = (struct vnode *)fp->f_data;
 	if (vp == NULL || vp->v_type == VBAD) {
@@ -1606,6 +1608,8 @@ devfs_spec_kev_filter(struct vop_kev_filter_args *ap)
 	struct vnode *vp = ap->a_vp;
 	struct devfs_node *node;
 	cdev_t dev;
+
+kprintf("XXX, SJG: devfs_spec_kev_filter\n");
 
 	if ((dev = vp->v_rdev) == NULL)
 		return (EBADF);		/* device was revoked (EBADF) */

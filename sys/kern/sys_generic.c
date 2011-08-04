@@ -799,8 +799,10 @@ mapped_ioctl_unregister_handler(struct ioctl_map_handler *he)
 static int	nselcoll;	/* Select collisions since boot */
 int	selwait;
 SYSCTL_INT(_kern, OID_AUTO, nselcoll, CTLFLAG_RD, &nselcoll, 0, "");
-static int	nseldebug;
-SYSCTL_INT(_kern, OID_AUTO, nseldebug, CTLFLAG_RW, &nseldebug, 0, "");
+static int	seldebug;
+SYSCTL_INT(_kern, OID_AUTO, seldebug, CTLFLAG_RW, &seldebug, 0, "");
+static int	selpid;
+SYSCTL_INT(_kern, OID_AUTO, selpid, CTLFLAG_RW, &selpid, 0, "");
 
 /*
  * Select system call.
@@ -978,7 +980,8 @@ select_copyin(void *arg, struct kevent *kevp, int maxevents, int *events)
 				FD_CLR(fd, fdp);
 				++*events;
 
-				if (nseldebug)
+				if (seldebug &&
+				    (selpid == 0 || selpid == skap->lwp->lwp_proc->p_pid))
 					kprintf("select fd %d filter %d serial %d\n",
 						fd, filter, skap->lwp->lwp_kqueue_serial);
 			}
@@ -1013,7 +1016,8 @@ select_copyout(void *arg, struct kevent *kevp, int count, int *res)
 			kqueue_register_filter_note(&skap->lwp->lwp_kqueue,
 			    kevp[i].ident, &fn);
 
-			if (nseldebug)
+			if (seldebug &&
+			    (selpid == 0 || selpid == skap->lwp->lwp_proc->p_pid))
 				kprintf("select fd %ju mismatched serial %d\n",
 					(uintmax_t)kevp[i].ident,
 					skap->lwp->lwp_kqueue_serial);
@@ -1052,7 +1056,8 @@ select_copyout(void *arg, struct kevent *kevp, int count, int *res)
 				}
 				break;
 			}
-			if (nseldebug)
+			if (seldebug &&
+			    (selpid == 0 || selpid == skap->lwp->lwp_proc->p_pid))
 				kprintf("select fd %ju filter %d error %jd\n",
 					(uintmax_t)kevp[i].ident,
 					kevp[i].filter,
@@ -1283,11 +1288,11 @@ poll_copyin(void *arg, struct kevent *kevp, int maxevents, int *events)
 				(pkap->lwp->lwp_kqueue_serial + pkap->pfds));
 		}
 
-		if (nseldebug) {
+		if (seldebug &&
+		    (selpid == 0 || selpid == pkap->lwp->lwp_proc->p_pid))
 			kprintf("poll index %d/%d fd %d events %08x serial %d\n",
 				pkap->pfds, pkap->nfds-1, pfd->fd, pfd->events,
 				pkap->lwp->lwp_kqueue_serial);
-		}
 
 		++pkap->pfds;
 		(*events) += kev_count;
@@ -1323,7 +1328,8 @@ poll_copyout(void *arg, struct kevent *kevp, int count, int *res)
 			kqueue_register_filter_note(&pkap->lwp->lwp_kqueue,
 			    kevp[i].ident, &fn);
 
-			if (nseldebug)
+			if (seldebug &&
+			    (selpid == 0 || selpid == pkap->lwp->lwp_proc->p_pid))
 				kprintf("poll index %d out of range against serial %d\n",
 					pi, pkap->lwp->lwp_kqueue_serial);
 			continue;
@@ -1365,13 +1371,13 @@ poll_copyout(void *arg, struct kevent *kevp, int count, int *res)
 					}
 					break;
 				}
-				if (nseldebug) {
+                                if (seldebug &&
+                                    (selpid == 0 || selpid == pkap->lwp->lwp_proc->p_pid))
 					kprintf("poll index %d fd %d "
 						"filter %d error %jd\n",
 						pi, pfd->fd,
 						kevp[i].filter,
 						(intmax_t)kevp[i].data);
-				}
 				continue;
 			}
 
@@ -1422,18 +1428,18 @@ poll_copyout(void *arg, struct kevent *kevp, int count, int *res)
 				break;
 			}
 
-			if (nseldebug) {
+			if (seldebug &&
+			    (selpid == 0 || selpid == pkap->lwp->lwp_proc->p_pid))
 				kprintf("poll index %d/%d fd %d revents %08x\n",
 					pi, pkap->nfds, pfd->fd, pfd->revents);
-			}
 
 			if (count_res && pfd->revents)
 				++*res;
 		} else {
-			if (nseldebug) {
+			if (seldebug &&
+			    (selpid == 0 || selpid == pkap->lwp->lwp_proc->p_pid))
 				kprintf("poll index %d mismatch %ju/%d\n",
 					pi, (uintmax_t)kevp[i].ident, pfd->fd);
-			}
 		}
 	}
 

@@ -482,7 +482,7 @@ vop_poll(struct vop_ops *ops, struct vnode *vp, int events, struct ucred *cred)
  */
 int
 vop_kev_filter(struct vop_ops *ops, struct vnode *vp,
-    struct kev_filter *filt)
+    struct kev_filter **filt)
 {
 	struct vop_kev_filter_args ap;
 	VFS_MPLOCK_DECLARE;
@@ -496,6 +496,7 @@ vop_kev_filter(struct vop_ops *ops, struct vnode *vp,
 	VFS_MPLOCK1(vp->v_mount);
 	DO_OPS(ops, error, &ap, vop_kev_filter);
 	VFS_MPUNLOCK(vp->v_mount);
+
 	return(error);
 }
 

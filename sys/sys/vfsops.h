@@ -195,7 +195,7 @@ struct vop_poll_args {
 struct vop_kev_filter_args {
 	struct vop_generic_args a_head;
 	struct vnode *a_vp;
-	struct kev_filter *a_filt;
+	struct kev_filter **a_filt;
 };
 
 struct vop_mmap_args {
@@ -845,7 +845,7 @@ int vop_nrename(struct vop_ops *ops,
 		struct vnode *fdvp, struct vnode *tdvp,
 		struct ucred *cred);
 int vop_kev_filter(struct vop_ops *ops, struct vnode *vp,
-		struct kev_filter *filt);
+		struct kev_filter **filt);
 
 /*
  * Kernel VOP forwarding wrappers.  These are called when a VFS such as

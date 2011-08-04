@@ -409,8 +409,8 @@ fifo_kev_filter(struct vop_kev_filter_args *ap)
 		.fop_write = { fifo_filter_write, KEV_FILTOP_NOTMPSAFE }
 	};
 
-	ap->a_filt->kf_hook = (caddr_t)vp;
-	ap->a_filt->kf_ops = &kev_fops;
+	(*ap->a_filt)->kf_hook = (caddr_t)vp;
+	(*ap->a_filt)->kf_ops = &kev_fops;
 
 	return (0);
 }

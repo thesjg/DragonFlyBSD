@@ -541,6 +541,7 @@ cn_drvinit(void *unused)
 {
 	cn_devfsdev = make_only_devfs_dev(&cn_ops, 0, UID_ROOT, GID_WHEEL,
 					  0600, "console");
+	kev_dev_filter_init(cn_devfsdev, &tty_fops, (caddr_t)cn_devfsdev);
 }
 
 SYSINIT(cndev,SI_SUB_DRIVERS,SI_ORDER_MIDDLE+CDEV_MAJOR,cn_drvinit,NULL)
