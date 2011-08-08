@@ -1541,6 +1541,7 @@ int
 sogetopt(struct socket *so, struct sockopt *sopt)
 {
 	int	error, optval;
+	long	optval_l;
 	struct	linger l;
 	struct	timeval tv;
 #ifdef INET
@@ -1626,6 +1627,11 @@ integer:
 			tv.tv_usec = (optval % hz) * ustick;
 			error = sooptcopyout(sopt, &tv, sizeof tv);
 			break;			
+
+		case SO_SNDSPACE:
+			optval_l = ssb_space(&so->so_snd);
+			error = sooptcopyout(sopt, &optval_l, sizeof(optval_l));
+			break;
 
 		default:
 			error = ENOPROTOOPT;

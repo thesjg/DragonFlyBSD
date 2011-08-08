@@ -60,6 +60,7 @@
 static void netmsg_sync_func(netmsg_t msg);
 static void netmsg_service_loop(void *arg);
 static void cpu0_cpufn(struct mbuf **mp, int hoff);
+static void netisr_nohashck(struct mbuf *, const struct pktinfo *);
 
 struct netmsg_port_registration {
 	TAILQ_ENTRY(netmsg_port_registration) npr_entry;
@@ -379,6 +380,46 @@ netisr_queue(int num, struct mbuf *m)
 }
 
 /*
+ * Run a netisr service function on the packet.
+ *
+ * The packet must have been correctly characterized!
+ */
+int
+netisr_handle(int num, struct mbuf *m)
+{
+	struct netisr *ni;
+	struct netmsg_packet *pmsg;
+	lwkt_port_t port;
+
+	/*
+	 * Get the protocol port based on the packet hash
+	 */
+	KASSERT((m->m_flags & M_HASH), ("packet not characterized\n"));
+	port = cpu_portfn(m->m_pkthdr.hash);
+	KASSERT(&curthread->td_msgport == port, ("wrong msgport\n"));
+
+	KASSERT((num > 0 && num <= NELEM(netisrs)), ("bad isr %d", num));
+	ni = &netisrs[num];
+	if (ni->ni_handler == NULL) {
+		kprintf("unregistered isr %d\n", num);
+		m_freem(m);
+		return EIO;
+	}
+
+	/*
+	 * Initialize the netmsg, and run the handler directly.
+	 */
+	pmsg = &m->m_hdr.mh_netmsg;
+	netmsg_init(&pmsg->base, NULL, &netisr_apanic_rport,
+		    0, ni->ni_handler);
+	pmsg->nm_packet = m;
+	pmsg->base.lmsg.u.ms_result = num;
+	ni->ni_handler((netmsg_t)&pmsg->base);
+
+	return 0;
+}
+
+/*
  * Pre-characterization of a deeper portion of the packet for the
  * requested isr.
  *
@@ -443,8 +484,21 @@ netisr_register(int num, netisr_fn_t handler, netisr_cpufn_t cpufn)
 	ni = &netisrs[num];
 
 	ni->ni_handler = handler;
+	ni->ni_hashck = netisr_nohashck;
 	ni->ni_cpufn = cpufn;
 	netmsg_init(&ni->ni_netmsg, NULL, &netisr_adone_rport, 0, NULL);
+}
+
+void
+netisr_register_hashcheck(int num, netisr_hashck_t hashck)
+{
+	struct netisr *ni;
+
+	KASSERT((num > 0 && num <= NELEM(netisrs)),
+		("netisr_register: bad isr %d", num));
+
+	ni = &netisrs[num];
+	ni->ni_hashck = hashck;
 }
 
 void
@@ -662,4 +716,28 @@ netisr_barrier_rem(struct netisr_barrier *br)
 	}
 #endif
 	br->br_isset = 0;
+}
+
+static void
+netisr_nohashck(struct mbuf *m, const struct pktinfo *pi __unused)
+{
+	m->m_flags &= ~M_HASH;
+}
+
+void
+netisr_hashcheck(int num, struct mbuf *m, const struct pktinfo *pi)
+{
+	struct netisr *ni;
+
+	if (num < 0 || num >= NETISR_MAX)
+		panic("Bad isr %d", num);
+
+	/*
+	 * Valid netisr?
+	 */
+	ni = &netisrs[num];
+	if (ni->ni_handler == NULL)
+		panic("Unregistered isr %d\n", num);
+
+	ni->ni_hashck(m, pi);
 }
