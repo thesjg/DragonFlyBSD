@@ -176,14 +176,18 @@ cpu		I686_CPU		# aka Pentium Pro(tm)
 #
 # CPU_DISABLE_SSE disables SSE/MMX2 instructions support.
 #
+# CPU_ENABLE_EST enables support for Enhanced SpeedStep technology
+# found in Pentium(tm) M processors.
+#
+# CPU_ENABLE_LONGRUN enables support for Transmeta Crusoe LongRun
+# technology which allows to restrict power consumption of the CPU by
+# using group of hw.crusoe.* sysctls.
+#
 # CPU_ENABLE_TCC enables Thermal Control Circuitry (TCC) found in some
 # Pentium(tm) 4 and (possibly) later CPUs.  When enabled and detected,
 # TCC supports restricting power consumption using the hw.p4tcc.*
 # sysctls.  This operates independently of SpeedStep and is useful on
 # systems where other mechanisms such as apm(4) or acpi(4) don't work.
-#
-# CPU_ENABLE_EST enables support for Enhanced SpeedStep technology
-# found in Pentium(tm) M processors.
 #
 # CPU_FASTER_5X86_FPU enables faster FPU exception handler.
 #
@@ -255,6 +259,7 @@ options 	CPU_DISABLE_5X86_LSSER
 options 	CPU_DISABLE_SSE
 options 	CPU_ELAN
 options		CPU_ENABLE_EST
+options 	CPU_ENABLE_LONGRUN
 options		CPU_ENABLE_TCC
 options 	CPU_FASTER_5X86_FPU
 options		CPU_GEODE
@@ -2598,6 +2603,11 @@ options		HIFN_DEBUG	# enable debugging support: hw.hifn.debug
 #options	HIFN_NO_RNG	# for devices without RNG
 options		HIFN_RNDTEST	# enable rndtest support
 
+device		safe		# SafeNet 1141
+options 	SAFE_DEBUG	# enable debugging support: hw.safe.debug
+#options	SAFE_NO_RNG	# for devices without RNG
+options 	SAFE_RNDTEST	# enable rndtest support
+
 device		ubsec		# Broadcom 5501, 5601, 58xx
 options		UBSEC_DEBUG	# enable debugging support: hw.ubsec.debug
 #options	UBSEC_NO_RNG	# for devices without RNG
@@ -2768,6 +2778,7 @@ options	KTR_ENTRIES=1024
 options	KTR_VERBOSE=1
 #options KTR_CTXSW
 #options KTR_DMCRYPT
+#options KTR_DSCHED_BFQ
 #options KTR_ETHERNET
 #options KTR_HAMMER
 #options KTR_IFQ
@@ -2783,6 +2794,7 @@ options	KTR_VERBOSE=1
 #options KTR_SPIN_CONTENTION
 #options KTR_TESTLOG
 #options KTR_TOKENS
+#options KTR_TSLEEP
 #options KTR_USB_MEMORY
 
 # ALTQ
@@ -2813,6 +2825,7 @@ options		SCTP_MAP_LOGGING
 
 # DSCHED stuff
 options		DSCHED_FQ
+options		DSCHED_BFQ
 
 # WATCHDOG
 options		WATCHDOG_ENABLE		# Enable watchdog support framework

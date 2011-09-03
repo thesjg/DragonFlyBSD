@@ -1048,8 +1048,9 @@ ksignal(struct proc *p, int sig)
 void
 lwpsignal(struct proc *p, struct lwp *lp, int sig)
 {
-	int prop;
+	struct proc *q;
 	sig_t action;
+	int prop;
 
 	if (sig > _SIG_MAXSIG || sig <= 0) {
 		kprintf("lwpsignal: signal %d\n", sig);
@@ -1166,13 +1167,23 @@ lwpsignal(struct proc *p, struct lwp *lp, int sig)
 			 * continue the process and leave the signal in
 			 * p_siglist.  If the process catches SIGCONT, let it
 			 * handle the signal itself.
+			 *
+			 * XXX what if the signal is being held blocked?
+			 *
+			 * Token required to interlock kern_wait().
+			 * Reparenting can also cause a race so we have to
+			 * hold (q).
 			 */
-			/* XXX what if the signal is being held blocked? */
+			q = p->p_pptr;
+			PHOLD(q);
+			lwkt_gettoken(&q->p_token);
 			p->p_flag |= P_CONTINUED;
-			wakeup(p->p_pptr);
+			wakeup(q);
 			if (action == SIG_DFL)
 				SIGDELSET(p->p_siglist, sig);
 			proc_unstop(p);
+			lwkt_reltoken(&q->p_token);
+			PRELE(q);
 			if (action == SIG_CATCH)
 				goto active_process;
 			goto out;
@@ -1412,6 +1423,7 @@ signotify_remote(void *arg)
 void
 proc_stop(struct proc *p)
 {
+	struct proc *q;
 	struct lwp *lp;
 
 	ASSERT_LWKT_TOKEN_HELD(&p->p_token);
@@ -1458,10 +1470,19 @@ proc_stop(struct proc *p)
 	}
 
 	if (p->p_nstopped == p->p_nthreads) {
+		/*
+		 * Token required to interlock kern_wait().  Reparenting can
+		 * also cause a race so we have to hold (q).
+		 */
+		q = p->p_pptr;
+		PHOLD(q);
+		lwkt_gettoken(&q->p_token);
 		p->p_flag &= ~P_WAITED;
-		wakeup(p->p_pptr);
-		if ((p->p_pptr->p_sigacts->ps_flag & PS_NOCLDSTOP) == 0)
+		wakeup(q);
+		if ((q->p_sigacts->ps_flag & PS_NOCLDSTOP) == 0)
 			ksignal(p->p_pptr, SIGCHLD);
+		lwkt_reltoken(&q->p_token);
+		PRELE(q);
 	}
 	crit_exit();
 }
