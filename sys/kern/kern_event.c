@@ -124,7 +124,7 @@ SYSCTL_INT(_kern, OID_AUTO, kq_debug_pid, CTLFLAG_RW, &kq_debug_pid, 0,
 
 #define KEV_FILTER_ENTRY_ACTIVATE(fe) do { 				\
 	fe->fe_status |= KFE_ACTIVE;					\
-	if ((fe->fe_status & (KFE_QUEUED | KFE_DISABLED)) == 0)		\
+	if ((fe->fe_status & KFE_QUEUED) == 0)				\
 		kev_filter_entry_enqueue(fe);				\
 } while(0)
 
@@ -868,16 +868,15 @@ kprintf("XXX, SJG: looked up kq vector\n");
 	 * Disablement does not deactivate a knote here.
 	 */
 	if ((fn->fn_uflags & EV_DISABLE) &&
-	    ((fe->fe_status & KFE_DISABLED) == 0)) {
-		kprintf("XXX, SJG: Disable filter note\n");
-/*		fe->fe_status |= KFE_DISABLED; */
+	    ((fn->fn_status & KFN_DISABLED) == 0)) {
+		fn->fn_status |= KFN_DISABLED;
 	}
-/* XXX, SJG: DISABLE/ENABLE acts on a whole filter entry, must make it per-note */
+
 	/*
 	 * Re-enablement may have to immediately enqueue an active knote.
 	 */
-	if ((fn->fn_uflags & EV_ENABLE) && (fe->fe_status & KFE_DISABLED)) {
-		fe->fe_status &= ~KFE_DISABLED;
+	if ((fn->fn_uflags & EV_ENABLE) && (fn->fn_status & KFN_DISABLED)) {
+		fn->fn_status &= ~KFN_DISABLED;
 		if ((fe->fe_status & KFE_ACTIVE) &&
 		    ((fe->fe_status & KFE_QUEUED) == 0)) {
 			kev_filter_entry_enqueue(fe);
@@ -1019,53 +1018,45 @@ kqueue_scan(struct kqueue *kq, struct kevent *kevp, int count,
 			fe->fe_status |= KFE_DELETING | KFE_REPROCESS;
 		}
 
-		if (fe->fe_status & KFE_DISABLED) {
-			/*
-			 * If disabled we ensure the event is not queued
-			 * but leave its active bit set.  On re-enablement
-			 * the event may be immediately triggered.
-			 */
-			fe->fe_status &= ~KFE_QUEUED;
-		} else {
-			for (i = 0; i < EVFILT_SYSCOUNT; ++i) {
-				if (fe->fe_notes[i] != NULL) {
-					fn = fe->fe_notes[i];
+		for (i = 0; i < EVFILT_SYSCOUNT; ++i) {
+			if (fe->fe_notes[i] != NULL) {
+				fn = fe->fe_notes[i];
 
-					if ((fn->fn_flags & EV_ONESHOT) == 0 &&
-					    (fe->fe_status & KFE_DELETING) == 0 &&
-					    poll_filter_entry(fe, 0, 0) == 0) {
-						/*
-						 * If not running in one-shot mode and
-						 * the event is no longer present we
-						 * ensure it is removed from the queue
-						 * and ignore it.
-						 */
-//						fe->fe_status &= ~(KFE_QUEUED | KFE_ACTIVE);
-/*
-XXX, SJG:
-Might have to filter these out soemwhere else?
-*/
-					} else {
-						/*
-						 * Post the event(s)
-						 */
-						kevp->ident = fe->fe_ident;
-						kevp->filter = fn->fn_filter;
-						kevp->flags = fn->fn_flags;
-						kevp->fflags = fn->fn_fflags;
-						kevp->data = fn->fn_data;
-						kevp->udata = (void *)fn->fn_udata;
-						kevp++;
-						++total;
-						--count;
+				if ((fn->fn_flags & EV_ONESHOT) == 0 &&
+				    (fe->fe_status & KFE_DELETING) == 0 &&
+				    poll_filter_entry(fe, 0, 0) == 0) {
+					/*
+					 * If not running in one-shot mode and
+					 * the event is no longer present we
+					 * ensure it is removed from the queue
+					 * and ignore it.
+					 */
+					fe->fe_status &= ~(KFE_QUEUED | KFE_ACTIVE);
+				} else {
+					/*
+					 * Post the event(s)
+					 */
+					kevp->ident = fe->fe_ident;
+					kevp->filter = fn->fn_filter;
+					kevp->flags = fn->fn_flags;
+					kevp->fflags = fn->fn_fflags;
+					kevp->data = fn->fn_data;
+					kevp->udata = (void *)fn->fn_udata;
+					kevp++;
+					++total;
+					--count;
 
-						if (kq_debug) {
-							struct lwp *lwp = curthread->td_lwp;
-							if (kq_debug_pid == 0 || kq_debug_pid == lwp->lwp_proc->p_pid)
-								kprintf("kq posting fd %d for filter %d during scan\n",
-									fe->fe_ident, fn->fn_filter);
-						}
+					if (kq_debug) {
+						struct lwp *lwp = curthread->td_lwp;
+						if (kq_debug_pid == 0 || kq_debug_pid == lwp->lwp_proc->p_pid)
+							kprintf("kq posting fd %d for filter %d during scan\n",
+								fe->fe_ident, fn->fn_filter);
+					}
 
+					if (fn->fn_flags & EV_ONESHOT) {
+						fe->fe_notes[i] = NULL;
+						kev_filter_note_free(fn);
+					}
 //							fe->fe_status &= ~KFE_QUEUED;
 //							fe->fe_status |= KFE_DELETING | KFE_REPROCESS;
 /*
@@ -1074,14 +1065,13 @@ Can't nuke the whole event for a single note ...
 move oneshot into the note..?
 ... move disabled into the note too..
 */
-						if (fn->fn_flags & EV_CLEAR) {
-							fn->fn_data = 0;
-							fn->fn_fflags = 0;
-							fe->fe_status &= ~(KFE_QUEUED | KFE_ACTIVE);
-						} else {
-							TAILQ_INSERT_TAIL(&kq->kq_fepending, fe, fe_entry);
-							kq->kq_count++;
-						}
+					if (fn->fn_flags & EV_CLEAR) {
+						fn->fn_data = 0;
+						fn->fn_fflags = 0;
+						fe->fe_status &= ~(KFE_QUEUED | KFE_ACTIVE);
+					} else {
+						TAILQ_INSERT_TAIL(&kq->kq_fepending, fe, fe_entry);
+						kq->kq_count++;
 					}
 				}
 			}
@@ -1353,7 +1343,7 @@ restart:
 }
 
 /*
- *
+ * Must be called with KQ token held
  */
 static void
 kev_filter_entry_drop(struct kev_filter_entry *fe)
@@ -1362,8 +1352,7 @@ kev_filter_entry_drop(struct kev_filter_entry *fe)
 	struct kev_filter_entry_list *list;
 	int i;
 
-/* XXX, SJG: this is a carryover -- why are we doing this immediately before free'ing? */
-	fe->fe_status |= KFE_DELETING | KFE_REPROCESS;
+	ASSERT_LWKT_TOKEN_HELD(&kq_token);
 
 	if (fe->fe_fd == TRUE)
 		list = &fe->fe_ptr.p_fp->f_kflist;

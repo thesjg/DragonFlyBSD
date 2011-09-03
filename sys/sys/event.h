@@ -189,6 +189,7 @@ struct kev_filter_note {
 	struct			kev_filter_entry *fn_entry;	/* parent */
 
 	short			fn_filter;	/* EVFILT_* filter type */
+	int			fn_status;	/* flags, KFN_* */
 
 	u_short			fn_uflags;	/* action flags from userland */
 	u_int			fn_ufflags;	/* filter flags from userland */
@@ -230,10 +231,17 @@ struct kev_filter_entry {
 	intptr_t		fn_idata;	/* opaque data for select/poll */
 };
 
+/*
+ * status flags for struct kev_filter_note
+ */
+#define KFN_DISABLED	0x0004			/* event is disabled */
+
+/*
+ * status flags for struct kev_filter_entry
+ */
 #define KFE_ACTIVE	0x0001			/* event has been triggered */
 #define KFE_QUEUED	0x0002			/* event is on queue */
-#define KFE_DISABLED	0x0004			/* event is disabled */
-#define KFE_DETACHED	0x0008			/* knote is detached */
+#define KFE_DETACHED	0x0008			/* knote is detached (process exit) */
 #define KFE_REPROCESS	0x0010			/* force reprocessing race */
 #define KFE_DELETING	0x0020			/* deletion in progress */
 #define KFE_PROCESSING	0x0040			/* event processing in prog */
