@@ -1060,7 +1060,7 @@ select_copyout(void *arg, struct kevent *kevp, int count, int *res)
 			}
 			if (seldebug &&
 			    (selpid == 0 || selpid == skap->lwp->lwp_proc->p_pid))
-				kprintf("select fd %ju filter %d error %jd\n",
+				kprintf("select fd %ju filter %d error %d\n",
 					(uintmax_t)kevp[i].ident,
 					kevp[i].filter, error);
 			continue;

@@ -1766,7 +1766,7 @@ so_filter_read(struct kev_filter_note *fn, long hint, caddr_t hook)
 		 * Only set NODATA if all data has been exhausted.
 		 */
 		if (fn->fn_data == 0)
-			fn->kn_flags |= EV_NODATA;
+			fn->fn_flags |= EV_NODATA;
 		fn->fn_flags |= EV_EOF; 
 		fn->fn_fflags = so->so_error;
 		return (TRUE);

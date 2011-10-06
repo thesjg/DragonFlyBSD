@@ -369,7 +369,7 @@ fifo_filter_read(struct kev_filter_note *fn, long hint, caddr_t hook)
 
 	lwkt_gettoken(&vp->v_token);
 	fn->fn_data = so->so_rcv.ssb_cc;
-	if ((fn->fn_sfflags & NOTE_OLDAPI) == 0 &&
+	if ((fn->fn_ufflags & NOTE_OLDAPI) == 0 &&
 	    so->so_state & SS_ISDISCONNECTED) {
 		if (fn->fn_data == 0)
 			fn->fn_flags |= EV_NODATA;

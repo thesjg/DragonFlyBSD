@@ -133,8 +133,9 @@ SYSCTL_INT(_kern, OID_AUTO, kq_debug_pid, CTLFLAG_RW, &kq_debug_pid, 0,
 
 
 /*
- * MPSAFE
+ * XXX: SJG: Rewrite
  */
+#if 0
 static int
 kqueue_kqfilter(struct file *fp, struct knote *kn)
 {
@@ -293,6 +294,7 @@ filt_proc(struct knote *kn, long hint)
 
 	return (kn->kn_fflags != 0);
 }
+#endif
 
 /*
  * The callout interlocks with callout_terminate() but can still
@@ -324,6 +326,10 @@ signal_vector_lookup(struct kev_filter **filt, struct kev_filter_note *fn, void 
 }
 
 /*
+ * XXX: SJG: Rewrite
+ */
+#if 0
+/*
  * This function is called with the knote flagged locked but it is
  * still possible to race a callout event due to the callback blocking.
  * We must call callout_terminate() instead of callout_stop() to deal
@@ -339,6 +345,7 @@ filt_timerdetach(struct knote *kn)
 	FREE(calloutp, M_KQUEUE);
 	kq_ncallouts--;
 }
+#endif
 
 /* filt_timerattach (formerly) */
 static
