@@ -51,6 +51,7 @@ struct mount;
 struct vfsconf;
 struct vnode;
 struct indir;
+struct sockaddr;
 
 int	ext2_alloc (struct inode *,
 	    daddr_t, daddr_t, int, struct ucred *, daddr_t *);
