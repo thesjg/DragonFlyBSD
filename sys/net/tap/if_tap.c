@@ -99,7 +99,6 @@ static void		tapdestroy(struct tap_softc *);
 static int		tap_clone_create(struct if_clone *, int, caddr_t);
 static int		tap_clone_destroy(struct ifnet *);
 
-
 /* network interface */
 static void		tapifstart	(struct ifnet *);
 static int		tapifioctl	(struct ifnet *, u_long, caddr_t,
@@ -107,6 +106,16 @@ static int		tapifioctl	(struct ifnet *, u_long, caddr_t,
 static void		tapifinit	(void *);
 static void		tapifstop(struct tap_softc *, int);
 static void		tapifflags(struct tap_softc *);
+
+/* kevent */
+static boolean_t  tap_filter_read(struct kev_filter_note *fn, long hint,
+    caddr_t hook);
+static boolean_t  tap_filter_write(struct kev_filter_note *fn, long hint,
+    caddr_t hook);
+static struct kev_filter_ops kev_fops = {
+	.fop_read = { tap_filter_read },
+	.fop_write = { tap_filter_write }
+};
 
 
 /* character device */
@@ -116,7 +125,6 @@ static d_close_t	tapclose;
 static d_read_t		tapread;
 static d_write_t	tapwrite;
 static d_ioctl_t	tapioctl;
-static d_kqfilter_t	tapkqfilter;
 
 static struct dev_ops	tap_ops = {
 	{ CDEV_NAME, 0, 0 },
@@ -124,8 +132,7 @@ static struct dev_ops	tap_ops = {
 	.d_close =	tapclose,
 	.d_read =	tapread,
 	.d_write =	tapwrite,
-	.d_ioctl =	tapioctl,
-	.d_kqfilter =	tapkqfilter
+	.d_ioctl =	tapioctl
 };
 
 static int		taprefcnt = 0;		/* module ref. counter   */
@@ -298,6 +305,7 @@ tap_clone_create(struct if_clone *ifc __unused, int unit,
 
 		KKASSERT(dev != NULL);
 		tp = tapcreate(unit, dev);
+		kev_dev_filter_init(dev, &kev_fops, (caddr_t)tp);
 	}
 	tp->tap_flags |= TAP_CLONE;
 	TAPDEBUG(&tp->tap_if, "clone created. minor = %#x tap_flags = 0x%x\n",
@@ -326,8 +334,10 @@ tapopen(struct dev_open_args *ap)
 	get_mplock();
 	dev = ap->a_head.a_dev;
 	tp = dev->si_drv1;
-	if (tp == NULL)
+	if (tp == NULL) {
 		tp = tapcreate(minor(dev), dev);
+		kev_dev_filter_init(dev, &kev_fops, (caddr_t)tp);
+	}
 	if (tp->tap_flags & TAP_OPEN) {
 		rel_mplock();
 		return (EBUSY);
@@ -371,11 +381,13 @@ static int
 tapclone(struct dev_clone_args *ap)
 {
 	int unit;
+	struct tap_softc *tp;
 
 	unit = devfs_clone_bitmap_get(&DEVFS_CLONE_BITMAP(tap), 0);
 	ap->a_dev = make_only_dev(&tap_ops, unit, UID_ROOT, GID_WHEEL,
 				  0600, "%s%d", TAP, unit);
-	tapcreate(unit, ap->a_dev);
+	tp = tapcreate(unit, ap->a_dev);
+	kev_dev_filter_init(ap->a_dev, &kev_fops, (caddr_t)tp);
 	return (0);
 }
 
@@ -428,7 +440,7 @@ tapclose(struct dev_close_args *ap)
 
 	funsetown(&tp->tap_sigio);
 	tp->tap_sigio = NULL;
-	KNOTE(&tp->tap_rkq.ki_note, 0);
+	kev_filter(&tp->tap_filter, 0, 0);
 
 	tp->tap_flags &= ~TAP_OPEN;
 	funsetown(&tp->tap_sigtd);
@@ -671,7 +683,7 @@ tapifstart(struct ifnet *ifp)
 			wakeup((caddr_t)tp);
 		}
 
-		KNOTE(&tp->tap_rkq.ki_note, 0);
+		kev_filter(&tp->tap_filter, 0, 0);
 
 		if ((tp->tap_flags & TAP_ASYNC) && (tp->tap_sigio != NULL)) {
 			get_mplock();
@@ -964,70 +976,22 @@ tapwrite(struct dev_write_args *ap)
  *
  * MPSAFE
  */
-static int filt_tapread(struct knote *kn, long hint);
-static int filt_tapwrite(struct knote *kn, long hint);
-static void filt_tapdetach(struct knote *kn);
-static struct filterops tapread_filtops =
-	{ FILTEROP_ISFD, NULL, filt_tapdetach, filt_tapread };
-static struct filterops tapwrite_filtops =
-	{ FILTEROP_ISFD, NULL, filt_tapdetach, filt_tapwrite };
-
-static int
-tapkqfilter(struct dev_kqfilter_args *ap)
+static boolean_t
+tap_filter_read(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	cdev_t dev = ap->a_head.a_dev;
-	struct knote *kn = ap->a_kn;
-	struct tap_softc *tp;
-	struct klist *list;
-	struct ifnet *ifp;
-
-	tp = dev->si_drv1;
-	list = &tp->tap_rkq.ki_note;
-	ifp = &tp->tap_if;
-	ap->a_result =0;
-
-	switch(kn->kn_filter) {
-	case EVFILT_READ:
-		kn->kn_fop = &tapread_filtops;
-		kn->kn_hook = (void *)tp;
-		break;
-	case EVFILT_WRITE:
-		kn->kn_fop = &tapwrite_filtops;
-		kn->kn_hook = (void *)tp;
-		break;
-	default:
-		ap->a_result = EOPNOTSUPP;
-		return(0);
-	}
-
-	knote_insert(list, kn);
-	return(0);
-}
-
-static int
-filt_tapread(struct knote *kn, long hint)
-{
-	struct tap_softc *tp = (void *)kn->kn_hook;
+	struct tap_softc *tp = (void *)hook;
 
 	if (IF_QEMPTY(&tp->tap_devq) == 0)	/* XXX serializer */
-		return(1);
+		return (TRUE);
 	else
-		return(0);
+		return (FALSE);
 }
 
-static int
-filt_tapwrite(struct knote *kn, long hint)
+static boolean_t
+tap_filter_write(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
 	/* Always ready for a write */
-	return (1);
-}
-
-static void
-filt_tapdetach(struct knote *kn)
-{
-	struct tap_softc *tp = (void *)kn->kn_hook;
-
-	knote_remove(&tp->tap_rkq.ki_note, kn);
+	return (TRUE);
 }
 
 static void
