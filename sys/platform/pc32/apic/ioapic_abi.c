@@ -476,31 +476,33 @@ extern void	IOAPIC_INTRDIS(int);
 
 extern int	imcr_present;
 
-static int	ioapic_setvar(int, const void *);
-static int	ioapic_getvar(int, void *);
-static int	ioapic_vectorctl(int, int, int);
-static void	ioapic_finalize(void);
-static void	ioapic_cleanup(void);
-static void	ioapic_setdefault(void);
-static void	ioapic_stabilize(void);
-static void	ioapic_initmap(void);
-static void	ioapic_intr_config(int, enum intr_trigger, enum intr_polarity);
-static void	ioapic_abi_intren(int);
-static void	ioapic_abi_intrdis(int);
+static void	ioapic_abi_intr_enable(int);
+static void	ioapic_abi_intr_disable(int);
+static void	ioapic_abi_intr_setup(int, int);
+static void	ioapic_abi_intr_teardown(int);
+static void	ioapic_abi_intr_config(int,
+		    enum intr_trigger, enum intr_polarity);
+
+static void	ioapic_abi_finalize(void);
+static void	ioapic_abi_cleanup(void);
+static void	ioapic_abi_setdefault(void);
+static void	ioapic_abi_stabilize(void);
+static void	ioapic_abi_initmap(void);
 
 struct machintr_abi MachIntrABI_IOAPIC = {
 	MACHINTR_IOAPIC,
-	.intrdis	= ioapic_abi_intrdis,
-	.intren		= ioapic_abi_intren,
-	.vectorctl	= ioapic_vectorctl,
-	.setvar		= ioapic_setvar,
-	.getvar		= ioapic_getvar,
-	.finalize	= ioapic_finalize,
-	.cleanup	= ioapic_cleanup,
-	.setdefault	= ioapic_setdefault,
-	.stabilize	= ioapic_stabilize,
-	.initmap	= ioapic_initmap,
-	.intr_config	= ioapic_intr_config
+
+	.intr_disable	= ioapic_abi_intr_disable,
+	.intr_enable	= ioapic_abi_intr_enable,
+	.intr_setup	= ioapic_abi_intr_setup,
+	.intr_teardown	= ioapic_abi_intr_teardown,
+	.intr_config	= ioapic_abi_intr_config,
+
+	.finalize	= ioapic_abi_finalize,
+	.cleanup	= ioapic_abi_cleanup,
+	.setdefault	= ioapic_abi_setdefault,
+	.stabilize	= ioapic_abi_stabilize,
+	.initmap	= ioapic_abi_initmap
 };
 
 static int	ioapic_abi_extint_irq = -1;
@@ -508,39 +510,27 @@ static int	ioapic_abi_extint_irq = -1;
 struct ioapic_irqinfo	ioapic_irqs[IOAPIC_HWI_VECTORS];
 
 static void
-ioapic_abi_intren(int irq)
+ioapic_abi_intr_enable(int irq)
 {
 	if (irq < 0 || irq >= IOAPIC_HWI_VECTORS) {
-		kprintf("ioapic_abi_intren invalid irq %d\n", irq);
+		kprintf("ioapic_abi_intr_enable invalid irq %d\n", irq);
 		return;
 	}
 	IOAPIC_INTREN(irq);
 }
 
 static void
-ioapic_abi_intrdis(int irq)
+ioapic_abi_intr_disable(int irq)
 {
 	if (irq < 0 || irq >= IOAPIC_HWI_VECTORS) {
-		kprintf("ioapic_abi_intrdis invalid irq %d\n", irq);
+		kprintf("ioapic_abi_intr_disable invalid irq %d\n", irq);
 		return;
 	}
 	IOAPIC_INTRDIS(irq);
 }
 
-static int
-ioapic_setvar(int varid, const void *buf)
-{
-	return ENOENT;
-}
-
-static int
-ioapic_getvar(int varid, void *buf)
-{
-	return ENOENT;
-}
-
 static void
-ioapic_finalize(void)
+ioapic_abi_finalize(void)
 {
 	KKASSERT(MachIntrABI.type == MACHINTR_IOAPIC);
 	KKASSERT(ioapic_enable);
@@ -561,108 +551,108 @@ ioapic_finalize(void)
  * that had already been posted to the cpu.
  */
 static void
-ioapic_cleanup(void)
+ioapic_abi_cleanup(void)
 {
 	bzero(mdcpu->gd_ipending, sizeof(mdcpu->gd_ipending));
 }
 
 /* Must never be called */
 static void
-ioapic_stabilize(void)
+ioapic_abi_stabilize(void)
 {
 	panic("ioapic_stabilize() is called\n");
 }
 
-static int
-ioapic_vectorctl(int op, int intr, int flags)
+static void
+ioapic_abi_intr_setup(int intr, int flags)
 {
-	int error;
-	int vector;
-	int select;
+	int vector, select;
 	uint32_t value;
 	u_long ef;
 
-	if (intr < 0 || intr >= IOAPIC_HWI_VECTORS ||
-	    intr == IOAPIC_HWI_SYSCALL)
-		return EINVAL;
-
-	if (ioapic_irqs[intr].io_addr == NULL)
-		return EINVAL;
+	KKASSERT(intr >= 0 && intr < IOAPIC_HWI_VECTORS &&
+	    intr != IOAPIC_HWI_SYSCALL);
+	KKASSERT(ioapic_irqs[intr].io_addr != NULL);
 
 	ef = read_eflags();
 	cpu_disable_intr();
-	error = 0;
 
-	switch(op) {
-	case MACHINTR_VECTOR_SETUP:
-		vector = IDT_OFFSET + intr;
-		setidt(vector, ioapic_intr[intr], SDT_SYS386IGT,
-		       SEL_KPL, GSEL(GCODE_SEL, SEL_KPL));
+	vector = IDT_OFFSET + intr;
+	setidt(vector, ioapic_intr[intr], SDT_SYS386IGT,
+	       SEL_KPL, GSEL(GCODE_SEL, SEL_KPL));
 
-		/*
-		 * Now reprogram the vector in the IO APIC.  In order to avoid
-		 * losing an EOI for a level interrupt, which is vector based,
-		 * make sure that the IO APIC is programmed for edge-triggering
-		 * first, then reprogrammed with the new vector.  This should
-		 * clear the IRR bit.
-		 */
-		imen_lock();
+	/*
+	 * Now reprogram the vector in the IO APIC.  In order to avoid
+	 * losing an EOI for a level interrupt, which is vector based,
+	 * make sure that the IO APIC is programmed for edge-triggering
+	 * first, then reprogrammed with the new vector.  This should
+	 * clear the IRR bit.
+	 */
+	imen_lock();
 
-		select = ioapic_irqs[intr].io_idx;
-		value = ioapic_read(ioapic_irqs[intr].io_addr, select);
-		value |= IOART_INTMSET;
+	select = ioapic_irqs[intr].io_idx;
+	value = ioapic_read(ioapic_irqs[intr].io_addr, select);
+	value |= IOART_INTMSET;
 
-		ioapic_write(ioapic_irqs[intr].io_addr, select,
-		    (value & ~APIC_TRIGMOD_MASK));
-		ioapic_write(ioapic_irqs[intr].io_addr, select,
-		    (value & ~IOART_INTVEC) | vector);
+	ioapic_write(ioapic_irqs[intr].io_addr, select,
+	    (value & ~APIC_TRIGMOD_MASK));
+	ioapic_write(ioapic_irqs[intr].io_addr, select,
+	    (value & ~IOART_INTVEC) | vector);
 
-		imen_unlock();
+	imen_unlock();
 
-		machintr_intren(intr);
-		break;
-
-	case MACHINTR_VECTOR_TEARDOWN:
-		/*
-		 * Teardown an interrupt vector.  The vector should already be
-		 * installed in the cpu's IDT, but make sure.
-		 */
-		machintr_intrdis(intr);
-
-		vector = IDT_OFFSET + intr;
-		setidt(vector, ioapic_intr[intr], SDT_SYS386IGT, SEL_KPL,
-		       GSEL(GCODE_SEL, SEL_KPL));
-
-		/*
-		 * In order to avoid losing an EOI for a level interrupt, which
-		 * is vector based, make sure that the IO APIC is programmed for
-		 * edge-triggering first, then reprogrammed with the new vector.
-		 * This should clear the IRR bit.
-		 */
-		imen_lock();
-
-		select = ioapic_irqs[intr].io_idx;
-		value = ioapic_read(ioapic_irqs[intr].io_addr, select);
-
-		ioapic_write(ioapic_irqs[intr].io_addr, select,
-		    (value & ~APIC_TRIGMOD_MASK));
-		ioapic_write(ioapic_irqs[intr].io_addr, select,
-		    (value & ~IOART_INTVEC) | vector);
-
-		imen_unlock();
-		break;
-
-	default:
-		error = EOPNOTSUPP;
-		break;
-	}
+	machintr_intr_enable(intr);
 
 	write_eflags(ef);
-	return error;
 }
 
 static void
-ioapic_setdefault(void)
+ioapic_abi_intr_teardown(int intr)
+{
+	int vector, select;
+	uint32_t value;
+	u_long ef;
+
+	KKASSERT(intr >= 0 && intr < IOAPIC_HWI_VECTORS &&
+	    intr != IOAPIC_HWI_SYSCALL);
+	KKASSERT(ioapic_irqs[intr].io_addr != NULL);
+
+	ef = read_eflags();
+	cpu_disable_intr();
+
+	/*
+	 * Teardown an interrupt vector.  The vector should already be
+	 * installed in the cpu's IDT, but make sure.
+	 */
+	machintr_intr_disable(intr);
+
+	vector = IDT_OFFSET + intr;
+	setidt(vector, ioapic_intr[intr], SDT_SYS386IGT, SEL_KPL,
+	       GSEL(GCODE_SEL, SEL_KPL));
+
+	/*
+	 * In order to avoid losing an EOI for a level interrupt, which
+	 * is vector based, make sure that the IO APIC is programmed for
+	 * edge-triggering first, then reprogrammed with the new vector.
+	 * This should clear the IRR bit.
+	 */
+	imen_lock();
+
+	select = ioapic_irqs[intr].io_idx;
+	value = ioapic_read(ioapic_irqs[intr].io_addr, select);
+
+	ioapic_write(ioapic_irqs[intr].io_addr, select,
+	    (value & ~APIC_TRIGMOD_MASK));
+	ioapic_write(ioapic_irqs[intr].io_addr, select,
+	    (value & ~IOART_INTVEC) | vector);
+
+	imen_unlock();
+
+	write_eflags(ef);
+}
+
+static void
+ioapic_abi_setdefault(void)
 {
 	int intr;
 
@@ -675,7 +665,7 @@ ioapic_setdefault(void)
 }
 
 static void
-ioapic_initmap(void)
+ioapic_abi_initmap(void)
 {
 	int i;
 
@@ -796,7 +786,7 @@ ioapic_abi_find_irq(int irq, enum intr_trigger trig, enum intr_polarity pola)
 }
 
 static void
-ioapic_intr_config(int irq, enum intr_trigger trig, enum intr_polarity pola)
+ioapic_abi_intr_config(int irq, enum intr_trigger trig, enum intr_polarity pola)
 {
 	struct ioapic_irqinfo *info;
 	struct ioapic_irqmap *map;

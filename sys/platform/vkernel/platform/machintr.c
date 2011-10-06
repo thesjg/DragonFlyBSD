@@ -52,54 +52,44 @@
  * Interrupt Subsystem ABI
  */
 
-static void dummy_intrdis(int);
-static void dummy_intren(int);
-static int dummy_vectorctl(int, int, int);
-static int dummy_setvar(int, const void *);
-static int dummy_getvar(int, void *);
+static void dummy_intr_disable(int);
+static void dummy_intr_enable(int);
+static void dummy_intr_setup(int, int);
+static void dummy_intr_teardown(int);
 static void dummy_finalize(void);
 static void dummy_intrcleanup(void);
 static void dummy_stabilize(void);
 
 struct machintr_abi MachIntrABI = {
 	MACHINTR_GENERIC,
-	.intrdis =	dummy_intrdis,
-	.intren =	dummy_intren,
-	.vectorctl =	dummy_vectorctl,
-	.setvar =	dummy_setvar,
-	.getvar =	dummy_getvar,
+	.intr_disable =	dummy_intr_disable,
+	.intr_enable =	dummy_intr_enable,
+	.intr_setup =	dummy_intr_setup,
+	.intr_teardown = dummy_intr_teardown,
+
 	.finalize =	dummy_finalize,
 	.cleanup =	dummy_intrcleanup,
 	.stabilize =	dummy_stabilize
 };
 
 static void
-dummy_intrdis(int intr)
+dummy_intr_disable(int intr)
 {
 }
 
 static void
-dummy_intren(int intr)
+dummy_intr_enable(int intr)
 {
 }
 
-static int
-dummy_vectorctl(int op, int intr, int flags)
+static void
+dummy_intr_setup(int intr, int flags)
 {
-	return (0);
-	/* return (EOPNOTSUPP); */
 }
 
-static int
-dummy_setvar(int varid, const void *buf)
+static void
+dummy_intr_teardown(int intr)
 {
-	return (ENOENT);
-}
-
-static int
-dummy_getvar(int varid, void *buf)
-{
-	return (ENOENT);
 }
 
 static void

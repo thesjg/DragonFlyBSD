@@ -326,10 +326,8 @@ register_int(int intr, inthand2_t *handler, void *arg, const char *name,
     /*
      * Setup the machine level interrupt vector
      */
-    if (intr < FIRST_SOFTINT && info->i_slow + info->i_fast == 1) {
-	if (machintr_vector_setup(intr, intr_flags))
-	    kprintf("machintr_vector_setup: failed on irq %d\n", intr);
-    }
+    if (intr < FIRST_SOFTINT && info->i_slow + info->i_fast == 1)
+	machintr_intr_setup(intr, intr_flags);
 
     int_moveto_origcpu(orig_cpuid, cpuid);
 
@@ -379,7 +377,7 @@ unregister_int(void *id)
 	else
 	    --info->i_slow;
 	if (intr < FIRST_SOFTINT && info->i_fast + info->i_slow == 0)
-	    machintr_vector_teardown(intr);
+	    machintr_intr_teardown(intr);
 
 	/*
 	 * Clear i_mplock_required if no handlers in the chain require the
@@ -849,7 +847,7 @@ ithread_handler(void *arg)
 	 * interrupt on close (the parallel bus being a good example).
 	 */
 	if (intr < FIRST_SOFTINT && *list)
-	    machintr_intren(intr);
+	    machintr_intr_enable(intr);
 
 	/*
 	 * Do a quick exit/enter to catch any higher-priority interrupt

@@ -38,18 +38,16 @@
  * vector and masking layer.
  */
 
+#ifndef _SYS_MACHINTR_H_
+#define _SYS_MACHINTR_H_
+
+#ifdef _KERNEL
+
 #ifndef _SYS_BUS_H_
 #include <sys/bus.h>
 #endif
-#ifndef _SYS_QUEUE_H_
-#include <sys/queue.h>
-#endif
 
 enum machintr_type { MACHINTR_GENERIC, MACHINTR_ICU, MACHINTR_IOAPIC };
-
-#define MACHINTR_VAR_SIZEMASK	0xFFFF
-
-#define MACHINTR_VAR_IMCR_PRESENT	(0x00010000|sizeof(int))
 
 #define MACHINTR_VECTOR_SETUP		1
 #define MACHINTR_VECTOR_TEARDOWN	2
@@ -59,33 +57,33 @@ enum machintr_type { MACHINTR_GENERIC, MACHINTR_ICU, MACHINTR_IOAPIC };
  */
 struct machintr_abi {
     enum machintr_type type;
-    void	(*intrdis)(int);		/* hardware disable irq */
-    void	(*intren)(int);			/* hardware enable irq */
-    int		(*vectorctl)(int, int, int);	/* hardware intr vector ctl */
-    int		(*setvar)(int, const void *);	/* set miscellanious info */
-    int		(*getvar)(int, void *);		/* get miscellanious info */
+
+    void	(*intr_disable)(int);		/* hardware disable intr */
+    void	(*intr_enable)(int);		/* hardware enable intr */
+    void	(*intr_setup)(int, int);	/* setup intr */
+    void	(*intr_teardown)(int);		/* tear down intr */
+    void	(*intr_config)			/* config intr */
+    		(int, enum intr_trigger, enum intr_polarity);
+
     void	(*finalize)(void);		/* final before ints enabled */
     void	(*cleanup)(void);		/* cleanup */
     void	(*setdefault)(void);		/* set default vectors */
     void	(*stabilize)(void);		/* stable before ints enabled */
     void	(*initmap)(void);		/* init irq mapping */
-    void	(*intr_config)			/* config intr */
-    		(int, enum intr_trigger, enum intr_polarity);
 };
 
-#define machintr_intren(intr)	MachIntrABI.intren(intr)
-#define machintr_intrdis(intr)	MachIntrABI.intrdis(intr)
-#define machintr_vector_setup(intr, flags)	\
-	    MachIntrABI.vectorctl(MACHINTR_VECTOR_SETUP, intr, flags)
-#define machintr_vector_teardown(intr)		\
-	    MachIntrABI.vectorctl(MACHINTR_VECTOR_TEARDOWN, intr, 0)
+#define machintr_intr_enable(intr)	MachIntrABI.intr_enable(intr)
+#define machintr_intr_disable(intr)	MachIntrABI.intr_disable(intr)
+#define machintr_intr_setup(intr, flags) \
+	    MachIntrABI.intr_setup((intr), (flags))
+#define machintr_intr_teardown(intr) \
+	    MachIntrABI.intr_teardown((intr))
 
 #define machintr_intr_config(intr, trig, pola)	\
 	    MachIntrABI.intr_config((intr), (trig), (pola))
 
-#ifdef _KERNEL
-
 extern struct machintr_abi MachIntrABI;
-extern int machintr_setvar_simple(int, int);
 
-#endif
+#endif	/* _KERNEL */
+
+#endif	/* _SYS_MACHINTR_H_ */

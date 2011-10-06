@@ -1204,12 +1204,14 @@ pipe_filter_read(struct kev_filter_note *fn, long hint, caddr_t hook)
 
 	fn->fn_data = rpipe->pipe_buffer.windex - rpipe->pipe_buffer.rindex;
 
-	/*
-	 * Only set EOF if all data has been exhausted
-	 */
-	if ((rpipe->pipe_state & PIPE_REOF) && fn->fn_data == 0) {
-		fn->fn_flags |= EV_EOF;
-		ready = TRUE;
+	if (rpipe->pipe_state & PIPE_REOF) {
+		/*
+		 * Only set NODATA if all data has been exhausted
+		 */
+		if (fn->fn_data == 0)
+			fn->fn_flags |= EV_NODATA;
+		fn->fn_flags |= EV_EOF; 
+		ready = 1;
 	}
 	lwkt_reltoken(&rpipe->pipe_wlock);
 	lwkt_reltoken(&rpipe->pipe_rlock);
@@ -1229,7 +1231,7 @@ pipe_filter_write(struct kev_filter_note *fn, long hint, caddr_t hook)
 
 	fn->fn_data = 0;
 	if (wpipe == NULL) {
-		fn->fn_flags |= EV_EOF;
+		fn->fn_flags |= (EV_EOF | EV_NODATA);
 		return (TRUE);
 	}
 
@@ -1237,7 +1239,7 @@ pipe_filter_write(struct kev_filter_note *fn, long hint, caddr_t hook)
 	lwkt_gettoken(&wpipe->pipe_wlock);
 
 	if (wpipe->pipe_state & PIPE_WEOF) {
-		fn->fn_flags |= EV_EOF;
+		fn->fn_flags |= (EV_EOF | EV_NODATA);
 		ready = TRUE;
 	}
 

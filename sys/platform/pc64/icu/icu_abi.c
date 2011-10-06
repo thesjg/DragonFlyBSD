@@ -96,57 +96,46 @@ extern void	ICU_INTRDIS(int);
 
 extern int	imcr_present;
 
-static int	icu_vectorctl(int, int, int);
-static int	icu_setvar(int, const void *);
-static int	icu_getvar(int, void *);
-static void	icu_finalize(void);
-static void	icu_cleanup(void);
-static void	icu_setdefault(void);
-static void	icu_stabilize(void);
-static void	icu_initmap(void);
-static void	icu_intr_config(int, enum intr_trigger, enum intr_polarity);
+static void	icu_abi_intr_setup(int, int);
+static void	icu_abi_intr_teardown(int);
+static void	icu_abi_intr_config(int, enum intr_trigger, enum intr_polarity);
+
+static void	icu_abi_finalize(void);
+static void	icu_abi_cleanup(void);
+static void	icu_abi_setdefault(void);
+static void	icu_abi_stabilize(void);
+static void	icu_abi_initmap(void);
 
 struct machintr_abi MachIntrABI_ICU = {
 	MACHINTR_ICU,
-	.intrdis	= ICU_INTRDIS,
-	.intren		= ICU_INTREN,
-	.vectorctl	= icu_vectorctl,
-	.setvar		= icu_setvar,
-	.getvar		= icu_getvar,
-	.finalize	= icu_finalize,
-	.cleanup	= icu_cleanup,
-	.setdefault	= icu_setdefault,
-	.stabilize	= icu_stabilize,
-	.initmap	= icu_initmap,
-	.intr_config	= icu_intr_config
+	.intr_disable	= ICU_INTRDIS,
+	.intr_enable	= ICU_INTREN,
+	.intr_setup	= icu_abi_intr_setup,
+	.intr_teardown	= icu_abi_intr_teardown,
+	.intr_config	= icu_abi_intr_config,
+
+	.finalize	= icu_abi_finalize,
+	.cleanup	= icu_abi_cleanup,
+	.setdefault	= icu_abi_setdefault,
+	.stabilize	= icu_abi_stabilize,
+	.initmap	= icu_abi_initmap
 };
 
 /*
  * WARNING!  SMP builds can use the ICU now so this code must be MP safe.
  */
-static int
-icu_setvar(int varid, const void *buf)
-{
-	return ENOENT;
-}
-
-static int
-icu_getvar(int varid, void *buf)
-{
-	return ENOENT;
-}
 
 /*
  * Called before interrupts are physically enabled
  */
 static void
-icu_stabilize(void)
+icu_abi_stabilize(void)
 {
 	int intr;
 
 	for (intr = 0; intr < ICU_HWI_VECTORS; ++intr)
-		machintr_intrdis(intr);
-	machintr_intren(ICU_IRQ_SLAVE);
+		machintr_intr_disable(intr);
+	machintr_intr_enable(ICU_IRQ_SLAVE);
 }
 
 /*
@@ -154,7 +143,7 @@ icu_stabilize(void)
  * critical section is released.
  */
 static void
-icu_cleanup(void)
+icu_abi_cleanup(void)
 {
 	bzero(mdcpu->gd_ipending, sizeof(mdcpu->gd_ipending));
 }
@@ -164,7 +153,7 @@ icu_cleanup(void)
  * held and interrupts are not physically disabled.
  */
 static void
-icu_finalize(void)
+icu_abi_finalize(void)
 {
 	KKASSERT(MachIntrABI.type == MACHINTR_ICU);
 	KKASSERT(!ioapic_enable);
@@ -184,42 +173,40 @@ icu_finalize(void)
 	}
 }
 
-static int
-icu_vectorctl(int op, int intr, int flags)
+static void
+icu_abi_intr_setup(int intr, int flags)
 {
-	int error;
 	register_t ef;
 
-	if (intr < 0 || intr >= ICU_HWI_VECTORS || intr == ICU_IRQ_SLAVE)
-		return EINVAL;
+	KKASSERT(intr >= 0 && intr < ICU_HWI_VECTORS && intr != ICU_IRQ_SLAVE);
 
 	ef = read_rflags();
 	cpu_disable_intr();
-	error = 0;
 
-	switch(op) {
-	case MACHINTR_VECTOR_SETUP:
-		setidt(IDT_OFFSET + intr, icu_intr[intr], SDT_SYSIGT,
-		       SEL_KPL, 0);
-		machintr_intren(intr);
-		break;
+	setidt(IDT_OFFSET + intr, icu_intr[intr], SDT_SYSIGT, SEL_KPL, 0);
+	machintr_intr_enable(intr);
 
-	case MACHINTR_VECTOR_TEARDOWN:
-		machintr_intrdis(intr);
-		setidt(IDT_OFFSET + intr, icu_intr[intr], SDT_SYSIGT,
-		       SEL_KPL, 0);
-		break;
-
-	default:
-		error = EOPNOTSUPP;
-		break;
-	}
 	write_rflags(ef);
-	return error;
 }
 
 static void
-icu_setdefault(void)
+icu_abi_intr_teardown(int intr)
+{
+	register_t ef;
+
+	KKASSERT(intr >= 0 && intr < ICU_HWI_VECTORS && intr != ICU_IRQ_SLAVE);
+
+	ef = read_rflags();
+	cpu_disable_intr();
+
+	machintr_intr_disable(intr);
+	setidt(IDT_OFFSET + intr, icu_intr[intr], SDT_SYSIGT, SEL_KPL, 0);
+
+	write_rflags(ef);
+}
+
+static void
+icu_abi_setdefault(void)
 {
 	int intr;
 
@@ -232,7 +219,7 @@ icu_setdefault(void)
 }
 
 static void
-icu_initmap(void)
+icu_abi_initmap(void)
 {
 	int i;
 
@@ -254,7 +241,7 @@ icu_initmap(void)
 }
 
 static void
-icu_intr_config(int irq, enum intr_trigger trig,
+icu_abi_intr_config(int irq, enum intr_trigger trig,
     enum intr_polarity pola __unused)
 {
 	struct icu_irqmap *map;

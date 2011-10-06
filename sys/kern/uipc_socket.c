@@ -1761,11 +1761,13 @@ so_filter_read(struct kev_filter_note *fn, long hint, caddr_t hook)
 	}
 	fn->fn_data = so->so_rcv.ssb_cc;
 
-	/*
-	 * Only set EOF if all data has been exhausted.
-	 */
-	if ((so->so_state & SS_CANTRCVMORE) && fn->fn_data == 0) {
-		fn->fn_flags |= EV_EOF;
+	if (so->so_state & SS_CANTRCVMORE) {
+		/*
+		 * Only set NODATA if all data has been exhausted.
+		 */
+		if (fn->fn_data == 0)
+			fn->kn_flags |= EV_NODATA;
+		fn->fn_flags |= EV_EOF; 
 		fn->fn_fflags = so->so_error;
 		return (TRUE);
 	}
@@ -1784,7 +1786,7 @@ so_filter_write(struct kev_filter_note *fn, long hint, caddr_t hook)
 
 	fn->fn_data = ssb_space(&so->so_snd);
 	if (so->so_state & SS_CANTSENDMORE) {
-		fn->fn_flags |= EV_EOF;
+		fn->fn_flags |= (EV_EOF | EV_NODATA);
 		fn->fn_fflags = so->so_error;
 		return (1);
 	}

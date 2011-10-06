@@ -133,7 +133,171 @@ SYSCTL_INT(_kern, OID_AUTO, kq_debug_pid, CTLFLAG_RW, &kq_debug_pid, 0,
 
 
 /*
- *
+ * MPSAFE
+ */
+static int
+kqueue_kqfilter(struct file *fp, struct knote *kn)
+{
+	struct kqueue *kq = (struct kqueue *)kn->kn_fp->f_data;
+
+	if (kn->kn_filter != EVFILT_READ)
+		return (EOPNOTSUPP);
+
+	kn->kn_fop = &kqread_filtops;
+	knote_insert(&kq->kq_kqinfo.ki_note, kn);
+	return (0);
+}
+
+static void
+filt_kqdetach(struct knote *kn)
+{
+	struct kqueue *kq = (struct kqueue *)kn->kn_fp->f_data;
+
+	knote_remove(&kq->kq_kqinfo.ki_note, kn);
+}
+
+/*ARGSUSED*/
+static int
+filt_kqueue(struct knote *kn, long hint)
+{
+	struct kqueue *kq = (struct kqueue *)kn->kn_fp->f_data;
+
+	kn->kn_data = kq->kq_count;
+	return (kn->kn_data > 0);
+}
+
+static int
+filt_procattach(struct knote *kn)
+{
+	struct proc *p;
+	int immediate;
+
+	immediate = 0;
+	p = pfind(kn->kn_id);
+	if (p == NULL && (kn->kn_sfflags & NOTE_EXIT)) {
+		p = zpfind(kn->kn_id);
+		immediate = 1;
+	}
+	if (p == NULL) {
+		return (ESRCH);
+	}
+	if (!PRISON_CHECK(curthread->td_ucred, p->p_ucred)) {
+		if (p)
+			PRELE(p);
+		return (EACCES);
+	}
+
+	lwkt_gettoken(&p->p_token);
+	kn->kn_ptr.p_proc = p;
+	kn->kn_flags |= EV_CLEAR;		/* automatically set */
+
+	/*
+	 * internal flag indicating registration done by kernel
+	 */
+	if (kn->kn_flags & EV_FLAG1) {
+		kn->kn_data = kn->kn_sdata;		/* ppid */
+		kn->kn_fflags = NOTE_CHILD;
+		kn->kn_flags &= ~EV_FLAG1;
+	}
+
+	knote_insert(&p->p_klist, kn);
+
+	/*
+	 * Immediately activate any exit notes if the target process is a
+	 * zombie.  This is necessary to handle the case where the target
+	 * process, e.g. a child, dies before the kevent is negistered.
+	 */
+	if (immediate && filt_proc(kn, NOTE_EXIT))
+		KNOTE_ACTIVATE(kn);
+	lwkt_reltoken(&p->p_token);
+	PRELE(p);
+
+	return (0);
+}
+
+/*
+ * The knote may be attached to a different process, which may exit,
+ * leaving nothing for the knote to be attached to.  So when the process
+ * exits, the knote is marked as DETACHED and also flagged as ONESHOT so
+ * it will be deleted when read out.  However, as part of the knote deletion,
+ * this routine is called, so a check is needed to avoid actually performing
+ * a detach, because the original process does not exist any more.
+ */
+static void
+filt_procdetach(struct knote *kn)
+{
+	struct proc *p;
+
+	if (kn->kn_status & KN_DETACHED)
+		return;
+	/* XXX locking? take proc_token here? */
+	p = kn->kn_ptr.p_proc;
+	knote_remove(&p->p_klist, kn);
+}
+
+static int
+filt_proc(struct knote *kn, long hint)
+{
+	u_int event;
+
+	/*
+	 * mask off extra data
+	 */
+	event = (u_int)hint & NOTE_PCTRLMASK;
+
+	/*
+	 * if the user is interested in this event, record it.
+	 */
+	if (kn->kn_sfflags & event)
+		kn->kn_fflags |= event;
+
+	/*
+	 * Process is gone, so flag the event as finished.  Detach the
+	 * knote from the process now because the process will be poof,
+	 * gone later on.
+	 */
+	if (event == NOTE_EXIT) {
+		struct proc *p = kn->kn_ptr.p_proc;
+		if ((kn->kn_status & KN_DETACHED) == 0) {
+			knote_remove(&p->p_klist, kn);
+			kn->kn_status |= KN_DETACHED;
+			kn->kn_data = p->p_xstat;
+			kn->kn_ptr.p_proc = NULL;
+		}
+		kn->kn_flags |= (EV_EOF | EV_NODATA | EV_ONESHOT); 
+		return (1);
+	}
+
+	/*
+	 * process forked, and user wants to track the new process,
+	 * so attach a new knote to it, and immediately report an
+	 * event with the parent's pid.
+	 */
+	if ((event == NOTE_FORK) && (kn->kn_sfflags & NOTE_TRACK)) {
+		struct kevent kev;
+		int error;
+
+		/*
+		 * register knote with new process.
+		 */
+		kev.ident = hint & NOTE_PDATAMASK;	/* pid */
+		kev.filter = kn->kn_filter;
+		kev.flags = kn->kn_flags | EV_ADD | EV_ENABLE | EV_FLAG1;
+		kev.fflags = kn->kn_sfflags;
+		kev.data = kn->kn_id;			/* parent */
+		kev.udata = kn->kn_kevent.udata;	/* preserve udata */
+		error = kqueue_register(kn->kn_kq, &kev);
+		if (error)
+			kn->kn_fflags |= NOTE_TRACKERR;
+	}
+
+	return (kn->kn_fflags != 0);
+}
+
+/*
+ * The callout interlocks with callout_terminate() but can still
+ * race a deletion so if KN_DELETING is set we just don't touch
+ * the knote.
  */
 static
 int
@@ -157,6 +321,23 @@ int
 signal_vector_lookup(struct kev_filter **filt, struct kev_filter_note *fn, void *arg)
 {
 	return (EOPNOTSUPP);
+}
+
+/*
+ * This function is called with the knote flagged locked but it is
+ * still possible to race a callout event due to the callback blocking.
+ * We must call callout_terminate() instead of callout_stop() to deal
+ * with the race.
+ */
+static void
+filt_timerdetach(struct knote *kn)
+{
+	struct callout *calloutp;
+
+	calloutp = (struct callout *)kn->kn_hook;
+	callout_terminate(calloutp);
+	FREE(calloutp, M_KQUEUE);
+	kq_ncallouts--;
 }
 
 /* filt_timerattach (formerly) */
@@ -393,7 +574,9 @@ kern_kevent(struct kqueue *kq, int nevents, int *res, void *uap,
 				kevp->data = error;
 				lres = *res;
 				kevent_copyoutfn(uap, kevp, 1, res);
-				if (lres != *res) {
+				if (*res < 0) {
+					goto done;
+				} else if (lres != *res) {
 					nevents--;
 					nerrors++;
 				}

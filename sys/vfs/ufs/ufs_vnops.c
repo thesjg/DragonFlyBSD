@@ -2134,7 +2134,7 @@ ufs_filter_read(struct kev_filter_note *fn, long hint, caddr_t hook)
 	 * the knote for deletion.
 	 */
 	if (hint == NOTE_REVOKE) {
-		fn->fn_flags |= (EV_EOF | EV_ONESHOT);
+		fn->fn_flags |= (EV_EOF | EV_NODATA | EV_ONESHOT);
 		return (TRUE);
 	}
 
@@ -2154,7 +2154,7 @@ ufs_filter_write(struct kev_filter_note *fn, long hint, caddr_t hook)
 	 * the knote for deletion.
 	 */
 	if (hint == NOTE_REVOKE)
-		fn->fn_flags |= (EV_EOF | EV_ONESHOT);
+		fn->fn_flags |= (EV_EOF | EV_NODATA | EV_ONESHOT);
 
 	fn->fn_data = 0;
 	return (TRUE);
@@ -2166,7 +2166,7 @@ ufs_filter_vnode(struct kev_filter_note *fn, long hint, caddr_t hook)
 	if (fn->fn_ufflags & hint)
 		fn->fn_fflags |= hint;
 	if (hint == NOTE_REVOKE) {
-		fn->fn_flags |= EV_EOF;
+		fn->fn_flags |= (EV_EOF | EV_NODATA);
 		return (TRUE);
 	}
 	return ((fn->fn_fflags != 0) ? TRUE : FALSE);

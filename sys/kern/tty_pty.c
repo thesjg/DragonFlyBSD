@@ -868,7 +868,7 @@ tty_filter_read(struct kev_filter_note *fn, long hint, caddr_t hook)
 	lwkt_gettoken(&tty_token);
 	fn->fn_data = ttnread(tp);
 	if (ISSET(tp->t_state, TS_ZOMBIE)) {
-		fn->fn_flags |= EV_EOF;
+		fn->fn_flags |= (EV_EOF | EV_NODATA);
 		lwkt_reltoken(&tty_token);
 		return (TRUE);
 	}
@@ -905,7 +905,7 @@ ptc_filter_read(struct kev_filter_note *fn, long hint, caddr_t hook)
 
 	lwkt_gettoken(&tty_token);
 	if ((tp->t_state & TS_ZOMBIE) || (pti->pt_flags & PF_SCLOSED)) {
-		fn->fn_flags |= EV_EOF;
+		fn->fn_flags |= (EV_EOF | EV_NODATA);
 		lwkt_reltoken(&tty_token);
 		return (TRUE);
 	}
@@ -931,7 +931,7 @@ ptc_filter_write(struct kev_filter_note *fn, long hint, caddr_t hook)
 
 	lwkt_gettoken(&tty_token);
 	if (tp->t_state & TS_ZOMBIE) {
-		fn->fn_flags |= EV_EOF;
+		fn->fn_flags |= (EV_EOF | EV_NODATA);
 		lwkt_reltoken(&tty_token);
 		return (TRUE);
 	}

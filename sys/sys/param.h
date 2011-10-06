@@ -79,10 +79,12 @@
  * 200902 - Xerox NS protocol removal
  * 201000 - 2.10 release
  * 201100 - 2.11 master
- * 201101 - remove GET_TIME() macro from mroute headers
+ * 201200 - 2.12 release
+ * 201300 - 2.13 master
+ * 201301 - remove GET_TIME() macro from mroute headers
  */
 #undef __DragonFly_version
-#define __DragonFly_version 201101	/* propagated to newvers */
+#define __DragonFly_version 201300	/* propagated to newvers */
 
 #include <sys/_null.h>
 

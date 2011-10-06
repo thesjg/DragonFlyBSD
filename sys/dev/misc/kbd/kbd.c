@@ -884,7 +884,8 @@ genkbd_filter_read(struct kev_filter_note *fn, long hint , caddr_t hook)
 	sc = dev->si_drv1;
         kbd = kbd_get_keyboard(KBD_INDEX(dev));
 	if ((sc == NULL) || (kbd == NULL) || !KBD_IS_VALID(kbd)) {
-		fn->fn_flags |= EV_EOF;	/* the keyboard has gone */
+		/* The keyboard has gone */
+		fn->fn_flags |= (EV_EOF | EV_NODATA);
 		ready = TRUE;
 	} else {
 		if (sc->gkb_q_length > 0)

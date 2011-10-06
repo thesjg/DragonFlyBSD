@@ -369,12 +369,15 @@ fifo_filter_read(struct kev_filter_note *fn, long hint, caddr_t hook)
 
 	lwkt_gettoken(&vp->v_token);
 	fn->fn_data = so->so_rcv.ssb_cc;
-	if ((so->so_state & SS_ISDISCONNECTED) && fn->fn_data == 0) {
+	if ((fn->fn_sfflags & NOTE_OLDAPI) == 0 &&
+	    so->so_state & SS_ISDISCONNECTED) {
+		if (fn->fn_data == 0)
+			fn->fn_flags |= EV_NODATA;
 		fn->fn_flags |= EV_EOF;
 		lwkt_reltoken(&vp->v_token);
 		return (TRUE);
 	}
-	fn->fn_flags &= ~EV_EOF;
+	fn->fn_flags &= ~(EV_EOF | EV_NODATA);
 	lwkt_reltoken(&vp->v_token);
 	return ((fn->fn_data > 0) ? TRUE : FALSE);
 }
@@ -388,11 +391,11 @@ fifo_filter_write(struct kev_filter_note *fn, long hint, caddr_t hook)
 	lwkt_gettoken(&vp->v_token);
 	fn->fn_data = ssb_space(&so->so_snd);
 	if (so->so_state & SS_ISDISCONNECTED) {
-		fn->fn_flags |= EV_EOF;
+		fn->fn_flags |= (EV_EOF | EV_NODATA);
 		lwkt_reltoken(&vp->v_token);
 		return (TRUE);
 	}
-	fn->fn_flags &= ~EV_EOF;
+	fn->fn_flags &= ~(EV_EOF | EV_NODATA);
 	lwkt_reltoken(&vp->v_token);
 	return (fn->fn_data >= so->so_snd.ssb_lowat);
 }
