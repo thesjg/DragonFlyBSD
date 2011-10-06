@@ -107,13 +107,14 @@ static int ext2_readlink (struct vop_readlink_args *);
 static int ext2_setattr (struct vop_setattr_args *);
 static int ext2_strategy (struct vop_strategy_args *);
 static int ext2_whiteout (struct vop_old_whiteout_args *);
-static int filt_ext2read (struct knote *kn, long hint);
-static int filt_ext2write (struct knote *kn, long hint);
-static int filt_ext2vnode (struct knote *kn, long hint);
-static void filt_ext2detach (struct knote *kn);
-static int ext2_kqfilter (struct vop_kqfilter_args *ap);
+static boolean_t ext2_filter_read (struct kev_filter_note *fn, long hint,
+    caddr_t hook);
+static boolean_t ext2_filter_write (struct kev_filter_note *fn,
+    long hint, caddr_t hook);
+static boolean_t ext2_filter_vnode (struct kev_filter_note *fn,
+    long hint, caddr_t hook);
+static int ext2_kev_filter (struct vop_kev_filter_args *ap);
 static int ext2fifo_close (struct vop_close_args *);
-static int ext2fifo_kqfilter (struct vop_kqfilter_args *);
 static int ext2fifo_read (struct vop_read_args *);
 static int ext2fifo_write (struct vop_write_args *);
 
@@ -148,7 +149,7 @@ union _qcvt {
 	(q) = tmp.qcvt; \
 }
 #define VN_KNOTE(vp, b) \
-	KNOTE(&vp->v_pollinfo.vpi_kqinfo.ki_note, (b))
+	kev_filter(&vp->v_filter, 0, (b))
 
 #define OFSFMT(vp)		((vp)->v_mount->mnt_maxsymlinklen <= 0)
 
@@ -1810,19 +1811,19 @@ ext2fifo_close(struct vop_close_args *ap)
 }
 
 /*
- * Kqfilter wrapper for fifos.
+ * filter wrapper for fifos.
  *
- * Fall through to ext2 kqfilter routines if needed 
+ * Fall through to ext2 filter routines if needed 
  */
 static
 int
-ext2fifo_kqfilter(struct vop_kqfilter_args *ap)
+ext2fifo_kev_filter(struct vop_kev_filter_args *ap)
 {
 	int error;
 
 	error = VOCALL(&fifo_vnode_vops, &ap->a_head);
 	if (error)
-		error = ext2_kqfilter(ap);
+		error = ext2_kev_filter(ap);
 	return (error);
 }
 
@@ -1926,104 +1927,71 @@ ext2_vinit(struct mount *mntp, struct vnode **vpp)
 	return (0);
 }
 
-static struct filterops ext2read_filtops = 
-	{ FILTEROP_ISFD, NULL, filt_ext2detach, filt_ext2read };
-static struct filterops ext2write_filtops = 
-	{ FILTEROP_ISFD, NULL, filt_ext2detach, filt_ext2write };
-static struct filterops ext2vnode_filtops = 
-	{ FILTEROP_ISFD, NULL, filt_ext2detach, filt_ext2vnode };
-
 /*
- * ext2_kqfilter(struct vnode *a_vp, struct knote *a_kn)
+ * ext2_kev_filter(struct vnode *a_vp, struct kev_filter *a_filt);
  */
 static int
-ext2_kqfilter(struct vop_kqfilter_args *ap)
+ext2_kev_filter(struct vop_kev_filter_args *ap)
 {
 	struct vnode *vp = ap->a_vp;
-	struct knote *kn = ap->a_kn;
+	static struct kev_filter_ops kev_fops = {
+		.fop_read = { ext2_filter_read, KEV_FILTOP_NOTMPSAFE },
+		.fop_write = { ext2_filter_write, KEV_FILTOP_NOTMPSAFE },
+		.fop_special = { ext2_filter_vnode, KEV_FILTOP_NOTMPSAFE }
+	};
 
-	switch (kn->kn_filter) {
-	case EVFILT_READ:
-		kn->kn_fop = &ext2read_filtops;
-		break;
-	case EVFILT_WRITE:
-		kn->kn_fop = &ext2write_filtops;
-		break;
-	case EVFILT_VNODE:
-		kn->kn_fop = &ext2vnode_filtops;
-		break;
-	default:
-		return (EOPNOTSUPP);
-	}
-
-	kn->kn_hook = (caddr_t)vp;
-
-	/* XXX: kq token actually protects the list */
-	lwkt_gettoken(&vp->v_token);
-	knote_insert(&vp->v_pollinfo.vpi_kqinfo.ki_note, kn);
-	lwkt_reltoken(&vp->v_token);
+	(*ap->a_filt)->kf_hook = (caddr_t)vp;
+	(*ap->a_filt)->kf_ops = &kev_fops;
 
 	return (0);
 }
 
-static void
-filt_ext2detach(struct knote *kn)
+static boolean_t
+ext2_filter_read(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	struct vnode *vp = (struct vnode *)kn->kn_hook;
-
-	lwkt_gettoken(&vp->v_token);
-	knote_remove(&vp->v_pollinfo.vpi_kqinfo.ki_note, kn);
-	lwkt_reltoken(&vp->v_token);
-}
-
-/*ARGSUSED*/
-static int
-filt_ext2read(struct knote *kn, long hint)
-{
-	struct vnode *vp = (struct vnode *)kn->kn_hook;
+	struct vnode *vp = (struct vnode *)hook;
 	struct inode *ip = VTOI(vp);
 	off_t off;
 
 	/*
 	 * filesystem is gone, so set the EOF flag and schedule 
-	 * the knote for deletion.
+	 * the note for deletion.
 	 */
 	if (hint == NOTE_REVOKE) {
-		kn->kn_flags |= (EV_EOF | EV_NODATA | EV_ONESHOT);
-		return (1);
+		fn->fn_flags |= (EV_EOF | EV_NODATA | EV_ONESHOT);
+		return (TRUE);
 	}
-        off = ip->i_size - kn->kn_fp->f_offset;
-	kn->kn_data = (off < INTPTR_MAX) ? off : INTPTR_MAX;
-	if (kn->kn_sfflags & NOTE_OLDAPI)
-		return(1);
-        return (kn->kn_data != 0);
+        off = ip->i_size - fn->fn_entry->fe_ptr.p_fp->f_offset;
+	fn->fn_data = (off < INTPTR_MAX) ? off : INTPTR_MAX;
+	if (fn->fn_ufflags & NOTE_OLDAPI)
+		return (TRUE);
+        return ((fn->fn_data != 0) ? TRUE : FALSE);
 }
 
-/*ARGSUSED*/
-static int
-filt_ext2write(struct knote *kn, long hint)
+static boolean_t
+ext2_filter_write(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
 	/*
 	 * filesystem is gone, so set the EOF flag and schedule 
 	 * the knote for deletion.
 	 */
 	if (hint == NOTE_REVOKE)
-		kn->kn_flags |= (EV_EOF | EV_NODATA | EV_ONESHOT);
+		fn->fn_flags |= (EV_EOF | EV_NODATA | EV_ONESHOT);
 
-        kn->kn_data = 0;
-        return (1);
+        fn->fn_data = 0;
+        return (TRUE);
 }
 
-static int
-filt_ext2vnode(struct knote *kn, long hint)
+static boolean_t
+ext2_filter_vnode(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	if (kn->kn_sfflags & hint)
-		kn->kn_fflags |= hint;
+	if (fn->fn_ufflags & hint)
+		fn->fn_fflags |= hint;
 	if (hint == NOTE_REVOKE) {
-		kn->kn_flags |= (EV_EOF | EV_NODATA);
-		return (1);
+		fn->fn_flags |= (EV_EOF | EV_NODATA);
+		return (TRUE);
 	}
-	return (kn->kn_fflags != 0);
+	return ((fn->fn_fflags != 0) ? TRUE : FALSE);
 }
 
 struct vop_ops ext2_vnode_vops = {
@@ -2046,7 +2014,6 @@ struct vop_ops ext2_vnode_vops = {
 	.vop_mmap =		ext2_mmap,
 	.vop_open =		ext2_open,
 	.vop_pathconf =		ext2_pathconf,
-	.vop_kqfilter =		ext2_kqfilter,
 	.vop_print =		ext2_print,
 	.vop_readdir =		ext2_readdir,
 	.vop_readlink =		ext2_readlink,
@@ -2058,6 +2025,7 @@ struct vop_ops ext2_vnode_vops = {
 	.vop_strategy =		ext2_strategy,
 	.vop_old_symlink =	ext2_symlink,
 	.vop_old_whiteout =	ext2_whiteout,
+	.vop_kev_filter =	ext2_kev_filter,
 	.vop_getpages =		vop_stdgetpages,
 	.vop_putpages =		vop_stdputpages
 };
@@ -2083,7 +2051,7 @@ struct vop_ops ext2_fifo_vops = {
 	.vop_close =		ext2fifo_close,
 	.vop_getattr =		ext2_getattr,
 	.vop_inactive =		ext2_inactive,
-	.vop_kqfilter =		ext2fifo_kqfilter,
+	.vop_kev_filter =	ext2fifo_kev_filter,
 	.vop_print =		ext2_print,
 	.vop_read =		ext2fifo_read,
 	.vop_reclaim =		ext2_reclaim,
