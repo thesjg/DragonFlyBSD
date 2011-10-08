@@ -62,15 +62,13 @@ static d_open_t apmopen;
 static d_close_t apmclose;
 static d_write_t apmwrite;
 static d_ioctl_t apmioctl;
-static d_kqfilter_t apmkqfilter;
 
 static struct dev_ops apm_ops = {
 	{ "apm", 0, 0 },
         .d_open = apmopen,
         .d_close = apmclose,
 	.d_write = apmwrite,
-        .d_ioctl = apmioctl,
-	.d_kqfilter = apmkqfilter
+        .d_ioctl = apmioctl
 };
 
 static int
@@ -289,36 +287,26 @@ apmwrite(struct dev_write_args *ap)
 	return (ap->a_uio->uio_resid);
 }
 
-static void apmfilter_detach(struct knote *);
-static int apmfilter(struct knote *, long);
-
-static struct filterops apmfilterops =
-	{ FILTEROP_ISFD, NULL, apmfilter_detach, apmfilter };
-
-static int
-apmkqfilter(struct dev_kqfilter_args *ap)
+static boolean_t
+apm_filter(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	struct knote *kn = ap->a_kn;
-
-	kn->kn_fop = &apmfilterops;
-	ap->a_result = 0;
-	return (0);
-}
-
-static void
-apmfilter_detach(struct knote *kn) {}
-
-static int
-apmfilter(struct knote *kn, long hint)
-{
-	return (0);
+	return (TRUE);
 }
 
 static void
 acpi_capm_init(struct acpi_softc *sc)
 {
-        make_dev(&apm_ops, 0, 0, 5, 0664, "apm");
+	cdev_t dev;
+	static struct kev_filter_ops kev_fops = {
+		.fop_read = { apm_filter }
+	};
+
+        dev = make_dev(&apm_ops, 0, 0, 5, 0664, "apm");
+	kev_dev_filter_init(dev, &kev_fops, (caddr_t)NULL);
+
         make_dev(&apm_ops, 8, 0, 5, 0664, "apm");
+	kev_dev_filter_init(dev, &kev_fops, (caddr_t)NULL);
+
 	kprintf("Warning: ACPI is disabling APM's device.  You can't run both\n");
 }
 

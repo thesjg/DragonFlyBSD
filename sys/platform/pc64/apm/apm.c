@@ -902,7 +902,7 @@ apm_record_event(struct apm_softc *sc, u_int event_type)
 	sc->event_ptr %= APM_NEVENTS;
 	evp->type = event_type;
 	evp->index = ++apm_evindex;
-	KNOTE(&sc->sc_rkq.ki_note, 0);
+	kev_filter(&sc->filter, 0, 0);
 	return (sc->sc_flags & SCFLAG_OCTL) ? 0 : 1; /* user may handle */
 }
 
@@ -1005,6 +1005,11 @@ apm_attach(device_t dev)
 	struct apm_softc	*sc = &apm_softc;
 	int			flags;
 	int			drv_version;
+	cdev_t			apmdev, apmdevctl;
+	static struct kev_filter_ops kev_fops = {
+		.fop_read = { apm_filter_read },
+		.fop_write = { apm_filter_write }
+	};
 
 	if (resource_int_value("apm", 0, "flags", &flags) != 0)
 		flags = 0;
@@ -1092,8 +1097,12 @@ apm_attach(device_t dev)
 
 	sc->initialized = 1;
 
-	make_dev(&apm_ops, 0, UID_ROOT, GID_OPERATOR, 0660, "apm");
-	make_dev(&apm_ops, 8, UID_ROOT, GID_OPERATOR, 0660, "apmctl");
+	apmdev = make_dev(&apm_ops, 0, UID_ROOT, GID_OPERATOR, 0660, "apm");
+	apmdevctl = make_dev(&apm_ops, 8, UID_ROOT, GID_OPERATOR, 0660, "apmctl");
+
+	kev_dev_filter_init(apmdev, &kev_fops, (caddr_t)sc);
+	kev_dev_filter_init(apmdevctl, &kev_fops, (caddr_t)sc);
+
 	return 0;
 }
 
@@ -1338,67 +1347,23 @@ apmwrite(struct dev_write_args *ap)
 	return uio->uio_resid;
 }
 
-static struct filterops apmfiltops_read =
-	{ FILTEROP_ISFD, NULL, apmfilter_detach, apmfilter_read };
-static struct filterops apmfiltops_write =
-	{ FILTEROP_ISFD, NULL, apmfilter_detach, apmfilter_write };
-
-static int
-apmkqfilter(struct dev_kqfilter_args *ap)
+static boolean_t
+apm_filter_read(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	struct apm_softc *sc = &apm_softc;
-	struct knote *kn = ap->a_kn;
-	struct klist *klist;
-
-	ap->a_result = 0;
-
-	switch (kn->kn_filter) {
-	case EVFILT_READ:
-		kn->kn_fop = &apmfiltops_read;
-		kn->kn_hook = (caddr_t)sc;
-		break;
-	case EVFILT_WRITE:
-		kn->kn_fop = &apmfiltops_write;
-		kn->kn_hook = (caddr_t)sc;
-		break;
-	default:
-		ap->a_result = EOPNOTSUPP;
-		return (0);
-	}
-
-	klist = &sc->sc_rkq.ki_note;
-	knote_insert(klist, kn);
-
-	return (0);
-}
-
-static void
-apmfilter_detach(struct knote *kn)
-{
-	struct apm_softc *sc = (struct apm_softc *)kn->kn_hook;
-	struct klist *klist;
-
-	klist = &sc->sc_rkq.ki_note;
-	knote_remove(klist, kn);
-}
-
-static int
-apmfilter_read(struct knote *kn, long hint)
-{
-	struct apm_softc *sc = (struct apm_softc *)kn->kn_hook;
-	int ready = 0;
+	struct apm_softc *sc = (struct apm_softc *)hook;
+	boolean_t ready = FALSE;
 
 	if (sc->event_count)
-		ready = 1;
+		ready = TRUE;
 
 	return (ready);
 }
 
-static int
-apmfilter_write(struct knote *kn, long hint)
+static boolean_t
+apm_filter_write(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
 	/* write()'s are always OK */
-	return (1);
+	return (TRUE);
 }
 
 /*

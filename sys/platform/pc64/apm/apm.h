@@ -34,7 +34,7 @@ struct apm_softc {
 /*	struct bios_args bios;*/
 	struct apmhook sc_suspend;
 	struct apmhook sc_resume;
-	struct kqinfo sc_rkq;
+	struct	kev_filter filter;
 	int	sc_flags;
 	int	event_count;
 	int	event_ptr;
