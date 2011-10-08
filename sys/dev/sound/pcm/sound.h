@@ -63,7 +63,6 @@
 #include <sys/sysctl.h>
 #include <sys/kobj.h>
 #include <sys/thread2.h>
-#include <sys/taskqueue.h>
 
 #include <machine/clock.h>	/* for DELAY */
 

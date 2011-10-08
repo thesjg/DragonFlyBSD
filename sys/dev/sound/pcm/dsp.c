@@ -41,12 +41,7 @@ static d_close_t dsp_close;
 static d_read_t dsp_read;
 static d_write_t dsp_write;
 static d_ioctl_t dsp_ioctl;
-static d_kqfilter_t dsp_kqfilter;
 static d_mmap_t dsp_mmap;
-
-static void dsp_filter_detach(struct knote *);
-static int dsp_filter_read(struct knote *, long);
-static int dsp_filter_write(struct knote *, long);
 
 struct dev_ops dsp_ops = {
 	{ "dsp", 0, 0},
@@ -56,8 +51,7 @@ struct dev_ops dsp_ops = {
 	.d_read =	dsp_read,
 	.d_write =	dsp_write,
 	.d_ioctl =	dsp_ioctl,
-	.d_kqfilter =	dsp_kqfilter,
-	.d_mmap =	dsp_mmap,
+	.d_mmap =	dsp_mmap
 };
 
 struct snddev_info *
@@ -1084,91 +1078,24 @@ dsp_ioctl(struct dev_ioctl_args *ap)
     	return ret;
 }
 
-static struct filterops dsp_read_filtops =
-	{ FILTEROP_ISFD, NULL, dsp_filter_detach, dsp_filter_read };
-static struct filterops dsp_write_filtops =
-	{ FILTEROP_ISFD, NULL, dsp_filter_detach, dsp_filter_write };
-
-static int
-dsp_kqfilter(struct dev_kqfilter_args *ap)
+boolean_t
+dsp_filter(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	struct knote *kn = ap->a_kn;
-	struct klist *klist;
-	struct cdev *i_dev = ap->a_head.a_dev;
-	struct pcm_channel *wrch = NULL, *rdch = NULL;
-	struct snd_dbuf *bs = NULL;
-
-	getchns(i_dev, &rdch, &wrch, SD_F_PRIO_RD | SD_F_PRIO_WR);
-
-	switch (kn->kn_filter) {
-	case EVFILT_READ:
-		if (rdch) {
-			kn->kn_fop = &dsp_read_filtops;
-			kn->kn_hook = (caddr_t)rdch;
-			bs = rdch->bufsoft;
-			ap->a_result = 0;
-		}
-		break;
-	case EVFILT_WRITE:
-		if (wrch) {
-			kn->kn_fop = &dsp_write_filtops;
-			kn->kn_hook = (caddr_t)wrch;
-			bs = wrch->bufsoft;
-			ap->a_result = 0;
-		}
-		break;
-	default:
-		ap->a_result = EOPNOTSUPP;
-		break;
-	}
-
-	if (ap->a_result == 0) {
-		klist = &sndbuf_getkq(bs)->ki_note;
-		knote_insert(klist, kn);
-	}
-
-	relchns(i_dev, rdch, wrch, SD_F_PRIO_RD | SD_F_PRIO_WR);
-
-	return (0);
-}
-
-static void
-dsp_filter_detach(struct knote *kn)
-{
-	struct pcm_channel *ch = (struct pcm_channel *)kn->kn_hook;
-	struct snd_dbuf *bs = ch->bufsoft;
-	struct klist *klist;
-
-	CHN_LOCK(ch);
-	klist = &sndbuf_getkq(bs)->ki_note;
-	knote_remove(klist, kn);
-	CHN_UNLOCK(ch);
-}
-
-static int
-dsp_filter_read(struct knote *kn, long hint)
-{
-	struct pcm_channel *rdch = (struct pcm_channel *)kn->kn_hook;
+	cdev_t dev = (cdev_t)hook;
 	struct thread *td = curthread;
-	int ready;
+	struct pcm_channel *wrch = NULL, *rdch = NULL;
+	boolean_t ready = FALSE;
+
+	getchns(dev, &rdch, &wrch, SD_F_PRIO_RD | SD_F_PRIO_WR);
 
 	CHN_LOCK(rdch);
-	ready = chn_poll(rdch, 1, td);
+	if (fn->fn_filter == EVFILT_READ) {
+		ready = (chn_poll(rdch, 1, td)) ? TRUE : FALSE;
+	} else {
+		/* EVFILT_WRITE */
+		ready = (chn_poll(wrch, 1, td)) ? TRUE : FALSE;
+	}
 	CHN_UNLOCK(rdch);
-
-	return (ready);
-}
-
-static int
-dsp_filter_write(struct knote *kn, long hint)
-{
-	struct pcm_channel *wrch = (struct pcm_channel *)kn->kn_hook;
-	struct thread *td = curthread;
-	int ready;
-
-	CHN_LOCK(wrch);
-	ready = chn_poll(wrch, 1, td);
-	CHN_UNLOCK(wrch);
 
 	return (ready);
 }

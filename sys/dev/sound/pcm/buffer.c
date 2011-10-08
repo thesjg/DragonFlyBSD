@@ -33,25 +33,6 @@
 
 SND_DECLARE_FILE("$DragonFly: src/sys/dev/sound/pcm/buffer.c,v 1.11 2008/01/06 16:55:51 swildner Exp $");
 
-/*
- * XXX
- *
- * sndbuf_kqtask is a taskqueue callback routine, called from
- * taskqueue_swi, which runs under the MP lock.
- *
- * The only purpose is to be able to KNOTE() from a sound
- * interrupt, which is running without MP lock held and thus
- * can't call KNOTE() directly.
- */
-static void
-sndbuf_kqtask(void *context, int pending)
-{
-	struct snd_dbuf *b = context;
-	struct kqinfo *ki = sndbuf_getkq(b);
-
-	KNOTE(&ki->ki_note, 0);
-}
-
 struct snd_dbuf *
 sndbuf_create(device_t dev, char *drv, char *desc, struct pcm_channel *channel)
 {
@@ -61,7 +42,6 @@ sndbuf_create(device_t dev, char *drv, char *desc, struct pcm_channel *channel)
 	ksnprintf(b->name, SNDBUF_NAMELEN, "%s:%s", drv, desc);
 	b->dev = dev;
 	b->channel = channel;
-	TASK_INIT(&b->kqtask, 0, sndbuf_kqtask, b);
 
 	return b;
 }
@@ -406,12 +386,6 @@ void
 sndbuf_setrun(struct snd_dbuf *b, int go)
 {
 	b->dl = go? b->blksz : 0;
-}
-
-struct kqinfo *
-sndbuf_getkq(struct snd_dbuf *b)
-{
-	return &b->kq;
 }
 
 /************************************************************/

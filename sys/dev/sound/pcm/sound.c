@@ -805,6 +805,10 @@ int
 pcm_register(device_t dev, void *devinfo, int numplay, int numrec)
 {
 	struct snddev_info *d = device_get_softc(dev);
+	static struct kev_filter_ops kev_fops = {
+		.fop_read = { dsp_filter },
+		.fop_write = { dsp_filter }
+	};
 
 	if (pcm_veto_load) {
 		device_printf(dev, "disabled due to an error while initialising: %d\n", pcm_veto_load);
@@ -864,6 +868,7 @@ pcm_register(device_t dev, void *devinfo, int numplay, int numrec)
 	devfs_clone_handler_add(devtoname(d->dsp_clonedev), dsp_clone);
 
 	sndstat_register(dev, d->status, sndstat_prepare_pcm);
+	dev_kev_filter_init(d->dsp_clonedev, &kev_fops, (caddr_t)d->dsp_clonedev);
 	return 0;
 no:
 	snd_mtxfree(d->lock);

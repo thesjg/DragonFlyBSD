@@ -29,6 +29,8 @@
 
 #include <sys/device.h>
 
+boolean_t dsp_filter(struct kev_filter_note *fn, long hint, caddr_t hook);
+
 extern struct dev_ops dsp_ops;
 extern d_clone_t dsp_clone;
 
