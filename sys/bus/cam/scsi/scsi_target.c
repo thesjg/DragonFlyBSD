@@ -87,7 +87,7 @@ struct targ_softc {
 	struct cam_periph	*periph;
 	struct cam_path		*path;
 	targ_state		 state;
-	struct kqinfo		 read_kq;
+	struct kev_filter	 read_filter;
 	struct devstat		 device_stats;
 };
 
@@ -96,17 +96,8 @@ static d_close_t	targclose;
 static d_read_t		targread;
 static d_write_t	targwrite;
 static d_ioctl_t	targioctl;
-static d_kqfilter_t	targkqfilter;
 static d_clone_t	targclone;
 DEVFS_DECLARE_CLONE_BITMAP(targ);
-
-static void		targfiltdetach(struct knote *kn);
-static int		targreadfilt(struct knote *kn, long hint);
-static int		targwritefilt(struct knote *kn, long hint);
-static struct filterops targread_filtops =
-	{ FILTEROP_ISFD, NULL, targfiltdetach, targreadfilt };
-static struct filterops targwrite_filtops =
-	{ FILTEROP_ISFD, NULL, targfiltdetach, targwritefilt };
 
 static struct dev_ops targ_ops = {
 	{ "targ", 0, 0 },
@@ -114,9 +105,13 @@ static struct dev_ops targ_ops = {
 	.d_close = targclose,
 	.d_read = targread,
 	.d_write = targwrite,
-	.d_ioctl = targioctl,
-	.d_kqfilter = targkqfilter
+	.d_ioctl = targioctl
 };
+
+static boolean_t targ_filter_read(struct kev_filter_note *fn, long hint,
+    caddr_t hook);
+static boolean_t targ_filter_write(struct kev_filter_note *fn, long hint,
+    caddr_t hook);
 
 static cam_status	targendislun(struct cam_path *path, int enable,
 				     int grp6_len, int grp7_len);
@@ -168,6 +163,10 @@ targopen(struct dev_open_args *ap)
 {
 	cdev_t dev = ap->a_head.a_dev;
 	struct targ_softc *softc;
+	static struct kev_filter_ops kev_fops = {
+		.fop_read = { targ_filter_read },
+		.fop_write = { targ_filter_write }
+	};
 
 	if (dev->si_drv1 != 0) {
 		return (EBUSY);
@@ -193,6 +192,8 @@ targopen(struct dev_open_args *ap)
 	TAILQ_INIT(&softc->work_queue);
 	TAILQ_INIT(&softc->abort_queue);
 	TAILQ_INIT(&softc->user_ccb_queue);
+
+	kev_dev_filter_init(dev, &kev_fops, (caddr_t)softc);
 
 	return (0);
 }
@@ -319,62 +320,25 @@ targioctl(struct dev_ioctl_args *ap)
 	return (targcamstatus(status));
 }
 
-static int
-targkqfilter(struct dev_kqfilter_args *ap)
+static boolean_t
+targ_filter_read(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	struct	knote *kn = ap->a_kn;
-	struct  targ_softc *softc;
+	struct targ_softc *softc = (struct targ_softc *)hook;
+	int	retval = FALSE;
 
-	softc = (struct targ_softc *)ap->a_head.a_dev->si_drv1;
-
-	ap->a_result = 0;
-
-	switch (kn->kn_filter) {
-	case EVFILT_READ:
-		kn->kn_hook = (caddr_t)softc;
-		kn->kn_fop = &targread_filtops;
-		break;
-	case EVFILT_WRITE:
-		kn->kn_hook = (caddr_t)softc;
-		kn->kn_fop = &targwrite_filtops;
-	default:
-		ap->a_result = EOPNOTSUPP;
-		return (0);
-	}
-
-	knote_insert(&softc->read_kq.ki_note, kn);
-	return (0);
-}
-
-static void
-targfiltdetach(struct knote *kn)
-{
-	struct  targ_softc *softc;
-
-	softc = (struct targ_softc *)kn->kn_hook;
-	knote_remove(&softc->read_kq.ki_note, kn);
-}
-
-/* Notify the user's kqueue when the user queue or abort queue gets a CCB */
-static int
-targreadfilt(struct knote *kn, long hint)
-{
-	struct targ_softc *softc;
-	int	retval;
-
-	softc = (struct targ_softc *)kn->kn_hook;
 	cam_periph_lock(softc->periph);
-	retval = !TAILQ_EMPTY(&softc->user_ccb_queue) ||
-		 !TAILQ_EMPTY(&softc->abort_queue);
+	if (!TAILQ_EMPTY(&softc->user_ccb_queue) ||
+	    !TAILQ_EMPTY(&softc->abort_queue))
+		retval = TRUE;
 	cam_periph_unlock(softc->periph);
 	return (retval);
 }
 
-/* write() is always ok */
-static int
-targwritefilt(struct knote *kn, long hint)
+static boolean_t
+targ_filter_write(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	return (1);
+	/* write() is always ok */
+	return (TRUE);
 }
 
 /* Send the HBA the enable/disable message */
@@ -1113,7 +1077,7 @@ notify_user(struct targ_softc *softc)
 	 * Notify users sleeping via poll(), kqueue(), and
 	 * blocking read().
 	 */
-	KNOTE(&softc->read_kq.ki_note, 0);
+	kev_filter(&softc->read_filter, 0, 0);
 	wakeup(&softc->user_ccb_queue);
 }
 
