@@ -99,7 +99,6 @@ static struct dev_ops dcons_ops = {
 	.d_read =	ttyread,
 	.d_write =	ttywrite,
 	.d_ioctl =	dcons_ioctl,
-	.d_kqfilter =	ttykqfilter,
 	.d_revoke =	ttyrevoke
 };
 
@@ -441,6 +440,7 @@ dcons_cninit_fini(struct consdev *cp)
 {
 	cp->cn_dev = make_dev(&dcons_ops, DCONS_CON,
 			      UID_ROOT, GID_WHEEL, 0600, "dcons");
+	kev_dev_filter_init(cp->cn_dev, &tty_fops, (caddr_t)cp->cn_dev);
 }
 
 #if CONS_NODEV
@@ -581,6 +581,8 @@ dcons_attach_port(int port, char *name, int flags)
 	tp->t_param = dcons_tty_param;
 	tp->t_stop = nottystop;
 	tp->t_dev = dc->dev;
+
+	kev_dev_filter_init(dev, &tty_fops, (caddr_t)dev);
 
 	return(0);
 }
