@@ -81,7 +81,6 @@ static struct dev_ops nmdm_ops = {
 	.d_read =	nmdmread,
 	.d_write =	nmdmwrite,
 	.d_ioctl =	nmdmioctl,
-	.d_kqfilter = 	ttykqfilter,
 	.d_revoke =	ttyrevoke
 };
 
@@ -156,6 +155,9 @@ nmdminit(int n)
 	pt->part2.nm_tty.t_dev = dev1;
 	pt->part1.nm_tty.t_dev = dev2;
 	pt->part2.nm_tty.t_stop = nmdmstop;
+
+	kev_dev_filter_init(dev1, &tty_fops, (caddr_t)dev1);
+	kev_dev_filter_init(dev2, &tty_fops, (caddr_t)dev2);
 }
 
 /*ARGSUSED*/
@@ -480,11 +482,11 @@ wakeup_other(struct tty *tp, int flag)
 	GETPARTS(tp, ourpart, otherpart);
 	if (flag & FREAD) {
 		wakeup(TSA_PTC_READ((&otherpart->nm_tty)));
-		KNOTE(&otherpart->nm_tty.t_rkq.ki_note, 0);
+		kev_filter(&otherpart->nm_tty.t_filter, 0, 0);
 	}
 	if (flag & FWRITE) {
 		wakeup(TSA_PTC_WRITE((&otherpart->nm_tty)));
-		KNOTE(&otherpart->nm_tty.t_wkq.ki_note, 0);
+		kev_filter(&otherpart->nm_tty.t_filter, 0, 0);
 	}
 	lwkt_reltoken(&tty_token);
 }
