@@ -45,7 +45,7 @@
 #include "vinumhdr.h"
 #include <sys/sysproto.h>				    /* for sync(2) */
 #include <sys/devicestat.h>
-#include <sys/poll.h>					    /* XXX: poll ops used in kq filters */
+#include <sys/poll.h>					    /* XXX: poll ops used in filters */
 #include <sys/event.h>
 #include <sys/udev.h>
 #ifdef VINUMDEBUG
@@ -65,7 +65,6 @@ struct dev_ops vinum_ops =
 	.d_read =	physread,
 	.d_write =	physwrite,
 	.d_ioctl =	vinumioctl,
-	.d_kqfilter =	vinumkqfilter,
 	.d_strategy =	vinumstrategy,
 	.d_dump =	vinumdump,
 	.d_psize =	vinumsize,
@@ -93,6 +92,10 @@ vinumattach(void *dummy)
     char *cp, *cp1, *cp2, **drives;
     int i, rv;
     struct volume *vol;
+    static struct kev_filter_ops kev_fops = {
+        .fop_read = { vinum_filter_read },
+        .fop_write = { vinum_filter_write }
+    };
 
     /* modload should prevent multiple loads, so this is worth a panic */
     if ((vinum_conf.flags & VF_LOADED) != 0)
@@ -122,6 +125,10 @@ vinumattach(void *dummy)
     vinum_daemon_dev = 	make_dev(&vinum_ops, VINUM_DAEMON_DEV,
 				 UID_ROOT, GID_WHEEL, 0600,
 				 VINUM_DAEMON_DEV_BASE);
+
+    kev_dev_filter_init(vinum_super_dev, &kev_fops, (caddr_t)vinum_super_dev);
+    kev_dev_filter_init(vinum_wsuper_dev, &kev_fops, (caddr_t)vinum_wsuper_dev);
+    kev_dev_filter_init(vinum_daemon_dev, &kev_fops, (caddr_t)vinum_daemon_dev);
 
     /*
      * See if the loader has passed us a disk to
@@ -156,6 +163,7 @@ vinumattach(void *dummy)
 				0640, VINUM_BASE "vinumroot");
 		udev_dict_set_cstr(rootdev, "subsystem", "raid");
 		udev_dict_set_cstr(rootdev, "disk-type", "raid");
+                kev_dev_filter_init(rootdev, &kev_fops, (caddr_t)rootdev);
 		log(LOG_INFO, "vinum: using volume %s for root device\n", cp);
 		break;
 	    }
@@ -577,47 +585,22 @@ vinumdump(struct dev_dump_args *ap)
     return ENXIO;
 }
 
-void
-vinumfilt_detach(struct knote *kn) {}
-
-int
-vinumfilt_rd(struct knote *kn, long hint)
+boolean_t
+vinum_filter_read(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-    cdev_t dev = (cdev_t)kn->kn_hook;
+    cdev_t dev = (cdev_t)hook;
 
     if (seltrue(dev, POLLIN | POLLRDNORM))
-        return (1);
+        return (TRUE);
 
-    return (0);
+    return (FALSE);
 }
 
-int
-vinumfilt_wr(struct knote *kn, long hint)
+boolean_t
+vinum_filter_write(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
     /* Writing is always OK */
-    return (1);
-}
-
-struct filterops vinumfiltops_rd =
-    { FILTEROP_ISFD, NULL, vinumfilt_detach, vinumfilt_rd };
-struct filterops vinumfiltops_wr =
-    { FILTEROP_ISFD, NULL, vinumfilt_detach, vinumfilt_wr };
-
-int
-vinumkqfilter(struct dev_kqfilter_args *ap)
-{
-    if (ap->a_kn->kn_filter == EVFILT_READ) {
-        ap->a_kn->kn_fop = &vinumfiltops_rd;
-        ap->a_kn->kn_hook = (caddr_t)ap->a_head.a_dev;
-        ap->a_result = 0;
-    } else if (ap->a_kn->kn_filter == EVFILT_WRITE) {
-	ap->a_kn->kn_fop = &vinumfiltops_wr;
-        ap->a_result = 0;
-    } else {
-        ap->a_result = EOPNOTSUPP;
-    }
-
-    return (0);
+    return (TRUE);
 }
 
 /* Local Variables: */
