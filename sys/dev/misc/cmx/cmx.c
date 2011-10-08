@@ -128,22 +128,21 @@ static d_open_t		cmx_open;
 static d_close_t	cmx_close;
 static d_read_t		cmx_read;
 static d_write_t	cmx_write;
-static d_kqfilter_t	cmx_kqfilter;
 #ifdef CMX_INTR
 static void		cmx_intr(void *arg);
 #endif
 
-static void cmx_filter_detach(struct knote *);
-static int cmx_filter_read(struct knote *, long);
-static int cmx_filter_write(struct knote *, long);
+static boolean_t cmx_filter_read(struct kev_filter_note *fn, long hint,
+    caddr_t hook);
+static boolean_t cmx_filter_write(struct kev_filter_note *fn, long hint,
+    caddr_t hook);
 
 static struct dev_ops cmx_ops = {
 	{ "cmx", 0, 0 },
 	.d_open =	cmx_open,
 	.d_close =	cmx_close,
 	.d_read =	cmx_read,
-	.d_write =	cmx_write,
-	.d_kqfilter =	cmx_kqfilter
+	.d_write =	cmx_write
 };
 
 /*
@@ -243,6 +242,10 @@ int
 cmx_attach(device_t dev)
 {
 	struct cmx_softc *sc = device_get_softc(dev);
+	static struct kev_filter_ops kev_fops = {
+		.fop_read = { cmx_filter_read },
+		.fop_write = { cmx_filter_write }
+	};
 
 	if (!sc || sc->dying)
 		return ENXIO;
@@ -254,6 +257,8 @@ cmx_attach(device_t dev)
 		return ENOMEM;
 	}
 	sc->cdev->si_drv1 = sc;
+
+	kev_dev_filter_init(sc->cdev, &kev_fops, (caddr_t)sc);
 
 	return 0;
 }
@@ -278,7 +283,7 @@ cmx_detach(device_t dev)
 		callout_stop(&sc->ch);
 		sc->polling = 0;
 		CMX_UNLOCK(sc);
-		KNOTE(&sc->kq.ki_note, 0);
+		kev_filter(&sc->filter, 0, 0);
 	} else {
 		CMX_UNLOCK(sc);
 	}
@@ -401,7 +406,7 @@ cmx_tick(void *xsc)
 		DEBUG_printf(sc->dev, "BSR=%b\n", bsr, BSRBITS);
 		if (cmx_test(bsr, BSR_BULK_IN_FULL, 1)) {
 			sc->polling = 0;
-			KNOTE(&sc->kq.ki_note, 0);
+			kev_filter(&sc->filter, 0, 0);
 		} else {
 			callout_reset(&sc->ch, POLL_TICKS, cmx_tick, sc);
 		}
@@ -459,7 +464,7 @@ cmx_close(struct dev_close_args *ap)
 		callout_stop(&sc->ch);
 		sc->polling = 0;
 		CMX_UNLOCK(sc);
-		KNOTE(&sc->kq.ki_note, 0);
+		kev_filter(&sc->filter, 0, 0);
 		CMX_LOCK(sc);
 	}
 	sc->open = 0;
@@ -500,7 +505,7 @@ cmx_read(struct dev_read_args *ap)
 		callout_stop(&sc->ch);
 		sc->polling = 0;
 		CMX_UNLOCK(sc);
-		KNOTE(&sc->kq.ki_note, 0);
+		kev_filter(&sc->filter, 0, 0);
 	} else {
 		CMX_UNLOCK(sc);
 	}
@@ -643,72 +648,26 @@ cmx_write(struct dev_write_args *ap)
 	return 0;
 }
 
-static struct filterops cmx_read_filterops =
-	{ FILTEROP_ISFD, NULL, cmx_filter_detach, cmx_filter_read };
-static struct filterops cmx_write_filterops =
-	{ FILTEROP_ISFD, NULL, cmx_filter_detach, cmx_filter_write };
-
 /*
  * Kevent handler.  Writing is always possible, reading is only possible
  * if BSR_BULK_IN_FULL is set.  Will start the cmx_tick callout and
  * set sc->polling.
  */
-static int
-cmx_kqfilter(struct dev_kqfilter_args *ap)
+static boolean_t
+cmx_filter_read(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	cdev_t dev = ap->a_head.a_dev;
-	struct knote *kn = ap->a_kn;
-	struct cmx_softc *sc;
-	struct klist *klist;
-
-	ap->a_result = 0;
-
-	sc = devclass_get_softc(cmx_devclass, minor(dev));
-
-	switch (kn->kn_filter) {
-	case EVFILT_READ:
-		kn->kn_fop = &cmx_read_filterops;
-		kn->kn_hook = (caddr_t)sc;
-		break;
-	case EVFILT_WRITE:
-		kn->kn_fop = &cmx_write_filterops;
-		kn->kn_hook = (caddr_t)sc;
-		break;
-	default:
-		ap->a_result = EOPNOTSUPP;
-		return (0);
-	}
-
-	klist = &sc->kq.ki_note;
-	knote_insert(klist, kn);
-
-	return (0);
-}
-
-static void
-cmx_filter_detach(struct knote *kn)
-{
-	struct cmx_softc *sc = (struct cmx_softc *)kn->kn_hook;
-	struct klist *klist = &sc->kq.ki_note;
-
-	knote_remove(klist, kn);
-}
-
-static int
-cmx_filter_read(struct knote *kn, long hint)
-{
-	struct cmx_softc *sc = (struct cmx_softc *)kn->kn_hook;
-	int ready = 0;
+	struct cmx_softc *sc = (struct cmx_softc *)hook;
+	boolean_t ready = FALSE;
         uint8_t bsr = 0;
 
         if (sc == NULL || sc->dying) {
-		kn->kn_flags |= (EV_EOF | EV_NODATA);
-                return (1);
+		fn->fn_flags |= (EV_EOF | EV_NODATA);
+                return (TRUE);
 	}
 
         bsr = cmx_read_BSR(sc);
 	if (cmx_test(bsr, BSR_BULK_IN_FULL, 1)) {
-		ready = 1;
+		ready = TRUE;
 	} else {
 		CMX_LOCK(sc);
 		if (!sc->polling) {
@@ -722,10 +681,10 @@ cmx_filter_read(struct knote *kn, long hint)
 	return (ready);
 }
 
-static int
-cmx_filter_write(struct knote *kn, long hint)
+static boolean_t
+cmx_filter_write(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	return (1);
+	return (TRUE);
 }
 
 #ifdef CMX_INTR
