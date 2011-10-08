@@ -476,7 +476,7 @@ struct bktr_softc {
     int         vbisize;        /* Number of bytes in the circular buffer */
     uint32_t	vbi_sequence_number;	/* sequence number for VBI */
     int		vbi_read_blocked;	/* user process blocked on read() from /dev/vbi */
-    struct kqinfo vbi_kq;	/* Data used by select()/poll()/kevent() on /dev/vbi */
+    struct kev_filter vbi_filter;	/* Data used by select()/poll()/kevent() on /dev/vbi */
     
 
     struct proc	*proc;		/* process to receive raised signal */

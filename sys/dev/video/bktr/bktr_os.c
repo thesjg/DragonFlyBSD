@@ -160,10 +160,9 @@ static	d_read_t	bktr_read;
 static	d_write_t	bktr_write;
 static	d_ioctl_t	bktr_ioctl;
 static	d_mmap_t	bktr_mmap;
-static	d_kqfilter_t	bktr_kqfilter;
 
-static void bktr_filter_detach(struct knote *);
-static int bktr_filter(struct knote *, long);
+static boolean_t bktr_filter(struct kev_filter_note *fn, long hint,
+    caddr_t hook);
 
 static struct dev_ops bktr_ops = {
 	{ "bktr", 0, 0 },
@@ -172,7 +171,6 @@ static struct dev_ops bktr_ops = {
 	.d_read =	bktr_read,
 	.d_write =	bktr_write,
 	.d_ioctl =	bktr_ioctl,
-	.d_kqfilter =	bktr_kqfilter,
 	.d_mmap =	bktr_mmap,
 };
 
@@ -229,6 +227,10 @@ bktr_attach( device_t dev )
 #ifdef BROOKTREE_IRQ
 	u_long		old_irq, new_irq;
 #endif 
+	cdev_t		cdev;
+	static struct kev_filter_ops kev_fops = {
+		.fop_read = { bktr_filter }
+	};
 
         struct bktr_softc *bktr = device_get_softc(dev);
 
@@ -350,9 +352,12 @@ bktr_attach( device_t dev )
 	common_bktr_attach( bktr, unit, fun, rev );
 
 	/* make the device entries */
-	make_dev(&bktr_ops, unit,    0, 0, 0444, "bktr%d",  unit);
-	make_dev(&bktr_ops, unit+16, 0, 0, 0444, "tuner%d", unit);
-	make_dev(&bktr_ops, unit+32, 0, 0, 0444, "vbi%d"  , unit);
+	cdev = make_dev(&bktr_ops, unit,    0, 0, 0444, "bktr%d",  unit);
+	kev_dev_filter_init(cdev, &kev_fops, (caddr_t)cdev);
+	cdev = make_dev(&bktr_ops, unit+16, 0, 0, 0444, "tuner%d", unit);
+	kev_dev_filter_init(cdev, &kev_fops, (caddr_t)cdev);
+	cdev = make_dev(&bktr_ops, unit+32, 0, 0, 0444, "vbi%d"  , unit);
+	kev_dev_filter_init(cdev, &kev_fops, (caddr_t)cdev);
 
 	return 0;
 
@@ -717,69 +722,27 @@ bktr_mmap(struct dev_mmap_args *ap)
 	return(0);
 }
 
-static struct filterops bktr_filterops =
-	{ FILTEROP_ISFD, NULL, bktr_filter_detach, bktr_filter };
-
-static int
-bktr_kqfilter(struct dev_kqfilter_args *ap)
+static boolean_t
+bktr_filter(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	cdev_t dev = ap->a_head.a_dev;
-	struct knote *kn = ap->a_kn;
-	struct klist *klist;
+	cdev_t dev = (cdev_t)hook;
 	bktr_ptr_t bktr;
 	int unit;
+	boolean_t ready = FALSE;
 
-	ap->a_result = 0;
-
-	switch (kn->kn_filter) {
-	case EVFILT_READ:
-		if (FUNCTION(minor(dev)) == VBI_DEV) {
-			unit = UNIT(minor(dev));
-			/* Get the device data */
-			bktr = (struct bktr_softc *)
-			    devclass_get_softc(bktr_devclass, unit);
-			kn->kn_fop = &bktr_filterops;
-			kn->kn_hook = (caddr_t)bktr;
-			break;
-		}
-		/* fall through */
-	default:
-		ap->a_result = EOPNOTSUPP;
-		return (0);
-	}
-
-	klist = &bktr->vbi_kq.ki_note;
-	knote_insert(klist, kn);
-
-	return (0);
-}
-
-static void
-bktr_filter_detach(struct knote *kn)
-{
-	bktr_ptr_t bktr = (bktr_ptr_t)kn->kn_hook;
-	struct klist *klist;
-
-	klist = &bktr->vbi_kq.ki_note;
-	knote_insert(klist, kn);
-}
-
-static int
-bktr_filter(struct knote *kn, long hint)
-{
-	bktr_ptr_t bktr = (bktr_ptr_t)kn->kn_hook;
-	int ready = 0;
-
+	unit = UNIT(minor(dev));
+	/* Get the device data */
+	bktr = (struct bktr_softc *)devclass_get_softc(bktr_devclass, unit);
 	if (bktr == NULL) {
 		/* the device is no longer valid/functioning */
-		kn->kn_flags |= (EV_EOF | EV_NODATA);
-		return (1);
+		fn->fn_flags |= (EV_EOF | EV_NODATA);
+		return (TRUE);
 	}
 
 	LOCK_VBI(bktr);
 	crit_enter();
 	if (bktr->vbisize != 0)
-		ready = 1;
+		ready = TRUE;
 	crit_exit();
 	UNLOCK_VBI(bktr);
 
