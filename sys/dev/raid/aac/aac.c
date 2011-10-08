@@ -3352,7 +3352,7 @@ aac_handle_aif(struct aac_softc *sc, struct aac_fib *fib)
 		wakeup(sc->aac_aifq);
 	/* token may have been lost */
 	/* Wakeup any poll()ers */
-	kev_filter(&sc->rcv_filter, 0);
+	kev_filter(&sc->rcv_filter, 0, 0);
 	/* token may have been lost */
 	lockmgr(&sc->aac_aifq_lock, LK_RELEASE);
 
