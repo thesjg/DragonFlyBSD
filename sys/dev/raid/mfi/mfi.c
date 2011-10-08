@@ -148,9 +148,10 @@ static int 	mfi_check_clear_intr_xscale(struct mfi_softc *sc);
 static int 	mfi_check_clear_intr_ppc(struct mfi_softc *sc);
 static void 	mfi_issue_cmd_xscale(struct mfi_softc *sc,uint32_t bus_add,uint32_t frame_cnt);
 static void 	mfi_issue_cmd_ppc(struct mfi_softc *sc,uint32_t bus_add,uint32_t frame_cnt);
-static void	mfi_filter_detach(struct knote *);
-static int	mfi_filter_read(struct knote *, long);
-static int	mfi_filter_write(struct knote *, long);
+static boolean_t mfi_filter_read(struct kev_filter_note *fn, long hint,
+    caddr_t hook);
+static boolean_t mfi_filter_write(struct kev_filter_note *fn, long hint,
+    caddr_t hook);
 
 SYSCTL_NODE(_hw, OID_AUTO, mfi, CTLFLAG_RD, 0, "MFI driver parameters");
 static int	mfi_event_locale = MFI_EVT_LOCALE_ALL;
@@ -172,20 +173,13 @@ SYSCTL_INT(_hw_mfi, OID_AUTO, max_cmds, CTLFLAG_RD, &mfi_max_cmds,
 static d_open_t		mfi_open;
 static d_close_t	mfi_close;
 static d_ioctl_t	mfi_ioctl;
-static d_kqfilter_t	mfi_kqfilter;
 
 static struct dev_ops mfi_ops = {
 	{ "mfi", 0, 0 },
 	.d_open = 	mfi_open,
 	.d_close =	mfi_close,
-	.d_ioctl =	mfi_ioctl,
-	.d_kqfilter =	mfi_kqfilter,
+	.d_ioctl =	mfi_ioctl
 };
-
-static struct filterops mfi_read_filterops =
-	{ FILTEROP_ISFD, NULL, mfi_filter_detach, mfi_filter_read };
-static struct filterops mfi_write_filterops =
-	{ FILTEROP_ISFD, NULL, mfi_filter_detach, mfi_filter_write };
 
 MALLOC_DEFINE(M_MFIBUF, "mfibuf", "Buffers for the MFI driver");
 
@@ -371,6 +365,10 @@ mfi_attach(struct mfi_softc *sc)
 	uint32_t status;
 	int error, commsz, framessz, sensesz;
 	int frames, unit, max_fw_sge;
+	static struct kev_filter_ops kev_fops = {
+		.fop_read = { mfi_filter_read },
+		.fop_write = { mfi_filter_write }
+	};
 
 	device_printf(sc->mfi_dev, "Megaraid SAS driver Ver 3.981\n");
 
@@ -635,6 +633,8 @@ mfi_attach(struct mfi_softc *sc)
 	callout_init(&sc->mfi_watchdog_callout);
 	callout_reset(&sc->mfi_watchdog_callout, MFI_CMD_TIMEOUT * hz,
 	    mfi_timeout, sc);
+
+	kev_dev_filter_init(sc->mfi_cdev, &kev_fops, (caddr_t)sc);
 
 	return (0);
 }
@@ -1345,10 +1345,7 @@ mfi_aen_complete(struct mfi_command *cm)
 		aborted = 1;
 	} else {
 		sc->mfi_aen_triggered = 1;
-		if (sc->mfi_poll_waiting) {
-			sc->mfi_poll_waiting = 0;
-			KNOTE(&sc->mfi_kq.ki_note, 0);
-		}
+		kev_filter(&sc->mfi_filter, 0, 0);
 		detail = cm->cm_data;
 		/*
 		 * XXX If this function is too expensive or is recursive, then
@@ -3030,69 +3027,26 @@ out:
 	return (error);
 }
 
-static int
-mfi_kqfilter(struct dev_kqfilter_args *ap)
+static boolean_t
+mfi_filter_read(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	cdev_t dev = ap->a_head.a_dev;
-	struct knote *kn = ap->a_kn;
-	struct mfi_softc *sc;
-	struct klist *klist;
-
-	ap->a_result = 0;
-	sc = dev->si_drv1;
-
-	switch (kn->kn_filter) {
-	case EVFILT_READ:
-		kn->kn_fop = &mfi_read_filterops;
-		kn->kn_hook = (caddr_t)sc;
-		break;
-	case EVFILT_WRITE:
-		kn->kn_fop = &mfi_write_filterops;
-		kn->kn_hook = (caddr_t)sc;
-		break;
-	default:
-		ap->a_result = EOPNOTSUPP;
-		return (0);
-	}
-
-	klist = &sc->mfi_kq.ki_note;
-	knote_insert(klist, kn);
-
-	return(0);
-}
-
-static void
-mfi_filter_detach(struct knote *kn)
-{
-	struct mfi_softc *sc = (struct mfi_softc *)kn->kn_hook;
-	struct klist *klist = &sc->mfi_kq.ki_note;
-
-	knote_remove(klist, kn);
-}
-
-static int
-mfi_filter_read(struct knote *kn, long hint)
-{
-	struct mfi_softc *sc = (struct mfi_softc *)kn->kn_hook;
-	int ready = 0;
+	struct mfi_softc *sc = (struct mfi_softc *)hook;
+	boolean_t ready = FALSE;
 
 	if (sc->mfi_aen_triggered != 0) {
-		ready = 1;
+		ready = TRUE;
 		sc->mfi_aen_triggered = 0;
 	}
 	if (sc->mfi_aen_triggered == 0 && sc->mfi_aen_cm == NULL)
-		kn->kn_flags |= EV_ERROR;
-
-	if (ready == 0)
-		sc->mfi_poll_waiting = 1;
+		fn->fn_flags |= EV_ERROR;
 
 	return (ready);
 }
 
-static int
-mfi_filter_write(struct knote *kn, long hint)
+static boolean_t
+mfi_filter_write(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	return (0);
+	return (TRUE);
 }
 
 static void

@@ -226,8 +226,7 @@ struct mfi_softc {
 	struct mfi_command		*mfi_aen_cm;
 	struct mfi_command		*mfi_skinny_cm;
 	uint32_t			mfi_aen_triggered;
-	uint32_t			mfi_poll_waiting;
-	struct kqinfo			mfi_kq;
+	struct kev_filter		mfi_filter;
 	int				mfi_delete_busy_volumes;
 	int				mfi_keep_deleted_volumes;
 	int				mfi_detaching;
