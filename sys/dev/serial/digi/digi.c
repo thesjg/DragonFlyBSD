@@ -152,7 +152,6 @@ static struct dev_ops digi_ops = {
 	.d_read =	digiread,
 	.d_write =	digiwrite,
 	.d_ioctl =	digiioctl,
-	.d_kqfilter =	ttykqfilter,
 	.d_revoke =	ttyrevoke
 };
 
@@ -643,6 +642,13 @@ digi_init(struct digi_softc *sc)
 		port->dev[5] = make_dev(&digi_ops, ((sc->res.unit << 16) + i) |
 		    CALLOUT_MASK | CONTROL_LOCK_STATE, UID_UUCP, GID_DIALER,
 		    0660, "cualD%d.%d", sc->res.unit, i);
+
+		kev_dev_filter_init(port->dev[0], &tty_fops, (caddr_t)&port->dev[0]);
+		kev_dev_filter_init(port->dev[1], &tty_fops, (caddr_t)&port->dev[1]);
+		kev_dev_filter_init(port->dev[2], &tty_fops, (caddr_t)&port->dev[2]);
+		kev_dev_filter_init(port->dev[3], &tty_fops, (caddr_t)&port->dev[3]);
+		kev_dev_filter_init(port->dev[4], &tty_fops, (caddr_t)&port->dev[4]);
+		kev_dev_filter_init(port->dev[5], &tty_fops, (caddr_t)&port->dev[5]);
 	}
 
 	sc->hidewin(sc);
@@ -1910,6 +1916,8 @@ digi_attach(struct digi_softc *sc)
 	digi_loaddata(sc);
 	digi_init(sc);
 	digi_freedata(sc);
+
+	kev_dev_filter_init(sc->res.ctldev, &tty_fops, (caddr_t)sc->res.ctldev);
 
 	lwkt_reltoken(&tty_token);
 	return (0);

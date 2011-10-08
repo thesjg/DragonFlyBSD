@@ -596,7 +596,6 @@ static struct dev_ops rp_ops = {
 	.d_read =	ttyread,
 	.d_write =	rpwrite,
 	.d_ioctl =	rpioctl,
-	.d_kqfilter =	ttykqfilter,
 	.d_revoke =	ttyrevoke
 };
 
@@ -836,6 +835,7 @@ rp_attachcommon(CONTROLLER_T *ctlp, int num_aiops, int num_ports)
 	int	retval;
 	struct	rp_port *rp;
 	struct	tty	*tty;
+	cdev_t dev;
 
 	lwkt_gettoken(&tty_token);
 	unit = device_get_unit(ctlp->dev);
@@ -859,24 +859,30 @@ rp_attachcommon(CONTROLLER_T *ctlp, int num_aiops, int num_ports)
 	crit_exit();
 
 	for (i = 0 ; i < rp_num_ports[unit] ; i++) {
-		make_dev(&rp_ops, ((unit + 1) << 16) | i,
-			  UID_ROOT, GID_WHEEL, 0666, "ttyR%c",
-			  i <= 9 ? '0' + i : 'a' + i - 10);
-		make_dev(&rp_ops, ((unit + 1) << 16) | i | 0x20,
-			  UID_ROOT, GID_WHEEL, 0666, "ttyiR%c",
-			  i <= 9 ? '0' + i : 'a' + i - 10);
-		make_dev(&rp_ops, ((unit + 1) << 16) | i | 0x40,
-			  UID_ROOT, GID_WHEEL, 0666, "ttylR%c",
-			  i <= 9 ? '0' + i : 'a' + i - 10);
-		make_dev(&rp_ops, ((unit + 1) << 16) | i | 0x80,
-			  UID_ROOT, GID_WHEEL, 0666, "cuaR%c",
-			  i <= 9 ? '0' + i : 'a' + i - 10);
-		make_dev(&rp_ops, ((unit + 1) << 16) | i | 0xa0,
-			  UID_ROOT, GID_WHEEL, 0666, "cuaiR%c",
-			  i <= 9 ? '0' + i : 'a' + i - 10);
-		make_dev(&rp_ops, ((unit + 1) << 16) | i | 0xc0,
-			  UID_ROOT, GID_WHEEL, 0666, "cualR%c",
-			  i <= 9 ? '0' + i : 'a' + i - 10);
+		dev = make_dev(&rp_ops, ((unit + 1) << 16) | i,
+			       UID_ROOT, GID_WHEEL, 0666, "ttyR%c",
+			       i <= 9 ? '0' + i : 'a' + i - 10);
+		kev_dev_filter_init(dev, &tty_fops, (caddr_t)dev);
+		dev = make_dev(&rp_ops, ((unit + 1) << 16) | i | 0x20,
+			       UID_ROOT, GID_WHEEL, 0666, "ttyiR%c",
+			       i <= 9 ? '0' + i : 'a' + i - 10);
+		kev_dev_filter_init(dev, &tty_fops, (caddr_t)dev);
+		dev = make_dev(&rp_ops, ((unit + 1) << 16) | i | 0x40,
+			       UID_ROOT, GID_WHEEL, 0666, "ttylR%c",
+			       i <= 9 ? '0' + i : 'a' + i - 10);
+		kev_dev_filter_init(dev, &tty_fops, (caddr_t)dev);
+		dev = make_dev(&rp_ops, ((unit + 1) << 16) | i | 0x80,
+			       UID_ROOT, GID_WHEEL, 0666, "cuaR%c",
+			       i <= 9 ? '0' + i : 'a' + i - 10);
+		kev_dev_filter_init(dev, &tty_fops, (caddr_t)dev);
+		dev = make_dev(&rp_ops, ((unit + 1) << 16) | i | 0xa0,
+			       UID_ROOT, GID_WHEEL, 0666, "cuaiR%c",
+			       i <= 9 ? '0' + i : 'a' + i - 10);
+		kev_dev_filter_init(dev, &tty_fops, (caddr_t)dev);
+		dev = make_dev(&rp_ops, ((unit + 1) << 16) | i | 0xc0,
+			       UID_ROOT, GID_WHEEL, 0666, "cualR%c",
+			       i <= 9 ? '0' + i : 'a' + i - 10);
+		kev_dev_filter_init(dev, &tty_fops, (caddr_t)dev);
 	}
 
 	port = 0;
