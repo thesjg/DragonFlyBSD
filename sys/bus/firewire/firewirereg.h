@@ -205,7 +205,7 @@ struct fw_xferq {
 	STAILQ_HEAD(, fw_bulkxfer) stfree;
 	STAILQ_HEAD(, fw_bulkxfer) stdma;
 	struct fw_bulkxfer *stproc;
-	struct kqinfo rkq;
+	struct kev_filter fwfilter;
 	caddr_t sc;
 	void (*hand) (struct fw_xferq *);
 };

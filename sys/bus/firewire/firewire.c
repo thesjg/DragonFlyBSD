@@ -1948,7 +1948,7 @@ fw_rcv(struct fw_rcv_buf *rb)
 		STAILQ_INSERT_TAIL(&xferq->q, rb->xfer, link);
 		crit_exit();
 		sc = device_get_softc(rb->fc->bdev);
-		KNOTE(&xferq->rkq.ki_note, 0);
+		kev_filter(&xferq->fwfilter, 0, 0);
 		if (xferq->flag & FWXFERQ_WAKEUP) {
 			xferq->flag &= ~FWXFERQ_WAKEUP;
 			wakeup((caddr_t)xferq);

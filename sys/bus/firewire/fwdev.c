@@ -74,15 +74,27 @@
 static	d_open_t	fw_open;
 static	d_close_t	fw_close;
 static	d_ioctl_t	fw_ioctl;
-static	d_kqfilter_t	fw_kqfilter;
 static	d_read_t	fw_read;	/* for Isochronous packet */
 static	d_write_t	fw_write;
 static	d_mmap_t	fw_mmap;
 static	d_strategy_t	fw_strategy;
 
-static void fwfilt_detach(struct knote *);
-static int fwfilt_read(struct knote *, long);
-static int fwfilt_write(struct knote *, long);
+/*
+ * XXX
+ *
+ * We never actually attach the firewire filters to a device ...
+ */
+#if 0
+static boolean_t fw_filter_read(struct kev_filter_note *fn, long hint,
+    caddr_t hook);
+static boolean_t fw_filter_write(struct kev_filter_note *fn, long hint,
+    caddr_t hook);
+
+static struct kev_filter_ops kev_fops = {
+	.fop_read = { fw_filter_read },
+	.fop_write = { fw_filter_write }
+};
+#endif
 
 struct dev_ops firewire_ops = 
 {
@@ -92,9 +104,8 @@ struct dev_ops firewire_ops =
 	.d_read =	fw_read,
 	.d_write =	fw_write,
 	.d_ioctl =	fw_ioctl,
-	.d_kqfilter =	fw_kqfilter,
 	.d_mmap =	fw_mmap,
-	.d_strategy =	fw_strategy,
+	.d_strategy =	fw_strategy
 };
 
 struct fw_drv1 {
@@ -711,81 +722,26 @@ out:
 	return err;
 }
 
-static struct filterops fw_read_filterops =
-	{ FILTEROP_ISFD, NULL, fwfilt_detach, fwfilt_read };
-static struct filterops fw_write_filterops =
-	{ FILTEROP_ISFD, NULL, fwfilt_detach, fwfilt_write };
-
-static int
-fw_kqfilter(struct dev_kqfilter_args *ap)
+#if 0
+static boolean_t
+fw_filter_read(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	cdev_t dev = ap->a_head.a_dev;
-	struct firewire_softc *sc;
-	struct fw_xferq *ir;
-	struct knote *kn = ap->a_kn;
-	int unit = DEV2UNIT(dev);
-	struct klist *klist;
-
-	/*
-	 * XXX Implement filters for mem?
-	 */
-	if (DEV_FWMEM(dev)) {
-		ap->a_result = EOPNOTSUPP;
-		return (0);
-	}
-
-	sc = devclass_get_softc(firewire_devclass, unit);
-	ir = ((struct fw_drv1 *)dev->si_drv1)->ir;
-
-	ap->a_result = 0;
-
-	switch (kn->kn_filter) {
-	case EVFILT_READ:
-		kn->kn_fop = &fw_read_filterops;
-		kn->kn_hook = (caddr_t)ir;
-		break;
-	case EVFILT_WRITE:
-		kn->kn_fop = &fw_write_filterops;
-		kn->kn_hook = (caddr_t)ir;
-		break;
-	default:
-		ap->a_result = EOPNOTSUPP;
-		return (0);
-	}
-
-	klist = &ir->rkq.ki_note;
-	knote_insert(klist, kn);
-
-	return (0);
-}
-
-static void
-fwfilt_detach(struct knote *kn)
-{
-	struct fw_xferq *ir = (struct fw_xferq *)kn->kn_hook;
-	struct klist *klist = &ir->rkq.ki_note;
-
-	knote_remove(klist, kn);
-}
-
-static int
-fwfilt_read(struct knote *kn, long hint)
-{
-	struct fw_xferq *ir = (struct fw_xferq *)kn->kn_hook;
-	int ready = 0;
+	struct fw_xferq *ir = (struct fw_xferq *)hook;
+	boolean_t ready = FALSE;
 
 	if (STAILQ_FIRST(&ir->q) != NULL)
-		ready = 1;
+		ready = TRUE;
 
 	return (ready);
 }
 
-static int
-fwfilt_write(struct knote *kn, long hint)
+static boolean_t
+fw_filter_write(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
 	/* XXX should be fixed */
-	return (1);
+	return (TRUE);
 }
+#endif
 
 static int
 fw_mmap (struct dev_mmap_args *ap)
@@ -879,6 +835,7 @@ found:
 		       "%s%d.%d", devnames[i], unit, sub);
 	(*dev)->si_flags |= SI_CHEAPCLONE;
 	dev_depends(sc->dev, *dev);
+
 	return;
 }
 #endif
