@@ -40,13 +40,13 @@ static	d_close_t	snpclose;
 static	d_read_t	snpread;
 static	d_write_t	snpwrite;
 static	d_ioctl_t	snpioctl;
-static	d_kqfilter_t	snpkqfilter;
 static d_clone_t	snpclone;
 DEVFS_DECLARE_CLONE_BITMAP(snp);
 
-static void snpfilter_detach(struct knote *);
-static int snpfilter_rd(struct knote *, long);
-static int snpfilter_wr(struct knote *, long);
+static boolean_t snp_filter_read(struct kev_filter_note *fn, long hint,
+    caddr_t hook);
+static boolean_t snp_filter_write(struct kev_filter_note *fn, long hint,
+    caddr_t hook);
 
 #if NSNP <= 1
 #define SNP_PREALLOCATED_UNITS	4
@@ -60,8 +60,7 @@ static struct dev_ops snp_ops = {
 	.d_close =	snpclose,
 	.d_read =	snpread,
 	.d_write =	snpwrite,
-	.d_ioctl =	snpioctl,
-	.d_kqfilter =	snpkqfilter
+	.d_ioctl =	snpioctl
 };
 
 static struct linesw snpdisc = {
@@ -81,7 +80,7 @@ struct snoop {
 	u_long			 snp_blen;	/* Used length. */
 	caddr_t			 snp_buf;	/* Allocation pointer. */
 	int			 snp_flags;	/* Flags. */
-	struct kqinfo		 snp_kq;	/* Kqueue info. */
+	struct kev_filter	 snp_filter;	/* Kevent filter info. */
 	int			 snp_olddisc;	/* Old line discipline. */
 };
 
@@ -394,7 +393,7 @@ snp_in(struct snoop *snp, char *buf, int n)
 		snp->snp_flags &= ~SNOOP_RWAIT;
 		wakeup((caddr_t)snp);
 	}
-	KNOTE(&snp->snp_kq.ki_note, 0);
+	kev_filter(&snp->snp_filter, 0, 0);
 
 	return (n);
 }
@@ -404,6 +403,10 @@ snpopen(struct dev_open_args *ap)
 {
 	cdev_t dev = ap->a_head.a_dev;
 	struct snoop *snp;
+        static struct kev_filter_ops kev_fops = {
+                .fop_read = { snp_filter_read },
+                .fop_write = { snp_filter_write }
+        };
 
 	lwkt_gettoken(&tty_token);
 	if (dev->si_drv1 == NULL) {
@@ -436,6 +439,9 @@ snpopen(struct dev_open_args *ap)
 	snp->snp_target = NULL;
 
 	LIST_INSERT_HEAD(&snp_sclist, snp, snp_list);
+
+	kev_dev_filter_init(dev, &kev_fops, (caddr_t)snp);
+
 	lwkt_reltoken(&tty_token);
 	return (0);
 }
@@ -472,7 +478,7 @@ snp_detach(struct snoop *snp)
 	snp->snp_target = NULL;
 
 detach_notty:
-	KNOTE(&snp->snp_kq.ki_note, 0);
+	kev_filter(&snp->snp_filter, 0, 0);
 	if ((snp->snp_flags & SNOOP_OPEN) == 0) 
 		kfree(snp, M_SNP);
 
@@ -614,59 +620,11 @@ snpioctl(struct dev_ioctl_args *ap)
 	return (0);
 }
 
-static struct filterops snpfiltops_rd =
-        { FILTEROP_ISFD, NULL, snpfilter_detach, snpfilter_rd };
-static struct filterops snpfiltops_wr =
-        { FILTEROP_ISFD, NULL, snpfilter_detach, snpfilter_wr };
-
-static int
-snpkqfilter(struct dev_kqfilter_args *ap)
+static boolean_t
+snp_filter_read(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	cdev_t dev = ap->a_head.a_dev;
-	struct snoop *snp = dev->si_drv1;
-	struct knote *kn = ap->a_kn;
-	struct klist *klist;
-
-	lwkt_gettoken(&tty_token);
-	ap->a_result = 0;
-
-	switch (kn->kn_filter) {
-	case EVFILT_READ:
-		kn->kn_fop = &snpfiltops_rd;
-		kn->kn_hook = (caddr_t)snp;
-		break;
-	case EVFILT_WRITE:
-		kn->kn_fop = &snpfiltops_wr;
-		kn->kn_hook = (caddr_t)snp;
-		break;
-	default:
-		ap->a_result = EOPNOTSUPP;
-		lwkt_reltoken(&tty_token);
-		return (0);
-	}
-
-	klist = &snp->snp_kq.ki_note;
-	knote_insert(klist, kn);
-
-	lwkt_reltoken(&tty_token);
-	return (0);
-}
-
-static void
-snpfilter_detach(struct knote *kn)
-{
-	struct snoop *snp = (struct snoop *)kn->kn_hook;
-	struct klist *klist;
-
-	klist = &snp->snp_kq.ki_note;
-	knote_remove(klist, kn);
-}
-
-static int
-snpfilter_rd(struct knote *kn, long hint)
-{
-	struct snoop *snp = (struct snoop *)kn->kn_hook;
-	int ready = 0;
+	struct snoop *snp = (struct snoop *)hook;
+	boolean_t ready = FALSE;
 
 	lwkt_gettoken(&tty_token);
 	/*
@@ -675,17 +633,17 @@ snpfilter_rd(struct knote *kn, long hint)
 	 * return -1 to indicate down state.
 	 */
 	if (snp->snp_flags & SNOOP_DOWN || snp->snp_len > 0)
-		ready = 1;
+		ready = TRUE;
 
 	lwkt_reltoken(&tty_token);
 	return (ready);
 }
 
-static int
-snpfilter_wr(struct knote *kn, long hint)
+static boolean_t
+snp_filter_write(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
 	/* Writing is always OK */
-	return (1);
+	return (TRUE);
 }
 
 static int
