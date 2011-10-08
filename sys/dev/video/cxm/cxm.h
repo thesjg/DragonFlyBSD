@@ -230,7 +230,7 @@ struct cxm_softc {
 	struct cxm_buffer_pool	enc_pool;
 	struct cxm_sg_list enc_sg;
 
-	struct kqinfo	enc_kq;
+	struct kev_filter enc_filter;
 
 	struct proc	*enc_proc;
 	int		enc_signal;

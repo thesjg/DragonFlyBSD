@@ -120,18 +120,16 @@ static	d_open_t	cxm_open;
 static	d_close_t	cxm_close;
 static	d_read_t	cxm_read;
 static	d_ioctl_t	cxm_ioctl;
-static	d_kqfilter_t	cxm_kqfilter;
 
-static void cxm_filter_detach(struct knote *);
-static int cxm_filter(struct knote *, long);
+static boolean_t cxm_filter(struct kev_filter_note *fn, long hint,
+    caddr_t hook);
 
 static struct dev_ops cxm_ops = {
 	{ "cxm", 0, 0 },
 	.d_open =	cxm_open,
 	.d_close =	cxm_close,
 	.d_read =	cxm_read,
-	.d_ioctl =	cxm_ioctl,
-	.d_kqfilter =	cxm_kqfilter
+	.d_ioctl =	cxm_ioctl
 };
 
 MODULE_DEPEND(cxm, cxm_iic, 1, 1, 1);
@@ -1367,7 +1365,7 @@ cxm_encoder_dma_done(struct cxm_softc *sc)
 	wakeup(&sc->enc_pool.read);
 
 	/* wakeup anyone polling for data */
-	KNOTE(&sc->enc_kq.ki_note, 0);
+	kev_filter(&sc->enc_filter, 0, 0);
 }
 
 
@@ -1636,6 +1634,9 @@ cxm_attach(device_t dev)
 	unsigned int	i;
 	uint32_t	command;
 	struct cxm_softc *sc;
+	struct kev_filter_ops kev_fops = {
+		.fop_read = { cxm_filter }
+	};
 
 	/* Get the device data */
 	sc = device_get_softc(dev);
@@ -1884,6 +1885,7 @@ cxm_attach(device_t dev)
 	/* make the device entries */
 	sc->cxm_dev_t = make_dev(&cxm_ops, unit,
 				 0, 0, 0444, "cxm%d",  unit);
+	kev_dev_filter_init(sc->cxm_dev_t, &kev_fops, (caddr_t)sc);
 
 	return 0;
 
@@ -2904,63 +2906,21 @@ cxm_ioctl(struct dev_ioctl_args *ap)
 	return 0;
 }
 
-static struct filterops cxm_filterops =
-	{ FILTEROP_ISFD, NULL, cxm_filter_detach, cxm_filter };
-
-static int
-cxm_kqfilter(struct dev_kqfilter_args *ap)
+static boolean_t
+cxm_filter(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	cdev_t dev = ap->a_head.a_dev;
-	struct knote *kn = ap->a_kn;
-	struct cxm_softc *sc;
-	struct klist *klist;
-	int unit;
-
-	ap->a_result = 0;
-
-	switch (kn->kn_filter) {
-	case EVFILT_READ:
-		unit = UNIT(minor(dev));
-		/* Get the device data */
-		sc = (struct cxm_softc *)devclass_get_softc(cxm_devclass, unit);
-		kn->kn_fop = &cxm_filterops;
-		kn->kn_hook = (caddr_t)sc;
-		break;
-	default:
-		ap->a_result = EOPNOTSUPP;
-		return (0);
-	}
-
-	klist = &sc->enc_kq.ki_note;
-	knote_insert(klist, kn);
-
-	return (0);
-}
-
-static void
-cxm_filter_detach(struct knote *kn)
-{
-	struct cxm_softc *sc = (struct cxm_softc *)kn->kn_hook;
-	struct klist *klist = &sc->enc_kq.ki_note;
-
-	knote_remove(klist, kn);
-}
-
-static int
-cxm_filter(struct knote *kn, long hint)
-{
-	struct cxm_softc *sc = (struct cxm_softc *)kn->kn_hook;
-	int ready = 0;
+	struct cxm_softc *sc = (struct cxm_softc *)hook;
+	boolean_t ready = FALSE;
 
 	if (sc == NULL) {
 		/* the device is no longer valid/functioning */
-		kn->kn_flags |= (EV_EOF | EV_NODATA);
-		return (1);
+		fn->fn_flags |= (EV_EOF | EV_NODATA);
+		return (TRUE);
 	}
 
 	crit_enter();
 	if (sc->enc_pool.read != sc->enc_pool.write)
-		ready = 1;
+		ready = TRUE;
 	crit_exit();
 
 	return (ready);
