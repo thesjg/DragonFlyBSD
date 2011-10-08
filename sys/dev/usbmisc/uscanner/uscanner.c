@@ -253,16 +253,17 @@ d_open_t  uscanneropen;
 d_close_t uscannerclose;
 d_read_t  uscannerread;
 d_write_t uscannerwrite;
-d_kqfilter_t uscannerkqfilter;
 
 static struct dev_ops uscanner_ops = {
 	{ "uscanner", 0, 0 },
 	.d_open =	uscanneropen,
 	.d_close =	uscannerclose,
 	.d_read =	uscannerread,
-	.d_write =	uscannerwrite,
-	.d_kqfilter =	uscannerkqfilter
+	.d_write =	uscannerwrite
 };
+
+static boolean_t uscanner_filter(struct kev_filter_note *fn, long hint,
+    caddr_t hook);
 
 static int uscanner_do_read(struct uscanner_softc *, struct uio *, int);
 static int uscanner_do_write(struct uscanner_softc *, struct uio *, int);
@@ -312,6 +313,11 @@ uscanner_attach(device_t self)
 	usb_endpoint_descriptor_t *ed, *ed_bulkin = NULL, *ed_bulkout = NULL;
 	int i;
 	usbd_status err;
+	cdev_t dev;
+	static struct kev_filter_ops kev_fops = {
+		.fop_read = { uscanner_filter },
+		.fop_write = { uscanner_filter }
+	};
 
 	sc->sc_dev = self;
 
@@ -368,12 +374,14 @@ uscanner_attach(device_t self)
 	sc->sc_bulkout = ed_bulkout->bEndpointAddress;
 
 	/* the main device, ctrl endpoint */
-	make_dev(&uscanner_ops, device_get_unit(sc->sc_dev),
-		 UID_ROOT, GID_OPERATOR, 0644,
-		 "%s", device_get_nameunit(sc->sc_dev));
+	dev = make_dev(&uscanner_ops, device_get_unit(sc->sc_dev),
+		       UID_ROOT, GID_OPERATOR, 0644,
+		       "%s", device_get_nameunit(sc->sc_dev));
 
 	usbd_add_drv_event(USB_EVENT_DRIVER_ATTACH, sc->sc_udev,
 			   sc->sc_dev);
+
+	kev_dev_filter_init(dev, &kev_fops, (caddr_t)NULL);
 
 	return 0;
 }
@@ -642,37 +650,15 @@ uscanner_detach(device_t self)
 	return (0);
 }
 
-static void
-uscannerfilt_detach(struct knote *kn) {}
-
-static int
-uscannerfilt(struct knote *kn, long hint)
+static boolean_t
+uscanner_filter(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
 	/*
 	 * We have no easy way of determining if a read will
 	 * yield any data or a write will happen.
 	 * Pretend they will.
 	 */
-	return (1);
-}
-
-static struct filterops uscannerfiltops =
-	{ FILTEROP_ISFD, NULL, uscannerfilt_detach, uscannerfilt };
-
-int
-uscannerkqfilter(struct dev_kqfilter_args *ap)
-{
-/* XXX
-	cdev_t dev = ap->a_head.a_dev;
-	struct uscanner_softc *sc = devclass_get_softc(uscanner_devclass, USCANNERUNIT(dev));
-
-	if (sc->sc_dying)
-		return (EIO);
-*/
-
-	ap->a_result = 0;
-	ap->a_kn->kn_fop = &uscannerfiltops;
-	return (0);
+	return (TRUE);
 }
 
 DRIVER_MODULE(uscanner, uhub, uscanner_driver, uscanner_devclass, usbd_driver_load, NULL);

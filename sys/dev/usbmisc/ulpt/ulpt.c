@@ -118,7 +118,7 @@ struct ulpt_softc {
 
 	int sc_refcnt;
 	u_char sc_dying;
-	struct kqinfo	sc_wkq;
+	struct kev_filter filter;
 	int vendor;
 	int product;
 };
@@ -127,19 +127,17 @@ static d_open_t ulptopen;
 static d_close_t ulptclose;
 static d_write_t ulptwrite;
 static d_ioctl_t ulptioctl;
-static d_kqfilter_t ulptkqfilter;
-
-static void ulpt_filt_detach(struct knote *);
-static int ulpt_filt(struct knote *, long);
 
 static struct dev_ops ulpt_ops = {
 	{ "ulpt", 0, 0 },
 	.d_open =	ulptopen,
 	.d_close =	ulptclose,
 	.d_write =	ulptwrite,
-	.d_ioctl =	ulptioctl,
-	.d_kqfilter =	ulptkqfilter
+	.d_ioctl =	ulptioctl
 };
+
+static boolean_t ulpt_filter_write(struct kev_filter_note *fn, long hint,
+    caddr_t hook);
 
 void ulpt_disco(void *);
 
@@ -211,6 +209,9 @@ ulpt_attach(device_t self)
 	usb_endpoint_descriptor_t *ed;
 	u_int8_t epcount;
 	int i, altno;
+	static struct kev_filter_ops kev_fops = {
+		.fop_write = { ulpt_filter_write }
+	};
 
 	DPRINTFN(10,("ulpt_attach: sc=%p\n", sc));
 	sc->sc_dev = self;
@@ -312,6 +313,9 @@ ulpt_attach(device_t self)
 	usbd_add_drv_event(USB_EVENT_DRIVER_ATTACH, sc->sc_udev,
 			   sc->sc_dev);
 
+	kev_dev_filter_init(sc->sc_cdev1, &kev_fops, (caddr_t)NULL);
+	kev_dev_filter_init(sc->sc_cdev2, &kev_fops, (caddr_t)NULL);
+
 	return 0;
 }
 
@@ -344,8 +348,17 @@ ulpt_detach(device_t self)
 	crit_exit();
 
 	dev_ops_remove_minor(&ulpt_ops, /*-1, */device_get_unit(self));
+
+#if 0
+	/*
+         * XXX, SJG
+	 *
+ 	 * Device is being removed, all associated filter entries need to be
+	 * torn down sanely.
+	 */
 	devfs_assume_knotes(sc->sc_cdev1, &sc->sc_wkq);
 	devfs_assume_knotes(sc->sc_cdev2, &sc->sc_wkq);
+#endif
 
 	usbd_add_drv_event(USB_EVENT_DRIVER_DETACH, sc->sc_udev, sc->sc_dev);
 
@@ -668,52 +681,10 @@ ulptioctl(struct dev_ioctl_args *ap)
 	return (error);
 }
 
-static struct filterops ulpt_filtops =
-	{ FILTEROP_ISFD, NULL, ulpt_filt_detach, ulpt_filt };
-
-static int
-ulptkqfilter(struct dev_kqfilter_args *ap)
+static boolean_t
+ulpt_filter_write(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	cdev_t dev = ap->a_head.a_dev;
-	struct knote *kn = ap->a_kn;
-	struct ulpt_softc *sc;
-	struct klist *klist;
-
-	ap->a_result = 0;
-
-	switch(kn->kn_filter) {
-	case EVFILT_WRITE:
-		sc = devclass_get_softc(ulpt_devclass, ULPTUNIT(dev));
-		kn->kn_fop = &ulpt_filtops;
-		kn->kn_hook = (caddr_t)sc;
-		break;
-	default:
-		ap->a_result = EOPNOTSUPP;
-		return (0);
-	}
-
-	klist = &sc->sc_wkq.ki_note;
-	knote_insert(klist, kn);
-
-	return(0);
-}
-
-static void
-ulpt_filt_detach(struct knote *kn)
-{
-	struct ulpt_softc *sc = (struct ulpt_softc *)kn->kn_hook;
-	struct klist *klist;
-
-	klist = &sc->sc_wkq.ki_note;
-	knote_remove(klist, kn);
-}
-
-static int
-ulpt_filt(struct knote *kn, long hint)
-{
-/*        struct ulpt_softc *sc = (struct ulpt_softc *)kn->kn_hook;*/
-
-	return 1;
+	return (TRUE);
 }
 
 #if 0
