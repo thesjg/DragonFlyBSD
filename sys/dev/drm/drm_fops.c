@@ -109,34 +109,9 @@ int drm_read(struct dev_read_args *ap)
 	return 0;
 }
 
-static int
-drmfilt(struct knote *kn, long hint)
+static boolean_t
+drm_filter(struct kev_filter_note *fn, long hint, caddr_t hook)
 {
-	return (0);
+	return (FALSE);
 }
 
-static void
-drmfilt_detach(struct knote *kn) {}
-
-static struct filterops drmfiltops =
-        { FILTEROP_ISFD, NULL, drmfilt_detach, drmfilt };
-
-int
-drm_kqfilter(struct dev_kqfilter_args *ap)
-{
-	struct knote *kn = ap->a_kn;
-
-	ap->a_result = 0;
-
-	switch (kn->kn_filter) {
-	case EVFILT_READ:
-	case EVFILT_WRITE:
-		kn->kn_fop = &drmfiltops;
-		break;
-	default:
-		ap->a_result = EOPNOTSUPP;
-		return (0);
-	}
-
-	return (0);
-}

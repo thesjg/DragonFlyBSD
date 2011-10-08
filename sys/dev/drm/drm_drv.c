@@ -124,7 +124,6 @@ static struct dev_ops drm_cdevsw = {
 	.d_close =	drm_close,
 	.d_read =       drm_read,
 	.d_ioctl =      drm_ioctl,
-	.d_kqfilter =	drm_kqfilter,
 	.d_mmap =       drm_mmap
 };
 
@@ -181,6 +180,10 @@ int drm_attach(device_t kdev, drm_pci_id_list_t *idlist)
 	struct drm_device *dev;
 	drm_pci_id_list_t *id_entry;
 	int unit;
+	static struct kev_filter_ops kev_fops = {
+		.fop_read = { drm_filter },
+		.fop_write = { drm_filter }
+	};
 #if 0
 	int msicount;
 #endif
@@ -239,6 +242,8 @@ int drm_attach(device_t kdev, drm_pci_id_list_t *idlist)
 	id_entry = drm_find_description(dev->pci_vendor,
 	    dev->pci_device, idlist);
 	dev->id_entry = id_entry;
+
+	kev_dev_filter_init(dev->devnode, &kev_fops, (caddr_t)NULL);
 
 	return drm_load(dev);
 }
