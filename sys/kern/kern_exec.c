@@ -112,8 +112,20 @@ void
 exec_objcache_init(void *arg __unused)
 {
 	int cluster_limit;
+	size_t limsize;
 
-	cluster_limit = 16;	/* up to this many objects */
+	/*
+	 * Maximum number of concurrent execs.  This can be limiting on
+	 * systems with a lot of cpu cores but it also eats a significant
+	 * amount of memory.
+	 */
+	cluster_limit = 16;
+	limsize = kmem_lim_size();
+	if (limsize > 7 * 1024)
+		cluster_limit *= 2;
+	if (limsize > 15 * 1024)
+		cluster_limit *= 2;
+
 	exec_objcache = objcache_create_mbacked(
 					M_EXECARGS, PATH_MAX + ARG_MAX,
 					&cluster_limit, 8,
@@ -542,14 +554,14 @@ exec_fail_dealloc:
 		imgp->vp = NULL;
 	}
 
+	if (imgp->freepath)
+		kfree(imgp->freepath, M_TEMP);
+
 	if (error == 0) {
 		++mycpu->gd_cnt.v_exec;
 		lwkt_reltoken(&p->p_token);
 		return (0);
 	}
-
-	if (imgp->freepath)
-		kfree(imgp->freepath, M_TEMP);
 
 exec_fail:
 	/*
@@ -576,8 +588,6 @@ exec_fail:
 
 /*
  * execve() system call.
- *
- * MPALMOSTSAFE
  */
 int
 sys_execve(struct execve_args *uap)
@@ -588,7 +598,6 @@ sys_execve(struct execve_args *uap)
 
 	bzero(&args, sizeof(args));
 
-	get_mplock();
 	error = nlookup_init(&nd, uap->fname, UIO_USERSPACE, NLC_FOLLOW);
 	if (error == 0) {
 		error = exec_copyin_args(&args, uap->fname, PATH_USERSPACE,
@@ -604,7 +613,6 @@ sys_execve(struct execve_args *uap)
 		exit1(W_EXITCODE(0, SIGABRT));
 		/* NOTREACHED */
 	}
-	rel_mplock();
 
 	/*
 	 * The syscall result is returned in registers to the new program.
@@ -635,9 +643,8 @@ exec_map_page(struct image_params *imgp, vm_pindex_t pageno,
 	if (pageno >= object->size)
 		return (EIO);
 
+	vm_object_hold(object);
 	m = vm_page_grab(object, pageno, VM_ALLOC_NORMAL | VM_ALLOC_RETRY);
-
-	lwkt_gettoken(&vm_token);
 	while ((m->valid & VM_PAGE_BITS_ALL) != VM_PAGE_BITS_ALL) {
 		ma = m;
 
@@ -656,13 +663,12 @@ exec_map_page(struct image_params *imgp, vm_pindex_t pageno,
 				vm_page_protect(m, VM_PROT_NONE);
 				vnode_pager_freepage(m);
 			}
-			lwkt_reltoken(&vm_token);
 			return EIO;
 		}
 	}
-	vm_page_hold(m);	/* requires vm_token to be held */
+	vm_page_hold(m);
 	vm_page_wakeup(m);	/* unbusy the page */
-	lwkt_reltoken(&vm_token);
+	vm_object_drop(object);
 
 	*plwb = lwbuf_alloc(m, *plwb);
 	*pdata = (void *)lwbuf_kva(*plwb);

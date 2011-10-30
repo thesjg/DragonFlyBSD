@@ -37,6 +37,7 @@
 
 #include "opt_quota.h"
 
+#include <sys/disk.h>
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/proc.h>
@@ -86,6 +87,7 @@ static struct vfsops ufs_vfsops = {
 };
 
 VFS_SET(ufs_vfsops, ufs, 0);
+MODULE_VERSION(ufs, 1);
 
 extern struct vop_ops ffs_vnode_vops;
 extern struct vop_ops ffs_spec_vops;

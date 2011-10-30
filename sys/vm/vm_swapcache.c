@@ -76,9 +76,8 @@
 #include <vm/vm_extern.h>
 
 #include <sys/thread2.h>
+#include <sys/spinlock2.h>
 #include <vm/vm_page2.h>
-
-#define INACTIVE_LIST	(&vm_page_queues[PQ_INACTIVE].pl)
 
 /* the kernel process "vm_pageout"*/
 static int vm_swapcached_flush (vm_page_t m, int isblkdev);
@@ -160,8 +159,9 @@ vm_swapcached_thread(void)
 {
 	enum { SWAPC_WRITING, SWAPC_CLEANING } state = SWAPC_WRITING;
 	enum { SWAPB_BURSTING, SWAPB_RECOVERING } burst = SWAPB_BURSTING;
-	struct vm_page page_marker;
-	struct vm_object object_marker;
+	static struct vm_page page_marker[PQ_MAXL2_SIZE];
+	static struct vm_object object_marker;
+	int q;
 
 	/*
 	 * Thread setup
@@ -171,16 +171,23 @@ vm_swapcached_thread(void)
 			      swapcached_thread, SHUTDOWN_PRI_FIRST);
 	EVENTHANDLER_REGISTER(shutdown_pre_sync, shutdown_swapcache,
 			      NULL, SHUTDOWN_PRI_SECOND);
-	lwkt_gettoken(&vm_token);
 
 	/*
 	 * Initialize our marker for the inactive scan (SWAPC_WRITING)
 	 */
 	bzero(&page_marker, sizeof(page_marker));
-	page_marker.flags = PG_BUSY | PG_FICTITIOUS | PG_MARKER;
-	page_marker.queue = PQ_INACTIVE;
-	page_marker.wire_count = 1;
-	TAILQ_INSERT_HEAD(INACTIVE_LIST, &page_marker, pageq);
+	for (q = 0; q < PQ_MAXL2_SIZE; ++q) {
+		page_marker[q].flags = PG_BUSY | PG_FICTITIOUS | PG_MARKER;
+		page_marker[q].queue = PQ_INACTIVE + q;
+		page_marker[q].pc = q;
+		page_marker[q].wire_count = 1;
+		vm_page_queues_spin_lock(PQ_INACTIVE + q);
+		TAILQ_INSERT_HEAD(
+			&vm_page_queues[PQ_INACTIVE + q].pl,
+			&page_marker[q], pageq);
+		vm_page_queues_spin_unlock(PQ_INACTIVE + q);
+	}
+
 	vm_swapcache_hysteresis = vmstats.v_inactive_target / 2;
 	vm_swapcache_inactive_heuristic = -vm_swapcache_hysteresis;
 
@@ -247,12 +254,18 @@ vm_swapcached_thread(void)
 		if (state == SWAPC_WRITING) {
 			if (vm_swapcache_curburst >= vm_swapcache_accrate) {
 				if (burst == SWAPB_BURSTING) {
-					vm_swapcache_writing(&page_marker);
+					for (q = 0; q < PQ_MAXL2_SIZE; ++q) {
+						vm_swapcache_writing(
+							&page_marker[q]);
+					}
 					if (vm_swapcache_curburst <= 0)
 						burst = SWAPB_RECOVERING;
 				} else if (vm_swapcache_curburst >
 					   vm_swapcache_minburst) {
-					vm_swapcache_writing(&page_marker);
+					for (q = 0; q < PQ_MAXL2_SIZE; ++q) {
+						vm_swapcache_writing(
+							&page_marker[q]);
+					}
 					burst = SWAPB_BURSTING;
 				}
 			}
@@ -264,8 +277,13 @@ vm_swapcached_thread(void)
 	/*
 	 * Cleanup (NOT REACHED)
 	 */
-	TAILQ_REMOVE(INACTIVE_LIST, &page_marker, pageq);
-	lwkt_reltoken(&vm_token);
+	for (q = 0; q < PQ_MAXL2_SIZE; ++q) {
+		vm_page_queues_spin_lock(PQ_INACTIVE + q);
+		TAILQ_REMOVE(
+			&vm_page_queues[PQ_INACTIVE + q].pl,
+			&page_marker[q], pageq);
+		vm_page_queues_spin_unlock(PQ_INACTIVE + q);
+	}
 
 	lwkt_gettoken(&vmobj_token);
 	TAILQ_REMOVE(&vm_object_list, &object_marker, object_list);
@@ -279,9 +297,6 @@ static struct kproc_desc swpc_kp = {
 };
 SYSINIT(swapcached, SI_SUB_KTHREAD_PAGE, SI_ORDER_SECOND, kproc_start, &swpc_kp)
 
-/*
- * The caller must hold vm_token.
- */
 static void
 vm_swapcache_writing(vm_page_t marker)
 {
@@ -316,22 +331,52 @@ vm_swapcache_writing(vm_page_t marker)
 	 *	 can end up with a very high datarate of VM pages
 	 *	 cycling from it.
 	 */
-	m = marker;
 	count = vm_swapcache_maxlaunder;
 
-	while ((m = TAILQ_NEXT(m, pageq)) != NULL && count--) {
+	vm_page_queues_spin_lock(marker->queue);
+	while ((m = TAILQ_NEXT(marker, pageq)) != NULL && count-- > 0) {
+		KKASSERT(m->queue == marker->queue);
+
+		if (vm_swapcache_curburst < 0)
+			break;
+		TAILQ_REMOVE(
+			&vm_page_queues[marker->queue].pl, marker, pageq);
+		TAILQ_INSERT_AFTER(
+			&vm_page_queues[marker->queue].pl, m, marker, pageq);
 		if (m->flags & (PG_MARKER | PG_SWAPPED)) {
 			++count;
 			continue;
 		}
-		if (vm_swapcache_curburst < 0)
-			break;
-		if (vm_swapcache_test(m))
+		if (vm_page_busy_try(m, TRUE))
 			continue;
-		object = m->object;
+		vm_page_queues_spin_unlock(marker->queue);
+
+		if ((object = m->object) == NULL) {
+			vm_page_wakeup(m);
+			vm_page_queues_spin_lock(marker->queue);
+			continue;
+		}
+		vm_object_hold(object);
+		if (m->object != object) {
+			vm_object_drop(object);
+			vm_page_wakeup(m);
+			vm_page_queues_spin_lock(marker->queue);
+			continue;
+		}
+		if (vm_swapcache_test(m)) {
+			vm_object_drop(object);
+			vm_page_wakeup(m);
+			vm_page_queues_spin_lock(marker->queue);
+			continue;
+		}
+
 		vp = object->handle;
-		if (vp == NULL)
+		if (vp == NULL) {
+			vm_object_drop(object);
+			vm_page_wakeup(m);
+			vm_page_queues_spin_lock(marker->queue);
 			continue;
+		}
 
 		switch(vp->v_type) {
 		case VREG:
@@ -341,8 +386,12 @@ vm_swapcache_writing(vm_page_t marker)
 			 * (and leave it unset for meta-data buffers) as
 			 * appropriate when double buffering is enabled.
 			 */
-			if (m->flags & PG_NOTMETA)
+			if (m->flags & PG_NOTMETA) {
+				vm_object_drop(object);
+				vm_page_wakeup(m);
+				vm_page_queues_spin_lock(marker->queue);
 				continue;
+			}
 
 			/*
 			 * If data_enable is 0 do not try to swapcache data.
@@ -352,11 +401,17 @@ vm_swapcache_writing(vm_page_t marker)
 			if (vm_swapcache_data_enable == 0 ||
 			    ((vp->v_flag & VSWAPCACHE) == 0 &&
 			     vm_swapcache_use_chflags)) {
+				vm_object_drop(object);
+				vm_page_wakeup(m);
+				vm_page_queues_spin_lock(marker->queue);
 				continue;
 			}
 			if (vm_swapcache_maxfilesize &&
 			    object->size >
 			    (vm_swapcache_maxfilesize >> PAGE_SHIFT)) {
+				vm_object_drop(object);
+				vm_page_wakeup(m);
+				vm_page_queues_spin_lock(marker->queue);
 				continue;
 			}
 			isblkdev = 0;
@@ -368,21 +423,27 @@ vm_swapcache_writing(vm_page_t marker)
 			 * (and leave it unset for meta-data buffers) as
 			 * appropriate when double buffering is enabled.
 			 */
-			if (m->flags & PG_NOTMETA)
+			if (m->flags & PG_NOTMETA) {
+				vm_object_drop(object);
+				vm_page_wakeup(m);
+				vm_page_queues_spin_lock(marker->queue);
 				continue;
-			if (vm_swapcache_meta_enable == 0)
+			}
+			if (vm_swapcache_meta_enable == 0) {
+				vm_object_drop(object);
+				vm_page_wakeup(m);
+				vm_page_queues_spin_lock(marker->queue);
 				continue;
+			}
 			isblkdev = 1;
 			break;
 		default:
+			vm_object_drop(object);
+			vm_page_wakeup(m);
+			vm_page_queues_spin_lock(marker->queue);
 			continue;
 		}
 
-		/*
-		 * Ok, move the marker and soft-busy the page.
-		 */
-		TAILQ_REMOVE(INACTIVE_LIST, marker, pageq);
-		TAILQ_INSERT_AFTER(INACTIVE_LIST, m, marker, pageq);
 
 		/*
 		 * Assign swap and initiate I/O.
@@ -394,30 +455,28 @@ vm_swapcache_writing(vm_page_t marker)
 		/*
 		 * Setup for next loop using marker.
 		 */
-		m = marker;
+		vm_object_drop(object);
+		vm_page_queues_spin_lock(marker->queue);
 	}
 
 	/*
-	 * Cleanup marker position.  If we hit the end of the
-	 * list the marker is placed at the tail.  Newly deactivated
-	 * pages will be placed after it.
+	 * The marker could wind up at the end, which is ok.  If we hit the
+	 * end of the list adjust the heuristic.
 	 *
 	 * Earlier inactive pages that were dirty and become clean
 	 * are typically moved to the end of PQ_INACTIVE by virtue
 	 * of vfs_vmio_release() when they become unwired from the
 	 * buffer cache.
 	 */
-	TAILQ_REMOVE(INACTIVE_LIST, marker, pageq);
-	if (m) {
-		TAILQ_INSERT_BEFORE(m, marker, pageq);
-	} else {
-		TAILQ_INSERT_TAIL(INACTIVE_LIST, marker, pageq);
+	if (m == NULL)
 		vm_swapcache_inactive_heuristic = -vm_swapcache_hysteresis;
-	}
+	vm_page_queues_spin_unlock(marker->queue);
 }
 
 /*
- * Flush the specified page using the swap_pager.
+ * Flush the specified page using the swap_pager.  The page
+ * must be busied by the caller and its disposition will become
+ * the responsibility of this function.
  *
  * Try to collect surrounding pages, including pages which may
  * have already been assigned swap.  Try to cluster within a
@@ -430,8 +489,6 @@ vm_swapcache_writing(vm_page_t marker)
  * should be sufficient.
  *
  * Returns a count of pages we might have flushed (minimum 1)
- *
- * The caller must hold vm_token.
  */
 static
 int
@@ -445,10 +502,12 @@ vm_swapcached_flush(vm_page_t m, int isblkdev)
 	int i;
 	int j;
 	int count;
+	int error;
 
 	vm_page_io_start(m);
 	vm_page_protect(m, VM_PROT_READ);
 	object = m->object;
+	vm_object_hold(object);
 
 	/*
 	 * Try to cluster around (m), keeping in mind that the swap pager
@@ -457,15 +516,21 @@ vm_swapcached_flush(vm_page_t m, int isblkdev)
 	x = (int)m->pindex & SWAP_META_MASK;
 	marray[x] = m;
 	basei = m->pindex;
+	vm_page_wakeup(m);
 
 	for (i = x - 1; i >= 0; --i) {
-		m = vm_page_lookup(object, basei - x + i);
-		if (m == NULL)
+		m = vm_page_lookup_busy_try(object, basei - x + i,
+					    TRUE, &error);
+		if (error || m == NULL)
 			break;
-		if (vm_swapcache_test(m))
+		if (vm_swapcache_test(m)) {
+			vm_page_wakeup(m);
 			break;
-		if (isblkdev && (m->flags & PG_NOTMETA))
+		}
+		if (isblkdev && (m->flags & PG_NOTMETA)) {
+			vm_page_wakeup(m);
 			break;
+		}
 		vm_page_io_start(m);
 		vm_page_protect(m, VM_PROT_READ);
 		if (m->queue - m->pc == PQ_CACHE) {
@@ -473,17 +538,23 @@ vm_swapcached_flush(vm_page_t m, int isblkdev)
 			vm_page_deactivate(m);
 		}
 		marray[i] = m;
+		vm_page_wakeup(m);
 	}
 	++i;
 
 	for (j = x + 1; j < SWAP_META_PAGES; ++j) {
-		m = vm_page_lookup(object, basei - x + j);
-		if (m == NULL)
+		m = vm_page_lookup_busy_try(object, basei - x + j,
+					    TRUE, &error);
+		if (error || m == NULL)
 			break;
-		if (vm_swapcache_test(m))
+		if (vm_swapcache_test(m)) {
+			vm_page_wakeup(m);
 			break;
-		if (isblkdev && (m->flags & PG_NOTMETA))
+		}
+		if (isblkdev && (m->flags & PG_NOTMETA)) {
+			vm_page_wakeup(m);
 			break;
+		}
 		vm_page_io_start(m);
 		vm_page_protect(m, VM_PROT_READ);
 		if (m->queue - m->pc == PQ_CACHE) {
@@ -491,6 +562,7 @@ vm_swapcached_flush(vm_page_t m, int isblkdev)
 			vm_page_deactivate(m);
 		}
 		marray[j] = m;
+		vm_page_wakeup(m);
 	}
 
 	count = j - i;
@@ -501,11 +573,14 @@ vm_swapcached_flush(vm_page_t m, int isblkdev)
 
 	while (i < j) {
 		if (rtvals[i] != VM_PAGER_PEND) {
+			vm_page_busy_wait(marray[i], FALSE, "swppgfd");
 			vm_page_io_finish(marray[i]);
+			vm_page_wakeup(marray[i]);
 			vm_object_pip_wakeup(object);
 		}
 		++i;
 	}
+	vm_object_drop(object);
 	return(count);
 }
 
@@ -514,17 +589,15 @@ vm_swapcached_flush(vm_page_t m, int isblkdev)
  * Does not test m->queue, PG_MARKER, or PG_SWAPPED.
  *
  * Returns 0 on success, 1 on failure
- *
- * The caller must hold vm_token.
  */
 static int
 vm_swapcache_test(vm_page_t m)
 {
 	vm_object_t object;
 
-	if (m->flags & (PG_BUSY | PG_UNMANAGED))
+	if (m->flags & PG_UNMANAGED)
 		return(1);
-	if (m->busy || m->hold_count || m->wire_count)
+	if (m->hold_count || m->wire_count)
 		return(1);
 	if (m->valid != VM_PAGE_BITS_ALL)
 		return(1);
@@ -544,8 +617,6 @@ vm_swapcache_test(vm_page_t m)
 
 /*
  * Cleaning pass
- *
- * The caller must hold vm_token.
  */
 static
 void
@@ -562,13 +633,12 @@ vm_swapcache_cleaning(vm_object_t marker)
 	/*
 	 * Look for vnode objects
 	 */
-	lwkt_gettoken(&vm_token);
 	lwkt_gettoken(&vmobj_token);
 
 	while ((object = TAILQ_NEXT(object, object_list)) != NULL) {
+		lwkt_yield();
 		if (--count <= 0)
 			break;
-
 		vm_object_hold(object);
 
 		/* 
@@ -635,5 +705,4 @@ vm_swapcache_cleaning(vm_object_t marker)
 	marker->backing_object = object;
 
 	lwkt_reltoken(&vmobj_token);
-	lwkt_reltoken(&vm_token);
 }

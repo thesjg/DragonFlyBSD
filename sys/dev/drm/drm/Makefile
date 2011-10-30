@@ -1,8 +1,5 @@
-# $DragonFly: src/sys/dev/drm/drm/Makefile,v 1.1 2008/04/05 18:12:29 hasso Exp $
-
 .PATH:	${.CURDIR}/..
 KMOD	= drm
-NO_MAN	= YES
 SRCS    = \
 	ati_pcigart.c \
 	drm_agpsupport.c \
@@ -13,12 +10,16 @@ SRCS    = \
 	drm_drawable.c \
 	drm_drv.c \
 	drm_fops.c \
+	drm_hashtab.c \
 	drm_ioctl.c \
 	drm_irq.c \
 	drm_lock.c \
 	drm_memory.c \
+	drm_mm.c \
 	drm_pci.c \
 	drm_scatter.c \
+	drm_sman.c \
+	drm_subr_hash.c \
 	drm_sysctl.c \
 	drm_vm.c
 

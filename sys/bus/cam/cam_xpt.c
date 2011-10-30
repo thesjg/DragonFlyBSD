@@ -1534,7 +1534,7 @@ xpt_init(void *dummy)
 		kprintf("xpt_init: failed to create rescan thread\n");
 	}
 	/* Install our software interrupt handlers */
-	register_swi(SWI_CAMBIO, swi_cambio, NULL, "swi_cambio", NULL);
+	register_swi(SWI_CAMBIO, swi_cambio, NULL, "swi_cambio", NULL, -1);
 
 	return (0);
 }
@@ -2962,6 +2962,7 @@ xpt_action(union ccb *start_ccb)
 
 	switch (start_ccb->ccb_h.func_code) {
 	case XPT_SCSI_IO:
+	case XPT_TRIM:
 	{
 		struct cam_ed *device;
 #ifdef CAMDEBUG

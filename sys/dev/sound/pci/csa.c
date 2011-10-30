@@ -47,7 +47,7 @@
 #include <bus/pci/pcireg.h>
 #include <bus/pci/pcivar.h>
 
-#include <dev/sound/pci/gnu/csaimg.h>
+#include <gnu/dev/sound/pci/csaimg.h>
 
 SND_DECLARE_FILE("$DragonFly: src/sys/dev/sound/pci/csa.c,v 1.8 2007/01/04 21:47:02 corecode Exp $");
 
@@ -78,7 +78,7 @@ typedef struct csa_softc *sc_p;
 static int csa_probe(device_t dev);
 static int csa_attach(device_t dev);
 static struct resource *csa_alloc_resource(device_t bus, device_t child, int type, int *rid,
-					      u_long start, u_long end, u_long count, u_int flags);
+    u_long start, u_long end, u_long count, u_int flags, int cpuid);
 static int csa_release_resource(device_t bus, device_t child, int type, int rid,
 				   struct resource *r);
 static int csa_setup_intr(device_t bus, device_t child,
@@ -382,7 +382,7 @@ csa_resume(device_t dev)
 
 static struct resource *
 csa_alloc_resource(device_t bus, device_t child, int type, int *rid,
-		      u_long start, u_long end, u_long count, u_int flags)
+    u_long start, u_long end, u_long count, u_int flags, int cpuid __unused)
 {
 	sc_p scp;
 	csa_res *resp;

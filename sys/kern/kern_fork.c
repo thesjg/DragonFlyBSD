@@ -332,11 +332,12 @@ fork1(struct lwp *lp1, int flags, struct proc **procp)
 		error = EAGAIN;
 		goto done;
 	}
+
 	/*
 	 * Increment the nprocs resource before blocking can occur.  There
 	 * are hard-limits as to the number of processes that can run.
 	 */
-	nprocs++;
+	atomic_add_int(&nprocs, 1);
 
 	/*
 	 * Increment the count of procs running with this uid. Don't allow
@@ -348,7 +349,7 @@ fork1(struct lwp *lp1, int flags, struct proc **procp)
 		/*
 		 * Back out the process count
 		 */
-		nprocs--;
+		atomic_add_int(&nprocs, -1);
 		if (ppsratecheck(&lastfail, &curfail, 1))
 			kprintf("maxproc limit exceeded by uid %d, please "
 			       "see tuning(7) and login.conf(5).\n", uid);
@@ -373,7 +374,7 @@ fork1(struct lwp *lp1, int flags, struct proc **procp)
 
 	RB_INIT(&p2->p_lwp_tree);
 	spin_init(&p2->p_spin);
-	lwkt_token_init(&p2->p_token, "iproc");
+	lwkt_token_init(&p2->p_token, "proc");
 	p2->p_lasttid = -1;	/* first tid will be 0 */
 
 	/*
@@ -522,7 +523,7 @@ fork1(struct lwp *lp1, int flags, struct proc **procp)
 	lwkt_reltoken(&pptr->p_token);
 
 	varsymset_init(&p2->p_varsymset, &p1->p_varsymset);
-	callout_init(&p2->p_ithandle);
+	callout_init_mp(&p2->p_ithandle);
 
 #ifdef KTRACE
 	/*
@@ -606,6 +607,7 @@ done:
 static struct lwp *
 lwp_fork(struct lwp *origlp, struct proc *destproc, int flags)
 {
+	globaldata_t gd = mycpu;
 	struct lwp *lp;
 	struct thread *td;
 
@@ -626,13 +628,16 @@ lwp_fork(struct lwp *origlp, struct proc *destproc, int flags)
 	 * scheduler specific data.
 	 */
 	crit_enter();
-	lp->lwp_cpbase = mycpu->gd_schedclock.time -
-			mycpu->gd_schedclock.periodic;
+	lp->lwp_cpbase = gd->gd_schedclock.time - gd->gd_schedclock.periodic;
 	destproc->p_usched->heuristic_forking(origlp, lp);
 	crit_exit();
 	lp->lwp_cpumask &= usched_mastermask;
 
-	td = lwkt_alloc_thread(NULL, LWKT_THREAD_STACK, -1, 0);
+	/*
+	 * Assign the thread to the current cpu to begin with so we
+	 * can manipulate it.
+	 */
+	td = lwkt_alloc_thread(NULL, LWKT_THREAD_STACK, gd->gd_cpuid, 0);
 	lp->lwp_thread = td;
 	td->td_proc = destproc;
 	td->td_lwp = lp;
@@ -659,7 +664,6 @@ lwp_fork(struct lwp *origlp, struct proc *destproc, int flags)
 	} while (lwp_rb_tree_RB_INSERT(&destproc->p_lwp_tree, lp) != NULL);
 	destproc->p_lasttid = lp->lwp_tid;
 	destproc->p_nthreads++;
-
 
 	return (lp);
 }
@@ -745,8 +749,12 @@ start_forked_proc(struct lwp *lp1, struct proc *p2)
 	/*
 	 * Preserve synchronization semantics of vfork.  If waiting for
 	 * child to exec or exit, set P_PPWAIT on child, and sleep on our
-	 * proc (in case of exit).
+	 * proc (in case of exec or exit).
+	 *
+	 * We must hold our p_token to interlock the flag/tsleep
 	 */
+	lwkt_gettoken(&p2->p_token);
 	while (p2->p_flag & P_PPWAIT)
 		tsleep(lp1->lwp_proc, 0, "ppwait", 0);
+	lwkt_reltoken(&p2->p_token);
 }

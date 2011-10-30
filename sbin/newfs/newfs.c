@@ -33,7 +33,6 @@
  * @(#) Copyright (c) 1983, 1989, 1993, 1994 The Regents of the University of California.  All rights reserved.
  * @(#)newfs.c	8.13 (Berkeley) 5/1/95
  * $FreeBSD: src/sbin/newfs/newfs.c,v 1.30.2.9 2003/05/13 12:03:55 joerg Exp $
- * $DragonFly: src/sbin/newfs/newfs.c,v 1.17 2007/06/19 19:18:20 dillon Exp $
  */
 
 /*
@@ -44,6 +43,7 @@
 #include <sys/diskslice.h>
 #include <sys/file.h>
 #include <sys/mount.h>
+#include <sys/sysctl.h>
 
 #include <vfs/ufs/dir.h>
 #include <vfs/ufs/dinode.h>
@@ -163,6 +163,8 @@ int	Nflag;			/* run without writing file system */
 int	Oflag;			/* format as an 4.3BSD file system */
 int	Cflag;			/* copy underlying filesystem (mfs only) */
 int	Uflag;			/* enable soft updates for file system */
+int	Eflag;			/* erase contents using TRIM */
+uint64_t slice_offset;		/* Pysical device slice offset */
 u_long	fssize;			/* file system size */
 int	ntracks = NTRACKS;	/* # tracks/cylinder */
 int	nsectors = NSECTORS;	/* # sectors/track */
@@ -237,9 +239,12 @@ main(int argc, char **argv)
 
 	opstring = mfs ?
 	    "L:NCF:T:Ua:b:c:d:e:f:g:h:i:m:o:s:v" :
-	    "L:NOS:T:Ua:b:c:d:e:f:g:h:i:k:l:m:n:o:p:r:s:t:u:vx:";
+	    "L:NEOS:T:Ua:b:c:d:e:f:g:h:i:k:l:m:n:o:p:r:s:t:u:vx:";
 	while ((ch = getopt(argc, argv, opstring)) != -1) {
 		switch (ch) {
+		case 'E':
+			Eflag = 1;
+			break;
 		case 'L':
 			volumelabel = optarg;
 			i = -1;
@@ -425,6 +430,30 @@ main(int argc, char **argv)
 	if (stat(special, &st) < 0 && special[0] && special[0] != '/')
 		asprintf(&special, "/dev/%s", special);
 
+	if (Eflag) {
+		char sysctl_name[64];
+		int trim_enabled = 0;
+		size_t olen = sizeof(trim_enabled);
+		char *dev_name = strdup(special);
+
+		dev_name = strtok(dev_name + strlen("/dev/da"),"s");
+		sprintf(sysctl_name, "kern.cam.da.%s.trim_enabled",
+		    dev_name);
+
+		sysctlbyname(sysctl_name, &trim_enabled, &olen, NULL, 0);
+
+		if(errno == ENOENT) {
+			printf("Device:%s does not support the TRIM command\n",
+			    special);
+			usage();
+		}
+		if(!trim_enabled) {
+			printf("Erase device option selected, but sysctl (%s) "
+			    "is not enabled\n",sysctl_name);
+			usage();
+			  
+		}
+	}
 	if (Nflag) {
 		fso = -1;
 	} else {
@@ -505,6 +534,7 @@ main(int argc, char **argv)
 			/* geom.d_ncylinders not used */
 			geom.d_media_blocks = pinfo.media_blocks;
 			geom.d_media_size = pinfo.media_size;
+			slice_offset = pinfo.media_offset;
 		}
 		if (geom.d_media_blocks == 0 || geom.d_media_size == 0) {
 			fatal("%s: is unavailable", argv[0]);
@@ -698,7 +728,7 @@ fatal(const char *fmt, ...)
 	/*NOTREACHED*/
 }
 
-static void
+void
 usage(void)
 {
 	if (mfs) {
@@ -716,6 +746,7 @@ usage(void)
 #endif
 	fprintf(stderr, "where fsoptions are:\n");
 	fprintf(stderr, "\t-C (mfs) Copy the underlying filesystem to the MFS mount\n");
+	fprintf(stderr, "\t-E erase file system contents using TRIM\n");
 	fprintf(stderr, "\t-L volume name\n");
 	fprintf(stderr,
 	    "\t-N do not create file system, just print out parameters\n");

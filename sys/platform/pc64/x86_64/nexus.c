@@ -72,7 +72,7 @@ struct nexus_device {
 
 #define DEVTONX(dev)	((struct nexus_device *)device_get_ivars(dev))
 
-static struct rman irq_rman, drq_rman, port_rman, mem_rman;
+static struct rman irq_rman[MAXCPU], drq_rman, port_rman, mem_rman;
 
 static	int nexus_probe(device_t);
 static	int nexus_attach(device_t);
@@ -81,7 +81,7 @@ static	int nexus_print_child(device_t, device_t);
 static device_t nexus_add_child(device_t bus, device_t parent, int order,
 				const char *name, int unit);
 static	struct resource *nexus_alloc_resource(device_t, device_t, int, int *,
-					      u_long, u_long, u_long, u_int);
+    u_long, u_long, u_long, u_int, int);
 static	int nexus_read_ivar(device_t, device_t, int, uintptr_t *);
 static	int nexus_write_ivar(device_t, device_t, int, uintptr_t);
 static	int nexus_activate_resource(device_t, device_t, int, int,
@@ -97,7 +97,8 @@ static	int nexus_setup_intr(device_t, device_t, struct resource *, int flags,
 			     void **, lwkt_serialize_t);
 static	int nexus_teardown_intr(device_t, device_t, struct resource *,
 				void *);
-static	int nexus_set_resource(device_t, device_t, int, int, u_long, u_long);
+static	int nexus_set_resource(device_t, device_t, int, int, u_long, u_long,
+			       int);
 static	int nexus_get_resource(device_t, device_t, int, int, u_long *, u_long *);
 static void nexus_delete_resource(device_t, device_t, int, int);
 
@@ -146,35 +147,42 @@ DRIVER_MODULE(nexus, root, nexus_driver, nexus_devclass, NULL, NULL);
 static int
 nexus_probe(device_t dev)
 {
+	int cpuid;
+
 	device_quiet(dev);	/* suppress attach message for neatness */
 
-	/*
-	 * IRQ's are on the mainboard on old systems, but on the ISA part
-	 * of PCI->ISA bridges.  There would be multiple sets of IRQs on
-	 * multi-ISA-bus systems.  PCI interrupts are routed to the ISA
-	 * component, so in a way, PCI can be a partial child of an ISA bus(!).
-	 * APIC interrupts are global though.
-	 * In the non-APIC case, disallow the use of IRQ 2.
-	 */
-	irq_rman.rm_start = 0;
-	irq_rman.rm_type = RMAN_ARRAY;
-	irq_rman.rm_descr = "Interrupt request lines";
+	for (cpuid = 0; cpuid < ncpus; ++cpuid) {
+		struct rman *rm = &irq_rman[cpuid];
 
-	/*
-	 * XXX should use MachIntrABI.rman_setup
-	 */
-	if (ioapic_enable) {
-		irq_rman.rm_end = IDT_HWI_VECTORS - 1;
-		if (rman_init(&irq_rman)
-		    || rman_manage_region(&irq_rman,
-					  irq_rman.rm_start, irq_rman.rm_end))
-			panic("nexus_probe irq_rman");
-	} else {
-		irq_rman.rm_end = 15;
-		if (rman_init(&irq_rman)
-		    || rman_manage_region(&irq_rman, irq_rman.rm_start, 1)
-		    || rman_manage_region(&irq_rman, 3, irq_rman.rm_end))
-			panic("nexus_probe irq_rman");
+		/*
+		 * IRQ's are on the mainboard on old systems, but on
+		 * the ISA part of PCI->ISA bridges.  There would be
+		 * multiple sets of IRQs on multi-ISA-bus systems.
+		 * PCI interrupts are routed to the ISA component,
+		 * so in a way, PCI can be a partial child of an ISA
+		 * bus(!).  APIC interrupts are global though.  In the
+		 * non-APIC case, disallow the use of IRQ 2.
+		 */
+		rm->rm_start = 0;
+		rm->rm_type = RMAN_ARRAY;
+		rm->rm_descr = "Interrupt request lines";
+
+		/*
+		 * XXX should use MachIntrABI.rman_setup
+		 */
+		if (ioapic_enable) {
+			rm->rm_end = IDT_HWI_VECTORS - 1;
+			if (rman_init(rm, cpuid) ||
+			    rman_manage_region(rm,
+			    rm->rm_start, rm->rm_end))
+				panic("nexus_probe irq_rman");
+		} else {
+			rm->rm_end = 15;
+			if (rman_init(rm, cpuid) ||
+			    rman_manage_region(rm, rm->rm_start, 1) ||
+			    rman_manage_region(rm, 3, rm->rm_end))
+				panic("nexus_probe irq_rman");
+		}
 	}
 
 	/*
@@ -187,7 +195,7 @@ nexus_probe(device_t dev)
 	drq_rman.rm_type = RMAN_ARRAY;
 	drq_rman.rm_descr = "DMA request lines";
 	/* XXX drq 0 not available on some machines */
-	if (rman_init(&drq_rman)
+	if (rman_init(&drq_rman, -1)
 	    || rman_manage_region(&drq_rman,
 				  drq_rman.rm_start, drq_rman.rm_end))
 		panic("nexus_probe drq_rman");
@@ -201,7 +209,7 @@ nexus_probe(device_t dev)
 	port_rman.rm_end = 0xffff;
 	port_rman.rm_type = RMAN_ARRAY;
 	port_rman.rm_descr = "I/O ports";
-	if (rman_init(&port_rman)
+	if (rman_init(&port_rman, -1)
 	    || rman_manage_region(&port_rman, 0, 0xffff))
 		panic("nexus_probe port_rman");
 
@@ -209,7 +217,7 @@ nexus_probe(device_t dev)
 	mem_rman.rm_end = ~0u;
 	mem_rman.rm_type = RMAN_ARRAY;
 	mem_rman.rm_descr = "I/O memory addresses";
-	if (rman_init(&mem_rman)
+	if (rman_init(&mem_rman, -1)
 	    || rman_manage_region(&mem_rman, 0, ~0))
 		panic("nexus_probe mem_rman");
 
@@ -335,7 +343,7 @@ nexus_write_ivar(device_t dev, device_t child, int which, uintptr_t value)
  */
 static struct resource *
 nexus_alloc_resource(device_t bus, device_t child, int type, int *rid,
-		     u_long start, u_long end, u_long count, u_int flags)
+    u_long start, u_long end, u_long count, u_int flags, int cpuid)
 {
 	struct nexus_device *ndev = DEVTONX(child);
 	struct	resource *rv;
@@ -357,13 +365,19 @@ nexus_alloc_resource(device_t bus, device_t child, int type, int *rid,
 		start = rle->start;
 		end = rle->end;
 		count = rle->count;
+		cpuid = rle->cpuid;
 	}
 
 	flags &= ~RF_ACTIVE;
 
 	switch (type) {
 	case SYS_RES_IRQ:
-		rm = &irq_rman;
+		if (cpuid < 0 || cpuid >= ncpus) {
+			kprintf("NEXUS cpuid %d:\n", cpuid);
+			print_backtrace(-1);
+			cpuid = 0; /* XXX */
+		}
+		rm = &irq_rman[cpuid];
 		break;
 
 	case SYS_RES_DRQ:
@@ -510,7 +524,7 @@ nexus_setup_intr(device_t bus, device_t child, struct resource *irq,
 	 */
 	*cookiep = register_int(irq->r_start, (inthand2_t *)ihand, arg,
 				device_get_nameunit(child), serializer,
-				icflags);
+				icflags, rman_get_cpuid(irq));
 	if (*cookiep == NULL)
 		error = EINVAL;
 	return (error);
@@ -520,20 +534,22 @@ static int
 nexus_teardown_intr(device_t dev, device_t child, struct resource *r, void *ih)
 {
 	if (ih) {
-		unregister_int(ih);
+		unregister_int(ih, rman_get_cpuid(r));
 		return (0);
 	}
 	return(-1);
 }
 
 static int
-nexus_set_resource(device_t dev, device_t child, int type, int rid, u_long start, u_long count)
+nexus_set_resource(device_t dev, device_t child, int type, int rid,
+    u_long start, u_long count, int cpuid)
 {
 	struct nexus_device	*ndev = DEVTONX(child);
 	struct resource_list	*rl = &ndev->nx_resources;
 
 	/* XXX this should return a success/failure indicator */
-	resource_list_add(rl, type, rid, start, start + count - 1, count);
+	resource_list_add(rl, type, rid, start, start + count - 1, count,
+	    cpuid);
 	return(0);
 }
 

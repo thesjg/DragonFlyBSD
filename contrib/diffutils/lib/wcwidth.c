@@ -1,5 +1,5 @@
 /* Determine the number of screen columns needed for a character.
-   Copyright (C) 2006-2007, 2010 Free Software Foundation, Inc.
+   Copyright (C) 2006-2007, 2010-2011 Free Software Foundation, Inc.
 
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -18,6 +18,7 @@
 
 /* Specification.  */
 #include <wchar.h>
+#include <gnuwidechar.h>
 
 /* Get iswprint.  */
 #include <wctype.h>
@@ -27,8 +28,7 @@
 #include "uniwidth.h"
 
 int
-wcwidth (wchar_t wc)
-#undef wcwidth
+special_wcwidth (wchar_t wc)
 {
   /* In UTF-8 locales, use a Unicode aware width function.  */
   const char *encoding = locale_charset ();

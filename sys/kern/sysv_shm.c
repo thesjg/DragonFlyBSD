@@ -102,50 +102,41 @@ static void shminit (void *);
 /*
  * Tuneable values
  */
-#ifndef SHMMAXPGS
-#define	SHMMAXPGS	8192	/* note: sysv shared memory is swap backed */
-#endif
-#ifndef SHMMAX
-#define	SHMMAX	(SHMMAXPGS*PAGE_SIZE)
-#endif
 #ifndef SHMMIN
 #define	SHMMIN	1
 #endif
 #ifndef SHMMNI
-#define	SHMMNI	192
+#define	SHMMNI	512
 #endif
 #ifndef SHMSEG
-#define	SHMSEG	128
-#endif
-#ifndef SHMALL
-#define	SHMALL	(SHMMAXPGS)
+#define	SHMSEG	1024
 #endif
 
 struct	shminfo shminfo = {
-	SHMMAX,
+	0,
 	SHMMIN,
 	SHMMNI,
 	SHMSEG,
-	SHMALL
+	0
 };
 
 static int shm_use_phys;
 
-TUNABLE_INT("kern.ipc.shmmin", &shminfo.shmmin);
-TUNABLE_INT("kern.ipc.shmmni", &shminfo.shmmni);
-TUNABLE_INT("kern.ipc.shmseg", &shminfo.shmseg);
-TUNABLE_INT("kern.ipc.shmmaxpgs", &shminfo.shmall);
+TUNABLE_LONG("kern.ipc.shmmin", &shminfo.shmmin);
+TUNABLE_LONG("kern.ipc.shmmni", &shminfo.shmmni);
+TUNABLE_LONG("kern.ipc.shmseg", &shminfo.shmseg);
+TUNABLE_LONG("kern.ipc.shmmaxpgs", &shminfo.shmall);
 TUNABLE_INT("kern.ipc.shm_use_phys", &shm_use_phys);
 
-SYSCTL_INT(_kern_ipc, OID_AUTO, shmmax, CTLFLAG_RW, &shminfo.shmmax, 0,
+SYSCTL_LONG(_kern_ipc, OID_AUTO, shmmax, CTLFLAG_RW, &shminfo.shmmax, 0,
     "Max shared memory segment size");
-SYSCTL_INT(_kern_ipc, OID_AUTO, shmmin, CTLFLAG_RW, &shminfo.shmmin, 0,
+SYSCTL_LONG(_kern_ipc, OID_AUTO, shmmin, CTLFLAG_RW, &shminfo.shmmin, 0,
     "Min shared memory segment size");
-SYSCTL_INT(_kern_ipc, OID_AUTO, shmmni, CTLFLAG_RD, &shminfo.shmmni, 0,
+SYSCTL_LONG(_kern_ipc, OID_AUTO, shmmni, CTLFLAG_RD, &shminfo.shmmni, 0,
     "Max number of shared memory identifiers");
-SYSCTL_INT(_kern_ipc, OID_AUTO, shmseg, CTLFLAG_RW, &shminfo.shmseg, 0,
+SYSCTL_LONG(_kern_ipc, OID_AUTO, shmseg, CTLFLAG_RW, &shminfo.shmseg, 0,
     "Max shared memory segments per process");
-SYSCTL_INT(_kern_ipc, OID_AUTO, shmall, CTLFLAG_RW, &shminfo.shmall, 0,
+SYSCTL_LONG(_kern_ipc, OID_AUTO, shmall, CTLFLAG_RW, &shminfo.shmall, 0,
     "Max pages of shared memory");
 SYSCTL_INT(_kern_ipc, OID_AUTO, shm_use_phys, CTLFLAG_RW, &shm_use_phys, 0,
     "Use phys pager allocation instead of swap pager allocation");
@@ -155,10 +146,11 @@ shm_find_segment_by_key(key_t key)
 {
 	int i;
 
-	for (i = 0; i < shmalloced; i++)
+	for (i = 0; i < shmalloced; i++) {
 		if ((shmsegs[i].shm_perm.mode & SHMSEG_ALLOCATED) &&
 		    shmsegs[i].shm_perm.key == key)
 			return i;
+	}
 	return -1;
 }
 
@@ -174,8 +166,9 @@ shm_find_segment_by_shmid(int shmid)
 	shmseg = &shmsegs[segnum];
 	if ((shmseg->shm_perm.mode & (SHMSEG_ALLOCATED | SHMSEG_REMOVED))
 	    != SHMSEG_ALLOCATED ||
-	    shmseg->shm_perm.seq != IPCID_TO_SEQ(shmid))
+	    shmseg->shm_perm.seq != IPCID_TO_SEQ(shmid)) {
 		return NULL;
+	}
 	return shmseg;
 }
 
@@ -227,7 +220,7 @@ sys_shmdt(struct shmdt_args *uap)
 	struct thread *td = curthread;
 	struct proc *p = td->td_proc;
 	struct shmmap_state *shmmap_s;
-	int i;
+	long i;
 	int error;
 
 	if (!jail_sysvipc_allowed && td->td_ucred->cr_prison != NULL)
@@ -261,7 +254,8 @@ sys_shmat(struct shmat_args *uap)
 {
 	struct thread *td = curthread;
 	struct proc *p = td->td_proc;
-	int error, i, flags;
+	int error, flags;
+	long i;
 	struct shmid_ds *shmseg;
 	struct shmmap_state *shmmap_s = NULL;
 	struct shm_handle *shm_handle;
@@ -332,7 +326,8 @@ again:
 	}
 
 	shm_handle = shmseg->shm_internal;
-	vm_object_reference(shm_handle->shm_object);
+	vm_object_hold(shm_handle->shm_object);
+	vm_object_reference_locked(shm_handle->shm_object);
 	rv = vm_map_find(&p->p_vmspace->vm_map, 
 			 shm_handle->shm_object, 0,
 			 &attach_va,
@@ -341,6 +336,7 @@ again:
 			 VM_MAPTYPE_NORMAL,
 			 prot, prot,
 			 0);
+	vm_object_drop(shm_handle->shm_object);
 	if (rv != KERN_SUCCESS) {
                 vm_object_deallocate(shm_handle->shm_object);
 		error = ENOMEM;
@@ -529,7 +525,8 @@ shmget_existing(struct proc *p, struct shmget_args *uap, int mode, int segnum)
 static int
 shmget_allocate_segment(struct proc *p, struct shmget_args *uap, int mode)
 {
-	int i, segnum, shmid, size;
+	int i, segnum, shmid;
+	size_t size;
 	struct ucred *cred = p->p_ucred;
 	struct shmid_ds *shmseg;
 	struct shm_handle *shm_handle;
@@ -543,9 +540,10 @@ shmget_allocate_segment(struct proc *p, struct shmget_args *uap, int mode)
 		return ENOMEM;
 	if (shm_last_free < 0) {
 		shmrealloc();	/* maybe expand the shmsegs[] array */
-		for (i = 0; i < shmalloced; i++)
+		for (i = 0; i < shmalloced; i++) {
 			if (shmsegs[i].shm_perm.mode & SHMSEG_FREE)
 				break;
+		}
 		if (i == shmalloced)
 			return ENOSPC;
 		segnum = i;
@@ -721,6 +719,13 @@ static void
 shminit(void *dummy)
 {
 	int i;
+
+	/*
+	 * If not overridden by a tunable set the maximum shm to
+	 * 2/3 of main memory.
+	 */
+	if (shminfo.shmall == 0)
+		shminfo.shmall = (size_t)vmstats.v_page_count * 2 / 3;
 
 	shminfo.shmmax = shminfo.shmall * PAGE_SIZE;
 	shmalloced = shminfo.shmmni;

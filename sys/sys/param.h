@@ -37,7 +37,6 @@
  *
  *	@(#)param.h	8.3 (Berkeley) 4/4/95
  * $FreeBSD: src/sys/sys/param.h,v 1.61.2.38 2003/05/22 17:12:01 fjoe Exp $
- * $DragonFly: src/sys/sys/param.h,v 1.53 2008/11/11 00:55:49 pavalos Exp $
  */
 
 #ifndef _SYS_PARAM_H_
@@ -81,10 +80,11 @@
  * 201100 - 2.11 master
  * 201200 - 2.12 release
  * 201300 - 2.13 master
- * 201301 - remove GET_TIME() macro from mroute headers
+ * 201301 - header rename: <vfs/gnu/ext2fs/...> -> <gnu/vfs/ext2fs/...>
+ * 201302 - remove GET_TIME() macro from mroute headers
  */
 #undef __DragonFly_version
-#define __DragonFly_version 201300	/* propagated to newvers */
+#define __DragonFly_version 201301	/* propagated to newvers */
 
 #include <sys/_null.h>
 
@@ -141,6 +141,7 @@
 #define PWAKEUP_ONE	0x00008000	/* argument to wakeup: only one */
 #define PDOMAIN_MASK	0xFFFF0000	/* address domains for wakeup */
 #define PDOMAIN_UMTX	0x00010000	/* independant domain for UMTX */
+#define PDOMAIN_XLOCK	0x00020000	/* independant domain for fifo_lock */
 #define PWAKEUP_ENCODE(domain, cpu)	((domain) | (cpu))
 #define PWAKEUP_DECODE(domain)		((domain) & PWAKEUP_CPUMASK)
 

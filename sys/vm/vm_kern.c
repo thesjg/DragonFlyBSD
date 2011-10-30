@@ -186,12 +186,15 @@ kmem_alloc3(vm_map_t map, vm_size_t size, int kmflags)
 			vm_map_entry_release(count);
 		return (0);
 	}
-	vm_object_reference(&kernel_object);
+	vm_object_hold(&kernel_object);
+	vm_object_reference_locked(&kernel_object);
 	vm_map_insert(map, &count,
 		      &kernel_object, addr, addr, addr + size,
 		      VM_MAPTYPE_NORMAL,
 		      VM_PROT_ALL, VM_PROT_ALL,
 		      cow);
+	vm_object_drop(&kernel_object);
+
 	vm_map_unlock(map);
 	if (kmflags & KM_KRESERVE)
 		vm_map_entry_krelease(count);
@@ -215,21 +218,16 @@ kmem_alloc3(vm_map_t map, vm_size_t size, int kmflags)
 	 * We're intentionally not activating the pages we allocate to prevent a
 	 * race with page-out.  vm_map_wire will wire the pages.
 	 */
-	lwkt_gettoken(&vm_token);
 	vm_object_hold(&kernel_object);
 	for (i = gstart; i < size; i += PAGE_SIZE) {
 		vm_page_t mem;
 
 		mem = vm_page_grab(&kernel_object, OFF_TO_IDX(addr + i),
-			    VM_ALLOC_ZERO | VM_ALLOC_NORMAL | VM_ALLOC_RETRY);
-		if ((mem->flags & PG_ZERO) == 0)
-			vm_page_zero_fill(mem);
-		mem->valid = VM_PAGE_BITS_ALL;
-		vm_page_flag_clear(mem, PG_ZERO);
+				   VM_ALLOC_FORCE_ZERO | VM_ALLOC_NORMAL |
+				   VM_ALLOC_RETRY);
 		vm_page_wakeup(mem);
 	}
 	vm_object_drop(&kernel_object);
-	lwkt_reltoken(&vm_token);
 
 	/*
 	 * And finally, mark the data as non-pageable.
@@ -278,7 +276,6 @@ kmem_suballoc(vm_map_t parent, vm_map_t result,
 
 	size = round_page(size);
 
-	lwkt_gettoken(&vm_token);
 	*min = (vm_offset_t) vm_map_min(parent);
 	ret = vm_map_find(parent, NULL, (vm_offset_t) 0,
 			  min, size, PAGE_SIZE,
@@ -294,7 +291,6 @@ kmem_suballoc(vm_map_t parent, vm_map_t result,
 	vm_map_init(result, *min, *max, vm_map_pmap(parent));
 	if ((ret = vm_map_submap(parent, *min, *max, result)) != KERN_SUCCESS)
 		panic("kmem_suballoc: unable to change range to submap");
-	lwkt_reltoken(&vm_token);
 }
 
 /*

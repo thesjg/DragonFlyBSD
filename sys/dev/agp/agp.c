@@ -533,16 +533,15 @@ agp_generic_bind_memory(device_t dev, struct agp_memory *mem,
 	 */
 	for (i = 0; i < mem->am_size; i += PAGE_SIZE) {
 		/*
-		 * Find a page from the object and wire it
-		 * down. This page will be mapped using one or more
-		 * entries in the GATT (assuming that PAGE_SIZE >=
-		 * AGP_PAGE_SIZE. If this is the first call to bind,
-		 * the pages will be allocated and zeroed.
+		 * Find a page from the object and wire it down. This page
+		 * will be mapped using one or more entries in the GATT
+		 * (assuming that PAGE_SIZE >= AGP_PAGE_SIZE. If this is
+		 * the first call to bind, the pages will be allocated
+		 * and zeroed.
 		 */
 		m = vm_page_grab(mem->am_obj, OFF_TO_IDX(i),
-			 VM_ALLOC_NORMAL | VM_ALLOC_ZERO | VM_ALLOC_RETRY);
-		if ((m->flags & PG_ZERO) == 0)
-			vm_page_zero_fill(m);
+				 VM_ALLOC_NORMAL | VM_ALLOC_ZERO |
+				 VM_ALLOC_RETRY);
 		AGP_DPF("found page pa=%#x\n", VM_PAGE_TO_PHYS(m));
 		vm_page_wire(m);
 
@@ -566,13 +565,15 @@ agp_generic_bind_memory(device_t dev, struct agp_memory *mem,
 				vm_page_wakeup(m);
 				for (k = 0; k < i + j; k += AGP_PAGE_SIZE)
 					AGP_UNBIND_PAGE(dev, offset + k);
-				lwkt_gettoken(&vm_token);
+				vm_object_hold(mem->am_obj);
 				for (k = 0; k <= i; k += PAGE_SIZE) {
-					m = vm_page_lookup(mem->am_obj,
-							   OFF_TO_IDX(k));
+					m = vm_page_lookup_busy_wait(
+						mem->am_obj, OFF_TO_IDX(k),
+						FALSE, "agppg");
 					vm_page_unwire(m, 0);
+					vm_page_wakeup(m);
 				}
-				lwkt_reltoken(&vm_token);
+				vm_object_drop(mem->am_obj);
 				lockmgr(&sc->as_lock, LK_RELEASE);
 				return error;
 			}
@@ -621,12 +622,14 @@ agp_generic_unbind_memory(device_t dev, struct agp_memory *mem)
 	 */
 	for (i = 0; i < mem->am_size; i += AGP_PAGE_SIZE)
 		AGP_UNBIND_PAGE(dev, mem->am_offset + i);
-	lwkt_gettoken(&vm_token);
+	vm_object_hold(mem->am_obj);
 	for (i = 0; i < mem->am_size; i += PAGE_SIZE) {
-		m = vm_page_lookup(mem->am_obj, atop(i));
+		m = vm_page_lookup_busy_wait(mem->am_obj, atop(i),
+					     FALSE, "agppg");
 		vm_page_unwire(m, 0);
+		vm_page_wakeup(m);
 	}
-	lwkt_reltoken(&vm_token);
+	vm_object_drop(mem->am_obj);
 		
 	agp_flush_cache();
 	AGP_FLUSH_TLB(dev);

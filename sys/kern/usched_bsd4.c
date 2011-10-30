@@ -229,7 +229,9 @@ bsd4_acquire_curproc(struct lwp *lp)
 {
 	globaldata_t gd;
 	bsd4_pcpu_t dd;
+#if 0
 	struct lwp *olp;
+#endif
 
 	crit_enter();
 	bsd4_recalculate_estcpu(lp);
@@ -246,14 +248,14 @@ bsd4_acquire_curproc(struct lwp *lp)
 	/*
 	 * Loop until we are the current user thread
 	 */
+	gd = mycpu;
+	dd = &bsd4_pcpu[gd->gd_cpuid];
+
 	do {
 		/*
-		 * Reload after a switch or setrunqueue/switch possibly
-		 * moved us to another cpu.
+		 * Process any pending events and higher priority threads.
 		 */
-		/*clear_lwkt_resched();*/
-		gd = mycpu;
-		dd = &bsd4_pcpu[gd->gd_cpuid];
+		lwkt_yield();
 
 		/*
 		 * Become the currently scheduled user thread for this cpu
@@ -277,38 +279,33 @@ bsd4_acquire_curproc(struct lwp *lp)
 			dd->upri = lp->lwp_priority;
 		} else if (dd->upri > lp->lwp_priority) {
 			/*
-			 * We can steal the current lwp designation from the
-			 * olp that was previously assigned to this cpu.
+			 * We can steal the current cpu's lwp designation
+			 * away simply by replacing it.  The other thread
+			 * will stall when it tries to return to userland.
 			 */
-			olp = dd->uschedcp;
 			dd->uschedcp = lp;
 			dd->upri = lp->lwp_priority;
+			/*
 			lwkt_deschedule(olp->lwp_thread);
 			bsd4_setrunqueue(olp);
+			*/
 		} else {
 			/*
 			 * We cannot become the current lwp, place the lp
 			 * on the bsd4 run-queue and deschedule ourselves.
+			 *
+			 * When we are reactivated we will have another
+			 * chance.
 			 */
 			lwkt_deschedule(lp->lwp_thread);
 			bsd4_setrunqueue(lp);
 			lwkt_switch();
-		}
-
-		/*
-		 * Other threads at our current user priority have already
-		 * put in their bids, but we must run any kernel threads
-		 * at higher priorities, and we could lose our bid to
-		 * another thread trying to return to user mode in the
-		 * process.
-		 *
-		 * If we lose our bid we will be descheduled and put on
-		 * the run queue.  When we are reactivated we will have
-		 * another chance.
-		 */
-		if (lwkt_resched_wanted() ||
-		    lp->lwp_thread->td_fairq_accum < 0) {
-			lwkt_switch();
+			/*
+			 * Reload after a switch or setrunqueue/switch possibly
+			 * moved us to another cpu.
+			 */
+			gd = mycpu;
+			dd = &bsd4_pcpu[gd->gd_cpuid];
 		}
 	} while (dd->uschedcp != lp);
 
@@ -1214,6 +1211,7 @@ sched_thread(void *dummy)
 {
     globaldata_t gd;
     bsd4_pcpu_t  dd;
+    bsd4_pcpu_t  tmpdd;
     struct lwp *nlp;
     cpumask_t mask;
     int cpuid;
@@ -1289,12 +1287,11 @@ sched_thread(void *dummy)
 				  smp_active_mask;
 			if (tmpmask) {
 				tmpid = BSFCPUMASK(tmpmask);
-				gd = globaldata_find(cpuid);
-				dd = &bsd4_pcpu[cpuid];
+				tmpdd = &bsd4_pcpu[tmpid];
 				atomic_clear_cpumask(&bsd4_rdyprocmask,
 						     CPUMASK(tmpid));
 				spin_unlock(&bsd4_spin);
-				lwkt_schedule(&dd->helper_thread);
+				lwkt_schedule(&tmpdd->helper_thread);
 			} else {
 				spin_unlock(&bsd4_spin);
 			}
@@ -1305,6 +1302,12 @@ sched_thread(void *dummy)
 		 */
 		spin_unlock(&bsd4_spin);
 	}
+
+	/*
+	 * We're descheduled unless someone scheduled us.  Switch away.
+	 * Exiting the critical section will cause splz() to be called
+	 * for us if interrupts and such are pending.
+	 */
 	crit_exit_gd(gd);
 	lwkt_switch();
     }

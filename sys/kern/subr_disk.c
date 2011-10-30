@@ -78,7 +78,6 @@
  *	@(#)ufs_disksubr.c	8.5 (Berkeley) 1/21/94
  * $FreeBSD: src/sys/kern/subr_disk.c,v 1.20.2.6 2001/10/05 07:14:57 peter Exp $
  * $FreeBSD: src/sys/ufs/ufs/ufs_disksubr.c,v 1.44.2.3 2001/03/05 05:42:19 obrien Exp $
- * $DragonFly: src/sys/kern/subr_disk.c,v 1.40 2008/06/05 18:06:32 swildner Exp $
  */
 
 #include <sys/param.h>
@@ -96,7 +95,6 @@
 #include <sys/disk.h>
 #include <sys/kerneldump.h>
 #include <sys/malloc.h>
-#include <sys/sysctl.h>
 #include <machine/md_var.h>
 #include <sys/ctype.h>
 #include <sys/syslog.h>
@@ -1397,7 +1395,7 @@ disk_init(void)
 
 	lwkt_gettoken(&disklist_token);
 	lwkt_create(disk_msg_core, /*args*/NULL, &td_core, NULL,
-		    0, 0, "disk_msg_core");
+		    0, -1, "disk_msg_core");
 	tsleep(td_core, 0, "diskcore", 0);
 	lwkt_reltoken(&disklist_token);
 }
