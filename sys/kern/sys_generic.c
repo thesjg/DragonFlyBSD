@@ -1497,12 +1497,12 @@ dopoll(int nfds, struct pollfd *fds, struct timespec *ts, int *res)
 	return (error);
 }
 
-/*
-XXX, SJG:
-
 static int
 socket_wait_copyin(void *arg, struct kevent *kevp, int maxevents, int *events)
 {
+kprintf("in socket_wait_copyin, %d\n", *events);
+	*events = 0;
+kprintf("in socket_wait_copyin, %d\n", *events);
 	return (0);
 }
 
@@ -1512,7 +1512,6 @@ socket_wait_copyout(void *arg, struct kevent *kevp, int count, int *res)
 	++*res;
 	return (0);
 }
-*/
 
 extern	struct fileops socketops;
 
@@ -1526,7 +1525,7 @@ socket_wait(struct socket *so, struct timespec *ts, int *res)
 	struct thread *td = curthread;
 	struct file *fp;
 	struct kqueue kq;
-//	struct kevent kev;
+	struct kev_filter_note fn;
 	int error, fd;
 
 	if ((error = falloc(td->td_lwp, &fp, &fd)) != 0)
@@ -1539,21 +1538,28 @@ socket_wait(struct socket *so, struct timespec *ts, int *res)
 	fsetfd(td->td_lwp->lwp_proc->p_fd, fp, fd);
 
 	kqueue_init(&kq, td->td_lwp->lwp_proc->p_fd);
-/*
-XXX, SJG:
 
-	EV_SET(&kev, fd, EVFILT_READ, EV_ADD|EV_ENABLE, 0, 0, NULL);
-	if ((error = kqueue_register(&kq, &kev)) != 0) {
+	bzero(&fn, sizeof(fn));
+	fn.fn_filter = EVFILT_READ;
+	fn.fn_uflags = EV_ADD|EV_ENABLE;
+	fn.fn_ufflags = 0;
+	fn.fn_data = 0;
+	fn.fn_udata = (uintptr_t)NULL;
+kprintf("socket_wait, doing %d\n", fd);
+	if ((error = kqueue_register_filter_note(&kq, fd, &fn)) != 0) {
 		fdrop(fp);
 		return (error);
 	}
 
-	error = kern_kevent(&kq, 1, res, NULL, socket_wait_copyin,
+	error = kern_kevent(&kq, 0, res, NULL, socket_wait_copyin,
 			    socket_wait_copyout, ts);
 
-	EV_SET(&kev, fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
-	kqueue_register(&kq, &kev);
-*/
+	/*
+	 * XXX
+	 *
+	 * Leak all over. We need a kqueue teardown function.
+	 */
+
 	fp->f_ops = &badfileops;
 	fdrop(fp);
 

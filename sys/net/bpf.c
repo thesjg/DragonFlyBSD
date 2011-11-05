@@ -130,6 +130,10 @@ static void	bpf_drvinit(void *unused);
 static boolean_t	bpf_filter_read(struct kev_filter_note *fn, long hint,
     caddr_t hook);
 
+static struct kev_filter_ops kev_fops = {
+	.fop_read = { bpf_filter_read, KEV_FILTOP_NOTMPSAFE }
+};
+
 static d_open_t		bpfopen;
 static d_clone_t	bpfclone;
 static d_close_t	bpfclose;
@@ -352,6 +356,7 @@ bpfclone(struct dev_clone_args *ap)
 
 	unit = devfs_clone_bitmap_get(&DEVFS_CLONE_BITMAP(bpf), 0);
 	ap->a_dev = make_only_dev(&bpf_ops, unit, 0, 0, 0600, "bpf%d", unit);
+	kev_dev_filter_init(ap->a_dev, &kev_fops, (caddr_t)ap->a_dev->si_drv1);
 
 	return 0;
 }
@@ -517,9 +522,7 @@ bpf_wakeup(struct bpf_d *d)
 	if (d->bd_async && d->bd_sig && d->bd_sigio)
 		pgsigio(d->bd_sigio, d->bd_sig, 0);
 
-	get_mplock();
 	kev_filter(&d->bd_filter, 0, 0);
-	rel_mplock();
 }
 
 static void
@@ -1524,9 +1527,6 @@ bpf_drvinit(void *unused)
 	int i;
 	cdev_t dev;
         struct bpf_d *d;
-	static struct kev_filter_ops kev_fops = {
-		.fop_read = { bpf_filter_read, KEV_FILTOP_NOTMPSAFE }
-	};
 
 	make_autoclone_dev(&bpf_ops, &DEVFS_CLONE_BITMAP(bpf),
 		bpfclone, 0, 0, 0600, "bpf");

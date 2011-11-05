@@ -874,6 +874,9 @@ devfs_spec_open(struct vop_open_args *ap)
 					ndev, NULL, NULL);
 			/* XXX: possibly destroy device if this happens */
 
+			/* Carry over filters to new node */
+			kev_dev_filter_clone(dev, ndev);
+
 			if (newnode != NULL) {
 				dev = ndev;
 				devfs_link_dev(dev);
@@ -1366,8 +1369,6 @@ devfs_fo_kev_filter(struct file *fp, struct kev_filter **filt)
 	int error;
 	cdev_t dev;
 
-kprintf("XXX, SJG: devfs_fo_kev_filter\n");
-
 	vp = (struct vnode *)fp->f_data;
 	if (vp == NULL || vp->v_type == VBAD) {
 		error = EBADF;
@@ -1608,8 +1609,6 @@ devfs_spec_kev_filter(struct vop_kev_filter_args *ap)
 	struct vnode *vp = ap->a_vp;
 	struct devfs_node *node;
 	cdev_t dev;
-
-kprintf("XXX, SJG: devfs_spec_kev_filter\n");
 
 	if ((dev = vp->v_rdev) == NULL)
 		return (EBADF);		/* device was revoked (EBADF) */

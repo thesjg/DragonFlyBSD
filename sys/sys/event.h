@@ -229,7 +229,7 @@ struct kev_filter_entry {
 	struct 			kev_filter_note	*fe_notes[EVFILT_SYSCOUNT];
 	struct			kev_filter	*fe_filter;
 
-	intptr_t		fn_idata;	/* opaque data for select/poll */
+	intptr_t		fe_idata;	/* opaque data for select/poll */
 };
 
 /*
@@ -264,6 +264,7 @@ int kern_kevent(struct kqueue *kq, int nevents, int *res, void *uap,
 
 extern void	kev_dev_filter_init(cdev_t cdev, struct kev_filter_ops *fops,
     caddr_t hook);
+extern void	kev_dev_filter_clone(cdev_t source_cdev, cdev_t target_cdev);
 extern void	kev_filter_init(struct kev_filter *filter,
     struct kev_filter_ops *fops, caddr_t hook);
 extern void	kev_dev_filter_destroy(cdev_t cdev);
