@@ -846,11 +846,7 @@ kqueue_register_filter_note(struct kqueue *kq, uintptr_t ident,
 	 */
 	switch (fn->fn_filter) {
 	case EVFILT_READ:
-		isfd = TRUE;
-		break;
 	case EVFILT_WRITE:
-		isfd = TRUE;
-		break;
 	case EVFILT_VNODE:
 	case EVFILT_EXCEPT:
 		isfd = TRUE;
@@ -894,6 +890,13 @@ kqueue_register_filter_note(struct kqueue *kq, uintptr_t ident,
 	 */
 	if (fn->fn_uflags & EV_ADD) {
 		if (fe == NULL) {
+			if (kq_debug) {
+				struct lwp *lwp = curthread->td_lwp;
+				if (kq_debug_pid == 0 || kq_debug_pid == lwp->lwp_proc->p_pid)
+					kprintf("kq EV_ADD filter %d for fd %d (new entry)\n",
+					    fn->fn_filter, (int)ident);
+			}
+
 			if (isfd)
 				vector_lookup_arg = fp;
 			else
@@ -981,14 +984,14 @@ kqueue_register_filter_note(struct kqueue *kq, uintptr_t ident,
 			if ((isfd) && checkfdclosed(fdp, ident, fe->fe_ptr.p_fp)) {
 				fe->fe_status |= KFE_DELETING | KFE_REPROCESS;
 			}
-
+		} else {
 			if (kq_debug) {
 				struct lwp *lwp = curthread->td_lwp;
 				if (kq_debug_pid == 0 || kq_debug_pid == lwp->lwp_proc->p_pid)
 					kprintf("kq EV_ADD filter %d for fd %d (existing entry)\n",
-						fn->fn_filter, (int)ident);
+					    fn->fn_filter, (int)ident);
 			}
-		} else {
+
 			if (!vector_validate(fn->fn_filter,
 			    fe->fe_filter->kf_ops))
 			{
@@ -1029,13 +1032,6 @@ kqueue_register_filter_note(struct kqueue *kq, uintptr_t ident,
 				 * to work with.
 				 */
 				fn = fe->fe_notes[filter_idx];
-			}
-
-			if (kq_debug) {
-				struct lwp *lwp = curthread->td_lwp;
-				if (kq_debug_pid == 0 || kq_debug_pid == lwp->lwp_proc->p_pid)
-					kprintf("kq EV_ADD filter %d for fd %d\n",
-						fn->fn_filter, (int)ident);
 			}
 		}
 

@@ -1500,9 +1500,7 @@ dopoll(int nfds, struct pollfd *fds, struct timespec *ts, int *res)
 static int
 socket_wait_copyin(void *arg, struct kevent *kevp, int maxevents, int *events)
 {
-kprintf("in socket_wait_copyin, %d\n", *events);
 	*events = 0;
-kprintf("in socket_wait_copyin, %d\n", *events);
 	return (0);
 }
 
@@ -1545,7 +1543,6 @@ socket_wait(struct socket *so, struct timespec *ts, int *res)
 	fn.fn_ufflags = 0;
 	fn.fn_data = 0;
 	fn.fn_udata = (uintptr_t)NULL;
-kprintf("socket_wait, doing %d\n", fd);
 	if ((error = kqueue_register_filter_note(&kq, fd, &fn)) != 0) {
 		fdrop(fp);
 		return (error);
@@ -1554,12 +1551,7 @@ kprintf("socket_wait, doing %d\n", fd);
 	error = kern_kevent(&kq, 0, res, NULL, socket_wait_copyin,
 			    socket_wait_copyout, ts);
 
-	/*
-	 * XXX
-	 *
-	 * Leak all over. We need a kqueue teardown function.
-	 */
-
+	kqueue_terminate(&kq);
 	fp->f_ops = &badfileops;
 	fdrop(fp);
 

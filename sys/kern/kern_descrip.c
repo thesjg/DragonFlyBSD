@@ -906,8 +906,7 @@ kern_close(int fd)
 	 * array.
 	 */
 	spin_unlock(&fdp->fd_spin);
-	if (TAILQ_FIRST(&fp->f_kflist))
-		kev_filter_entry_fdclose(fp, fdp, fd);
+	kev_filter_entry_fdclose(fp, fdp, fd);
 	error = closef(fp, p);
 	if (holdleaders) {
 		spin_lock(&fdp->fd_spin);
