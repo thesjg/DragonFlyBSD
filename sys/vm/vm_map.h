@@ -243,7 +243,7 @@ struct vm_map {
 /*
  * vm_flags_t values
  */
-#define MAP_WIREFUTURE		0x01	/* wire all future pages */
+#define MAP_WIREFUTURE		0x0001	/* wire all future pages */
 
 /*
  * Registered upcall
@@ -268,7 +268,7 @@ struct vmupcall {
 struct vmspace {
 	struct vm_map vm_map;	/* VM address map */
 	struct pmap vm_pmap;	/* private physical map */
-	int vm_unused01;
+	int vm_flags;
 	caddr_t vm_shm;		/* SYS5 shared memory private data XXX */
 /* we copy from vm_startcopy to the end of the structure on fork */
 #define vm_startcopy vm_rssize
@@ -282,12 +282,16 @@ struct vmspace {
 	caddr_t vm_maxsaddr;	/* user VA at max stack growth */
 	caddr_t vm_minsaddr;	/* user VA at max stack growth */
 #define vm_endcopy	vm_exitingcnt
-	int	vm_exitingcnt;	/* several procsses zombied in exit1 */
+	int	vm_exitingcnt;  /* exit/wait context reaping */
 	int	vm_upccount;	/* number of registered upcalls */
 	int	vm_pagesupply;
+	u_int	vm_holdcount;
 	struct vmupcall *vm_upcalls;	/* registered upcalls */
 	struct sysref vm_sysref;	/* sysref, refcnt, etc */
 };
+
+#define VMSPACE_EXIT1	0x0001	/* partial exit */
+#define VMSPACE_EXIT2	0x0002	/* full exit */
 
 /*
  * Resident executable holding structure.  A user program can take a snapshot
@@ -527,6 +531,7 @@ vmspace_president_count(struct vmspace *vmspace)
 #define VM_FAULT_BURST		0x04	/* Burst fault can be done */
 #define VM_FAULT_DIRTY		0x08	/* Dirty the page */
 #define VM_FAULT_UNSWAP		0x10	/* Remove backing store from the page */
+#define VM_FAULT_BURST_QUICK	0x20	/* Special case shared vm_object */
 #define VM_FAULT_WIRE_MASK	(VM_FAULT_CHANGE_WIRING|VM_FAULT_USER_WIRE)
 
 #ifdef _KERNEL

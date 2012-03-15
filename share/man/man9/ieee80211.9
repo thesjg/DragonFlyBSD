@@ -32,6 +32,8 @@
 .Nm net80211
 .Nd 802.11 network layer
 .Sh SYNOPSIS
+.In net/if.h
+.In net/if_media.h
 .In netproto/802_11/ieee80211_var.h
 .Ft void
 .Fn ieee80211_ifattach "struct ieee80211com *ic" "const uint8_t macaddr[IEEE80211_ADDR_LEN]"
@@ -225,7 +227,7 @@ Allocate and initialize a
 structure.
 This method cannot sleep.
 The default method allocates zero'd memory using
-.Xr malloc 9 .
+.Xr kmalloc 9 .
 Drivers should override this method to allocate extended storage
 for their own needs.
 Memory allocated by the driver must be tagged with
@@ -565,4 +567,4 @@ Device supports Reduced Inter Frame Spacing (RIFS).
 .Xr ieee80211_scan 9 ,
 .Xr ieee80211_vap 9 ,
 .Xr ifnet 9 ,
-.Xr malloc 9
+.Xr kmalloc 9

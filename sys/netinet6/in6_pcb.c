@@ -1,5 +1,4 @@
 /*	$FreeBSD: src/sys/netinet6/in6_pcb.c,v 1.10.2.9 2003/01/24 05:11:35 sam Exp $	*/
-/*	$DragonFly: src/sys/netinet6/in6_pcb.c,v 1.35 2008/09/04 09:08:22 hasso Exp $	*/
 /*	$KAME: in6_pcb.c,v 1.31 2001/05/21 05:45:10 jinmei Exp $	*/
 
 /*
@@ -692,8 +691,8 @@ in6_pcbdetach(struct inpcb *inp)
 
 	if (inp->in6p_options)
 		m_freem(inp->in6p_options);
- 	ip6_freepcbopts(inp->in6p_outputopts);
- 	ip6_freemoptions(inp->in6p_moptions);
+	ip6_freepcbopts(inp->in6p_outputopts);
+	ip6_freemoptions(inp->in6p_moptions);
 	if (inp->in6p_route.ro_rt)
 		rtfree(inp->in6p_route.ro_rt);
 	/* Check and free IPv4 related resources in case of mapped addr */
@@ -733,8 +732,7 @@ in6_setsockaddr(struct socket *so, struct sockaddr **nam)
 	/*
 	 * Do the malloc first in case it blocks.
 	 */
-	MALLOC(sin6, struct sockaddr_in6 *, sizeof *sin6, M_SONAME,
-	    M_WAITOK | M_ZERO);
+	sin6 = kmalloc(sizeof *sin6, M_SONAME, M_WAITOK | M_ZERO);
 	sin6->sin6_family = AF_INET6;
 	sin6->sin6_len = sizeof(*sin6);
 
@@ -777,8 +775,7 @@ in6_setpeeraddr(struct socket *so, struct sockaddr **nam)
 	/*
 	 * Do the malloc first in case it blocks.
 	 */
-	MALLOC(sin6, struct sockaddr_in6 *, sizeof(*sin6), M_SONAME,
-	    M_WAITOK | M_ZERO);
+	sin6 = kmalloc(sizeof(*sin6), M_SONAME, M_WAITOK | M_ZERO);
 	sin6->sin6_family = AF_INET6;
 	sin6->sin6_len = sizeof(struct sockaddr_in6);
 
@@ -912,13 +909,13 @@ in6_pcbnotify(struct inpcbhead *head, struct sockaddr *dst, in_port_t fport,
 	if (cmd != PRC_MSGSIZE)
 		arg = inet6ctlerrmap[cmd];
 	crit_enter();
- 	for (inp = LIST_FIRST(head); inp != NULL; inp = ninp) {
- 		ninp = LIST_NEXT(inp, inp_list);
+	for (inp = LIST_FIRST(head); inp != NULL; inp = ninp) {
+		ninp = LIST_NEXT(inp, inp_list);
 
 		if (inp->inp_flags & INP_PLACEMARKER)
 			continue;
 
- 		if ((inp->inp_vflag & INP_IPV6) == 0)
+		if ((inp->inp_vflag & INP_IPV6) == 0)
 			continue;
 		/*
 		 * If the error designates a new path MTU for a destination
@@ -1261,4 +1258,40 @@ init_sin6(struct sockaddr_in6 *sin6, struct mbuf *m)
 		? m->m_pkthdr.rcvif->if_index : 0;
 
 	return;
+}
+
+static void
+in6_savefaddr(struct socket *so, const struct sockaddr *faddr)
+{
+	struct sockaddr_in6 *sin6;
+
+	KASSERT(faddr->sa_family == AF_INET6,
+	    ("not AF_INET6 faddr %d\n", faddr->sa_family));
+
+	sin6 = kmalloc(sizeof(*sin6), M_SONAME, M_WAITOK | M_ZERO);
+	sin6->sin6_family = AF_INET6;
+	sin6->sin6_len = sizeof(*sin6);
+
+	sin6->sin6_port = ((const struct sockaddr_in6 *)faddr)->sin6_port;
+	sin6->sin6_addr = ((const struct sockaddr_in6 *)faddr)->sin6_addr;
+
+	if (IN6_IS_SCOPE_LINKLOCAL(&sin6->sin6_addr))
+		sin6->sin6_scope_id = ntohs(sin6->sin6_addr.s6_addr16[1]);
+	else
+		sin6->sin6_scope_id = 0;	/*XXX*/
+	if (IN6_IS_SCOPE_LINKLOCAL(&sin6->sin6_addr))
+		sin6->sin6_addr.s6_addr16[1] = 0;
+
+	so->so_faddr = (struct sockaddr *)sin6;
+}
+
+void
+in6_mapped_savefaddr(struct socket *so, const struct sockaddr *faddr)
+{
+	if (faddr->sa_family == AF_INET) {
+		in_savefaddr(so, faddr);
+		in6_sin_2_v4mapsin6_in_sock(&so->so_faddr);
+	} else {
+		in6_savefaddr(so, faddr);
+	}
 }

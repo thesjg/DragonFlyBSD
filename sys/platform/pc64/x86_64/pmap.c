@@ -1,6 +1,4 @@
 /*
- * (MPSAFE)
- *
  * Copyright (c) 1991 Regents of the University of California.
  * Copyright (c) 1994 John S. Dyson
  * Copyright (c) 1994 David Greenman
@@ -42,35 +40,9 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	from:	@(#)pmap.c	7.7 (Berkeley)	5/12/91
- * $FreeBSD: src/sys/i386/i386/pmap.c,v 1.250.2.18 2002/03/06 22:48:53 silby Exp $
  */
-
 /*
- *	Manages physical address maps.
- *
- *	In addition to hardware address maps, this
- *	module is called upon to provide software-use-only
- *	maps which may or may not be stored in the same
- *	form as hardware maps.  These pseudo-maps are
- *	used to store intermediate results from copy
- *	operations to and from address spaces.
- *
- *	Since the information managed by this module is
- *	also stored by the logical address mapping module,
- *	this module may throw away valid virtual-to-physical
- *	mappings at almost any time.  However, invalidations
- *	of virtual-to-physical mappings must be done as
- *	requested.
- *
- *	In order to cope with hardware architectures which
- *	make virtual-to-physical map invalidates expensive,
- *	this module may delay invalidate or reduced protection
- *	operations until such time as they are actually
- *	necessary.  This module is given full information as
- *	to which processors are currently using which maps,
- *	and to when physical maps must be made correct.
+ * Manage physical address maps for x86-64 systems.
  */
 
 #if JG
@@ -114,12 +86,13 @@
 #include <machine/globaldata.h>
 #include <machine/pmap.h>
 #include <machine/pmap_inval.h>
+#include <machine/inttypes.h>
 
 #include <ddb/ddb.h>
 
 #define PMAP_KEEP_PDIRS
 #ifndef PMAP_SHPGPERPROC
-#define PMAP_SHPGPERPROC 200
+#define PMAP_SHPGPERPROC 2000
 #endif
 
 #if defined(DIAGNOSTIC)
@@ -259,7 +232,7 @@ static pv_entry_t pmap_allocpte(pmap_t pmap, vm_pindex_t ptepindex,
 		      pv_entry_t *pvpp);
 static void pmap_remove_pv_pte(pv_entry_t pv, pv_entry_t pvp,
 		      struct pmap_inval_info *info);
-static vm_page_t pmap_remove_pv_page(pv_entry_t pv, int holdpg);
+static vm_page_t pmap_remove_pv_page(pv_entry_t pv);
 
 static void pmap_remove_callback(pmap_t pmap, struct pmap_inval_info *info,
 		      pv_entry_t pte_pv, pv_entry_t pt_pv, vm_offset_t va,
@@ -586,6 +559,7 @@ create_pagetables(vm_paddr_t *firstaddr)
 	long i;		/* must be 64 bits */
 	long nkpt_base;
 	long nkpt_phys;
+	int j;
 
 	/*
 	 * We are running (mostly) V=P at this point
@@ -595,18 +569,21 @@ create_pagetables(vm_paddr_t *firstaddr)
 	 * MSGBUF_SIZE, and other stuff.  Be generous.
 	 *
 	 * Maxmem is in pages.
+	 *
+	 * ndmpdp is the number of 1GB pages we wish to map.
 	 */
 	ndmpdp = (ptoa(Maxmem) + NBPDP - 1) >> PDPSHIFT;
 	if (ndmpdp < 4)		/* Minimum 4GB of dirmap */
 		ndmpdp = 4;
+	KKASSERT(ndmpdp <= NKPDPE * NPDEPG);
 
 	/*
 	 * Starting at the beginning of kvm (not KERNBASE).
 	 */
 	nkpt_phys = (Maxmem * sizeof(struct vm_page) + NBPDR - 1) / NBPDR;
 	nkpt_phys += (Maxmem * sizeof(struct pv_entry) + NBPDR - 1) / NBPDR;
-	nkpt_phys += ((nkpt + nkpt + 1 + NKPML4E + NKPDPE + NDMPML4E + ndmpdp) +
-		     511) / 512;
+	nkpt_phys += ((nkpt + nkpt + 1 + NKPML4E + NKPDPE + NDMPML4E +
+		       ndmpdp) + 511) / 512;
 	nkpt_phys += 128;
 
 	/*
@@ -684,26 +661,34 @@ create_pagetables(vm_paddr_t *firstaddr)
 				PG_RW | PG_V | PG_U;
 	}
 
-	/* Now set up the direct map space using either 2MB or 1GB pages */
-	/* Preset PG_M and PG_A because demotion expects it */
+	/*
+	 * Now set up the direct map space using either 2MB or 1GB pages
+	 * Preset PG_M and PG_A because demotion expects it.
+	 *
+	 * When filling in entries in the PD pages make sure any excess
+	 * entries are set to zero as we allocated enough PD pages
+	 */
 	if ((amd_feature & AMDID_PAGE1GB) == 0) {
 		for (i = 0; i < NPDEPG * ndmpdp; i++) {
 			((pd_entry_t *)DMPDphys)[i] = i << PDRSHIFT;
 			((pd_entry_t *)DMPDphys)[i] |= PG_RW | PG_V | PG_PS |
-			    PG_G | PG_M | PG_A;
+						       PG_G | PG_M | PG_A;
 		}
-		/* And the direct map space's PDP */
+
+		/*
+		 * And the direct map space's PDP
+		 */
 		for (i = 0; i < ndmpdp; i++) {
 			((pdp_entry_t *)DMPDPphys)[i] = DMPDphys +
-			    (i << PAGE_SHIFT);
+							(i << PAGE_SHIFT);
 			((pdp_entry_t *)DMPDPphys)[i] |= PG_RW | PG_V | PG_U;
 		}
 	} else {
 		for (i = 0; i < ndmpdp; i++) {
 			((pdp_entry_t *)DMPDPphys)[i] =
-			    (vm_paddr_t)i << PDPSHIFT;
+						(vm_paddr_t)i << PDPSHIFT;
 			((pdp_entry_t *)DMPDPphys)[i] |= PG_RW | PG_V | PG_PS |
-			    PG_G | PG_M | PG_A;
+							 PG_G | PG_M | PG_A;
 		}
 	}
 
@@ -711,11 +696,18 @@ create_pagetables(vm_paddr_t *firstaddr)
 	((pdp_entry_t *)KPML4phys)[PML4PML4I] = KPML4phys;
 	((pdp_entry_t *)KPML4phys)[PML4PML4I] |= PG_RW | PG_V | PG_U;
 
-	/* Connect the Direct Map slot up to the PML4 */
-	((pdp_entry_t *)KPML4phys)[DMPML4I] = DMPDPphys;
-	((pdp_entry_t *)KPML4phys)[DMPML4I] |= PG_RW | PG_V | PG_U;
+	/*
+	 * Connect the Direct Map slots up to the PML4
+	 */
+	for (j = 0; j < NDMPML4E; ++j) {
+		((pdp_entry_t *)KPML4phys)[DMPML4I + j] =
+			(DMPDPphys + ((vm_paddr_t)j << PML4SHIFT)) |
+			PG_RW | PG_V | PG_U;
+	}
 
-	/* Connect the KVA slot up to the PML4 */
+	/*
+	 * Connect the KVA slot up to the PML4
+	 */
 	((pdp_entry_t *)KPML4phys)[KPML4I] = KPDPphys;
 	((pdp_entry_t *)KPML4phys)[KPML4I] |= PG_RW | PG_V | PG_U;
 }
@@ -973,24 +965,6 @@ pmap_init2(void)
  * Low level helper routines.....
  ***************************************************/
 
-#if defined(PMAP_DIAGNOSTIC)
-
-/*
- * This code checks for non-writeable/modified pages.
- * This should be an invalid condition.
- */
-static
-int
-pmap_nw_modified(pt_entry_t pte)
-{
-	if ((pte & (PG_M|PG_RW)) == PG_M)
-		return 1;
-	else
-		return 0;
-}
-#endif
-
-
 /*
  * this routine defines the region(s) of memory that should
  * not be tested for the modified bit.
@@ -1165,7 +1139,7 @@ pmap_kremove(vm_offset_t va)
 	pmap_inval_init(&info);
 	pte = vtopte(va);
 	pmap_inval_interlock(&info, &kernel_pmap, va);
-	*pte = 0;
+	(void)pte_load_clear(pte);
 	pmap_inval_deinterlock(&info, &kernel_pmap);
 	pmap_inval_done(&info);
 }
@@ -1175,7 +1149,7 @@ pmap_kremove_quick(vm_offset_t va)
 {
 	pt_entry_t *pte;
 	pte = vtopte(va);
-	*pte = 0;
+	(void)pte_load_clear(pte);
 	cpu_invlpg((void *)va);
 }
 
@@ -1273,7 +1247,7 @@ pmap_qremove(vm_offset_t va, int count)
 		pt_entry_t *pte;
 
 		pte = vtopte(va);
-		*pte = 0;
+		(void)pte_load_clear(pte);
 		cpu_invlpg((void *)va);
 		va += PAGE_SIZE;
 	}
@@ -1300,16 +1274,6 @@ pmap_init_thread(thread_t td)
 void
 pmap_init_proc(struct proc *p)
 {
-}
-
-/*
- * Dispose the UPAGES for a process that has exited.
- * This routine directly impacts the exit perf of a process.
- */
-void
-pmap_dispose_proc(struct proc *p)
-{
-	KASSERT(p->p_lock == 0, ("attempt to dispose referenced proc! %p", p));
 }
 
 /*
@@ -1341,6 +1305,7 @@ void
 pmap_pinit(struct pmap *pmap)
 {
 	pv_entry_t pv;
+	int j;
 
 	/*
 	 * Misc initialization
@@ -1376,16 +1341,30 @@ pmap_pinit(struct pmap *pmap)
 		pmap_kenter((vm_offset_t)pmap->pm_pml4,
 			    VM_PAGE_TO_PHYS(pv->pv_m));
 		pv_put(pv);
-		pmap->pm_pml4[KPML4I] = KPDPphys | PG_RW | PG_V | PG_U;
-		pmap->pm_pml4[DMPML4I] = DMPDPphys | PG_RW | PG_V | PG_U;
 
-		/* install self-referential address mapping entry */
+		/*
+		 * Install DMAP and KMAP.
+		 */
+		for (j = 0; j < NDMPML4E; ++j) {
+			pmap->pm_pml4[DMPML4I + j] =
+				(DMPDPphys + ((vm_paddr_t)j << PML4SHIFT)) |
+				PG_RW | PG_V | PG_U;
+		}
+		pmap->pm_pml4[KPML4I] = KPDPphys | PG_RW | PG_V | PG_U;
+
+		/*
+		 * install self-referential address mapping entry
+		 */
 		pmap->pm_pml4[PML4PML4I] = VM_PAGE_TO_PHYS(pv->pv_m) |
 					   PG_V | PG_RW | PG_A | PG_M;
 	} else {
 		KKASSERT(pv->pv_m->flags & PG_MAPPED);
 		KKASSERT(pv->pv_m->flags & PG_WRITEABLE);
 	}
+	KKASSERT(pmap->pm_pml4[255] == 0);
+	KKASSERT(RB_ROOT(&pmap->pm_pvroot) == pv);
+	KKASSERT(pv->pv_entry.rbe_left == NULL);
+	KKASSERT(pv->pv_entry.rbe_right == NULL);
 }
 
 /*
@@ -1404,11 +1383,10 @@ pmap_puninit(pmap_t pmap)
 	if ((pv = pmap->pm_pmlpv) != NULL) {
 		if (pv_hold_try(pv) == 0)
 			pv_lock(pv);
-		p = pmap_remove_pv_page(pv, 1);
+		p = pmap_remove_pv_page(pv);
 		pv_free(pv);
 		pmap_kremove((vm_offset_t)pmap->pm_pml4);
 		vm_page_busy_wait(p, FALSE, "pgpun");
-		vm_page_unhold(p);
 		KKASSERT(p->flags & (PG_FICTITIOUS|PG_UNMANAGED));
 		vm_page_unwire(p, 0);
 		vm_page_flag_clear(p, PG_MAPPED | PG_WRITEABLE);
@@ -1646,10 +1624,6 @@ pmap_release(struct pmap *pmap)
 
 	KASSERT(pmap->pm_active == 0,
 		("pmap still active! %016jx", (uintmax_t)pmap->pm_active));
-#if defined(DIAGNOSTIC)
-	if (object->ref_count != 1)
-		panic("pmap_release: pteobj reference count != 1");
-#endif
 
 	spin_lock(&pmap_spin);
 	TAILQ_REMOVE(&pmap_list, pmap, pm_pmnode);
@@ -1710,7 +1684,7 @@ pmap_release_callback(pv_entry_t pv, void *data)
 	 * by us, so we have to be sure not to unwire them either.
 	 */
 	if (pv->pv_pindex < pmap_pt_pindex(0)) {
-		pmap_remove_pv_page(pv, 0);
+		pmap_remove_pv_page(pv);
 		goto skip;
 	}
 
@@ -1734,9 +1708,8 @@ pmap_release_callback(pv_entry_t pv, void *data)
 	 * removed above by pmap_remove_pv_pte() did not undo the
 	 * last wire_count so we have to do that as well.
 	 */
-	p = pmap_remove_pv_page(pv, 1);
+	p = pmap_remove_pv_page(pv);
 	vm_page_busy_wait(p, FALSE, "pmaprl");
-	vm_page_unhold(p);
 	if (p->wire_count != 1) {
 		kprintf("p->wire_count was %016lx %d\n",
 			pv->pv_pindex, p->wire_count);
@@ -1886,6 +1859,8 @@ pmap_remove_pv_pte(pv_entry_t pv, pv_entry_t pvp, struct pmap_inval_info *info)
 		pte = pte_load_clear(ptep);
 		if (info)
 			pmap_inval_deinterlock(info, pmap);
+		else
+			cpu_invlpg((void *)va);
 
 		/*
 		 * Now update the vm_page_t
@@ -1927,13 +1902,11 @@ pmap_remove_pv_pte(pv_entry_t pv, pv_entry_t pvp, struct pmap_inval_info *info)
 
 static
 vm_page_t
-pmap_remove_pv_page(pv_entry_t pv, int holdpg)
+pmap_remove_pv_page(pv_entry_t pv)
 {
 	vm_page_t m;
 
 	m = pv->pv_m;
-	if (holdpg)
-		vm_page_hold(m);
 	KKASSERT(m);
 	vm_page_spin_lock(m);
 	pv->pv_m = NULL;
@@ -1945,9 +1918,7 @@ pmap_remove_pv_page(pv_entry_t pv, int holdpg)
 	if (TAILQ_EMPTY(&m->md.pv_list))
 		vm_page_flag_clear(m, PG_MAPPED | PG_WRITEABLE);
 	vm_page_spin_unlock(m);
-	if (holdpg)
-		return(m);
-	return(NULL);
+	return(m);
 }
 
 /*
@@ -2580,12 +2551,15 @@ pmap_scan(struct pmap *pmap, vm_offset_t sva, vm_offset_t eva,
 			 */
 			KKASSERT(pte_pv == NULL);
 		} else if (pte_pv) {
-			KKASSERT((*ptep & (PG_MANAGED|PG_V)) ==
-				 (PG_MANAGED|PG_V));
+			KASSERT((*ptep & (PG_MANAGED|PG_V)) == (PG_MANAGED|
+								PG_V),
+				("bad *ptep %016lx sva %016lx pte_pv %p",
+				*ptep, sva, pte_pv));
 			func(pmap, &info, pte_pv, pt_pv, sva, ptep, arg);
 		} else {
-			KKASSERT((*ptep & (PG_MANAGED|PG_V)) ==
-				 PG_V);
+			KASSERT((*ptep & (PG_MANAGED|PG_V)) == PG_V,
+				("bad *ptep %016lx sva %016lx pte_pv NULL",
+				*ptep, sva));
 			func(pmap, &info, pte_pv, pt_pv, sva, ptep, arg);
 		}
 		if (pt_pv)
@@ -2658,7 +2632,6 @@ fast_skip:
 			continue;
 		}
 
-retry_pt_pv:
 		/*
 		 * PT cache
 		 */
@@ -2731,51 +2704,18 @@ kernel_skip:
 
 		while (sva < va_next) {
 			/*
-			 * NOTE: It is possible for an empty ptep to
-			 *	 race a pv removal by some other means
-			 *	 (typically via the vm_page_t).
+			 * Acquire the related pte_pv, if any.  If *ptep == 0
+			 * the related pte_pv should not exist, but if *ptep
+			 * is not zero the pte_pv may or may not exist (e.g.
+			 * will not exist for an unmanaged page).
 			 *
-			 *	 For now debug the situation by locking
-			 *	 the potentially conflicting pv and
-			 *	 re-checking.
+			 * However a multitude of races are possible here.
+			 *
+			 * In addition, the (pt_pv, pte_pv) lock order is
+			 * backwards, so we have to be careful in aquiring
+			 * a properly locked pte_pv.
 			 */
 			lwkt_yield();
-			if (*ptep == 0) {
-				pte_pv = pv_find(pmap, pmap_pte_pindex(sva));
-				if (pte_pv == NULL) {
-					sva += PAGE_SIZE;
-					++ptep;
-					continue;
-				}
-
-				/*
-				 * Possible race against another thread
-				 * removing the pte.
-				 */
-				kprintf("pmap_scan: caught race func %p", func);
-				if (pt_pv) {
-					pv_put(pt_pv);	 /* must be non-NULL */
-					pt_pv = NULL;
-				}
-				pv_lock(pte_pv);	/* safe to block now */
-				if (pte_pv->pv_pmap) {
-					kprintf(", uh oh, pte_pv still good\n");
-					panic("unexpected non-NULL pte_pv %p",
-					      pte_pv);
-				} else {
-					kprintf(", resolved ok\n");
-				}
-				pv_put(pte_pv);
-				pte_pv = NULL;
-				goto retry_pt_pv;
-			}
-
-			/*
-			 * We need a locked pte_pv as well but just like the
-			 * above, the lock order is all wrong so if we
-			 * cannot acquire it non-blocking we will have to
-			 * undo a bunch of stuff and retry.
-			 */
 			if (pt_pv) {
 				pte_pv = pv_get_try(pmap, pmap_pte_pindex(sva),
 						    &error);
@@ -2802,17 +2742,40 @@ kernel_skip:
 			}
 
 			/*
-			 * Ready for the callback.  The locked pte_pv (if
-			 * not NULL) is consumed by the callback.
+			 * Ok, if *ptep == 0 we had better NOT have a pte_pv.
+			 */
+			if (*ptep == 0) {
+				if (pte_pv) {
+					kprintf("Unexpected non-NULL pte_pv "
+						"%p pt_pv %p *ptep = %016lx\n",
+						pte_pv, pt_pv, *ptep);
+					panic("Unexpected non-NULL pte_pv");
+				}
+				sva += PAGE_SIZE;
+				++ptep;
+				continue;
+			}
+
+			/*
+			 * Ready for the callback.  The locked pte_pv (if any)
+			 * is consumed by the callback.  pte_pv will exist if
+			 *  the page is managed, and will not exist if it
+			 * isn't.
 			 */
 			if (pte_pv) {
-				KKASSERT((*ptep & (PG_MANAGED|PG_V)) ==
-					 (PG_MANAGED|PG_V));
+				KASSERT((*ptep & (PG_MANAGED|PG_V)) ==
+					 (PG_MANAGED|PG_V),
+					("bad *ptep %016lx sva %016lx "
+					 "pte_pv %p",
+					 *ptep, sva, pte_pv));
 				func(pmap, &info, pte_pv, pt_pv, sva,
 				     ptep, arg);
 			} else {
-				KKASSERT((*ptep & (PG_MANAGED|PG_V)) ==
-					 PG_V);
+				KASSERT((*ptep & (PG_MANAGED|PG_V)) ==
+					 PG_V,
+					("bad *ptep %016lx sva %016lx "
+					 "pte_pv NULL",
+					 *ptep, sva));
 				func(pmap, &info, pte_pv, pt_pv, sva,
 				     ptep, arg);
 			}
@@ -2856,7 +2819,7 @@ pmap_remove_callback(pmap_t pmap, struct pmap_inval_info *info,
 		 * terminal pages are not wired based on mmu presence.
 		 */
 		pmap_remove_pv_pte(pte_pv, pt_pv, info);
-		pmap_remove_pv_page(pte_pv, 0);
+		pmap_remove_pv_page(pte_pv);
 		pv_free(pte_pv);
 	} else {
 		/*
@@ -2909,12 +2872,12 @@ pmap_remove_all(vm_page_t m)
 		 * Holding no spinlocks, pv is locked.
 		 */
 		pmap_remove_pv_pte(pv, NULL, &info);
-		pmap_remove_pv_page(pv, 0);
+		pmap_remove_pv_page(pv);
 		pv_free(pv);
 		vm_page_spin_lock(m);
 	}
-	vm_page_spin_unlock(m);
 	KKASSERT((m->flags & (PG_MAPPED|PG_WRITEABLE)) == 0);
+	vm_page_spin_unlock(m);
 	pmap_inval_done(&info);
 }
 
@@ -3075,87 +3038,77 @@ pmap_enter(pmap_t pmap, vm_offset_t va, vm_page_t m, vm_prot_t prot,
 		KKASSERT(*ptep == 0 || (*ptep & PG_MANAGED));
 	}
 
-	if ((prot & VM_PROT_NOSYNC) == 0)
-		pmap_inval_init(&info);
-
 	pa = VM_PAGE_TO_PHYS(m);
 	origpte = *ptep;
 	opa = origpte & PG_FRAME;
 
+	newpte = (pt_entry_t)(pa | pte_prot(pmap, prot) | PG_V | PG_A);
+	if (wired)
+		newpte |= PG_W;
+	if (va < VM_MAX_USER_ADDRESS)
+		newpte |= PG_U;
+	if (pte_pv)
+		newpte |= PG_MANAGED;
+	if (pmap == &kernel_pmap)
+		newpte |= pgeflag;
+
 	/*
-	 * Mapping has not changed, must be protection or wiring change.
+	 * It is possible for multiple faults to occur in threaded
+	 * environments, the existing pte might be correct.
 	 */
-	if (origpte && (opa == pa)) {
-		/*
-		 * Wiring change, just update stats. We don't worry about
-		 * wiring PT pages as they remain resident as long as there
-		 * are valid mappings in them. Hence, if a user page is wired,
-		 * the PT page will be also.
-		 */
-		KKASSERT(pte_pv == NULL || m == pte_pv->pv_m);
-		if (wired && ((origpte & PG_W) == 0))
-			atomic_add_long(&pmap->pm_stats.wired_count, 1);
-		else if (!wired && (origpte & PG_W))
-			atomic_add_long(&pmap->pm_stats.wired_count, -1);
+	if (((origpte ^ newpte) & ~(pt_entry_t)(PG_M|PG_A)) == 0)
+		goto done;
 
-#if defined(PMAP_DIAGNOSTIC)
-		if (pmap_nw_modified(origpte)) {
-			kprintf("pmap_enter: modified page not writable: "
-				"va: 0x%lx, pte: 0x%lx\n", va, origpte);
-		}
-#endif
-
-		/*
-		 * We might be turning off write access to the page,
-		 * so we go ahead and sense modify status.
-		 */
-		if (pte_pv) {
-			if ((origpte & PG_M) &&
-			    pmap_track_modified(pte_pv->pv_pindex)) {
-				vm_page_t om;
-				om = pte_pv->pv_m;
-				KKASSERT(PHYS_TO_VM_PAGE(opa) == om);
-				vm_page_dirty(om);
-			}
-			pa |= PG_MANAGED;
-		}
-		goto validate;
-	} 
+	if ((prot & VM_PROT_NOSYNC) == 0)
+		pmap_inval_init(&info);
 
 	/*
-	 * Mapping has changed, invalidate old range and fall through to
-	 * handle validating new mapping.
+	 * Ok, either the address changed or the protection or wiring
+	 * changed.
 	 *
-	 * We always interlock pte removals.
+	 * Clear the current entry, interlocking the removal.  For managed
+	 * pte's this will also flush the modified state to the vm_page.
+	 * Atomic ops are mandatory in order to ensure that PG_M events are
+	 * not lost during any transition.
 	 */
 	if (opa) {
 		if (pte_pv) {
-			/* XXX pmap_remove_pv_pte() unwires pt_pv */
-			vm_page_wire_quick(pt_pv->pv_m);
+			/*
+			 * pmap_remove_pv_pte() unwires pt_pv and assumes
+			 * we will free pte_pv, but since we are reusing
+			 * pte_pv we want to retain the wire count.
+			 *
+			 * pt_pv won't exist for a kernel page (managed or
+			 * otherwise).
+			 */
+			if (pt_pv)
+				vm_page_wire_quick(pt_pv->pv_m);
 			if (prot & VM_PROT_NOSYNC)
 				pmap_remove_pv_pte(pte_pv, pt_pv, NULL);
 			else
 				pmap_remove_pv_pte(pte_pv, pt_pv, &info);
 			if (pte_pv->pv_m)
-				pmap_remove_pv_page(pte_pv, 0);
+				pmap_remove_pv_page(pte_pv);
 		} else if (prot & VM_PROT_NOSYNC) {
-			*ptep = 0;
+			/* leave wire count on PT page intact */
+			(void)pte_load_clear(ptep);
 			cpu_invlpg((void *)va);
 			atomic_add_long(&pmap->pm_stats.resident_count, -1);
 		} else {
+			/* leave wire count on PT page intact */
 			pmap_inval_interlock(&info, pmap, va);
-			*ptep = 0;
+			(void)pte_load_clear(ptep);
 			pmap_inval_deinterlock(&info, pmap);
 			atomic_add_long(&pmap->pm_stats.resident_count, -1);
 		}
 		KKASSERT(*ptep == 0);
 	}
 
-	/*
-	 * Enter on the PV list if part of our managed memory.  Wiring is
-	 * handled automatically.
-	 */
 	if (pte_pv) {
+		/*
+		 * Enter on the PV list if part of our managed memory.
+		 * Wiring of the PT page is already handled.
+		 */
 		KKASSERT(pte_pv->pv_m == NULL);
 		vm_page_spin_lock(m);
 		pte_pv->pv_m = m;
@@ -3166,59 +3119,47 @@ pmap_enter(pmap_t pmap, vm_offset_t va, vm_page_t m, vm_prot_t prot,
 		*/
 		vm_page_flag_set(m, PG_MAPPED);
 		vm_page_spin_unlock(m);
-		pa |= PG_MANAGED;
 	} else if (pt_pv && opa == 0) {
+		/*
+		 * We have to adjust the wire count on the PT page ourselves
+		 * for unmanaged entries.  If opa was non-zero we retained
+		 * the existing wire count from the removal.
+		 */
 		vm_page_wire_quick(pt_pv->pv_m);
 	}
 
 	/*
-	 * Increment counters
+	 * Ok, for UVM (pt_pv != NULL) we don't need to interlock or
+	 * invalidate anything, the TLB won't have any stale entries to
+	 * remove.
+	 *
+	 * For KVM there appear to still be issues.  Theoretically we
+	 * should be able to scrap the interlocks entirely but we
+	 * get crashes.
 	 */
+	if ((prot & VM_PROT_NOSYNC) == 0 && pt_pv == NULL)
+		pmap_inval_interlock(&info, pmap, va);
+	*(volatile pt_entry_t *)ptep = newpte;
+
+	if ((prot & VM_PROT_NOSYNC) == 0 && pt_pv == NULL)
+		pmap_inval_deinterlock(&info, pmap);
+	else if (pt_pv == NULL)
+		cpu_invlpg((void *)va);
+
 	if (wired)
 		atomic_add_long(&pmap->pm_stats.wired_count, 1);
-
-validate:
-	/*
-	 * Now validate mapping with desired protection/wiring.
-	 */
-	newpte = (pt_entry_t)(pa | pte_prot(pmap, prot) | PG_V);
-
-	if (wired)
-		newpte |= PG_W;
-	if (va < VM_MAX_USER_ADDRESS)
-		newpte |= PG_U;
-	if (pmap == &kernel_pmap)
-		newpte |= pgeflag;
+	if (newpte & PG_RW)
+		vm_page_flag_set(m, PG_WRITEABLE);
+	if (pte_pv == NULL)
+		atomic_add_long(&pmap->pm_stats.resident_count, 1);
 
 	/*
-	 * If the mapping or permission bits are different, we need
-	 * to update the pte.
-	 *
-	 * We do not have to interlock pte insertions as no other
-	 * cpu will have a TLB entry.
+	 * Cleanup
 	 */
-	if ((origpte & ~(PG_M|PG_A)) != newpte) {
-#if 0
-		if ((prot & VM_PROT_NOSYNC) == 0)
-			pmap_inval_interlock(&info, pmap, va);
-#endif
-		*ptep = newpte | PG_A;
-		cpu_invlpg((void *)va);
-#if 0
-		if (prot & VM_PROT_NOSYNC)
-			cpu_invlpg((void *)va);
-		else
-			pmap_inval_deinterlock(&info, pmap);
-#endif
-		if (newpte & PG_RW)
-			vm_page_flag_set(m, PG_WRITEABLE);
-		if (pte_pv == NULL)
-			atomic_add_long(&pmap->pm_stats.resident_count, 1);
-	}
-
-	KKASSERT((newpte & PG_MANAGED) == 0 || (m->flags & PG_MAPPED));
-	if ((prot & VM_PROT_NOSYNC) == 0)
+	if ((prot & VM_PROT_NOSYNC) == 0 || pte_pv == NULL)
 		pmap_inval_done(&info);
+done:
+	KKASSERT((newpte & PG_MANAGED) == 0 || (m->flags & PG_MAPPED));
 
 	/*
 	 * Cleanup the pv entry, allowing other accessors.
@@ -3318,7 +3259,7 @@ pmap_object_init_pt(pmap_t pmap, vm_offset_t addr, vm_prot_t prot,
 	info.addr = addr;
 	info.pmap = pmap;
 
-	vm_object_hold(object);
+	vm_object_hold_shared(object);
 	vm_page_rb_tree_RB_SCAN(&object->rb_memq, rb_vm_page_scancmp,
 				pmap_object_init_pt_callback, &info);
 	vm_object_drop(object);
@@ -3339,6 +3280,13 @@ pmap_object_init_pt_callback(vm_page_t p, void *data)
 		vmstats.v_free_count < vmstats.v_free_reserved) {
 		    return(-1);
 	}
+
+	/*
+	 * Ignore list markers and ignore pages we cannot instantly
+	 * busy (while holding the object token).
+	 */
+	if (p->flags & PG_MARKER)
+		return 0;
 	if (vm_page_busy_try(p, TRUE))
 		return 0;
 	if (((p->valid & VM_PAGE_BITS_ALL) == VM_PAGE_BITS_ALL) &&
@@ -3360,20 +3308,22 @@ pmap_object_init_pt_callback(vm_page_t p, void *data)
  *
  * Returns FALSE if it would be non-trivial or if a pte is already loaded
  * into the slot.
+ *
+ * XXX This is safe only because page table pages are not freed.
  */
 int
 pmap_prefault_ok(pmap_t pmap, vm_offset_t addr)
 {
 	pt_entry_t *pte;
 
-	spin_lock(&pmap->pm_spin);
+	/*spin_lock(&pmap->pm_spin);*/
 	if ((pte = pmap_pte(pmap, addr)) != NULL) {
 		if (*pte & PG_V) {
-			spin_unlock(&pmap->pm_spin);
+			/*spin_unlock(&pmap->pm_spin);*/
 			return FALSE;
 		}
 	}
-	spin_unlock(&pmap->pm_spin);
+	/*spin_unlock(&pmap->pm_spin);*/
 	return TRUE;
 }
 
@@ -3597,7 +3547,8 @@ pmap_testbit(vm_page_t m, int bit)
 
 #if defined(PMAP_DIAGNOSTIC)
 		if (pv->pv_pmap == NULL) {
-			kprintf("Null pmap (tb) at va: 0x%lx\n", pv->pv_va);
+			kprintf("Null pmap (tb) at pindex: %"PRIu64"\n",
+			    pv->pv_pindex);
 			continue;
 		}
 #endif
@@ -3612,7 +3563,8 @@ pmap_testbit(vm_page_t m, int bit)
 }
 
 /*
- * This routine is used to modify bits in ptes
+ * This routine is used to modify bits in ptes.  Only one bit should be
+ * specified.  PG_RW requires special handling.
  *
  * Caller must NOT hold any spin locks
  */
@@ -3624,7 +3576,6 @@ pmap_clearbit(vm_page_t m, int bit)
 	pv_entry_t pv;
 	pt_entry_t *pte;
 	pt_entry_t pbits;
-	vm_pindex_t save_pindex;
 	pmap_t save_pmap;
 
 	if (bit == PG_RW)
@@ -3633,98 +3584,104 @@ pmap_clearbit(vm_page_t m, int bit)
 		return;
 	}
 
-	pmap_inval_init(&info);
-
 	/*
+	 * PG_M or PG_A case
+	 *
 	 * Loop over all current mappings setting/clearing as appropos If
 	 * setting RO do we need to clear the VAC?
+	 *
+	 * NOTE: When clearing PG_M we could also (not implemented) drop
+	 *	 through to the PG_RW code and clear PG_RW too, forcing
+	 *	 a fault on write to redetect PG_M for virtual kernels, but
+	 *	 it isn't necessary since virtual kernels invalidate the
+	 *	 pte when they clear the VPTE_M bit in their virtual page
+	 *	 tables.
+	 *
+	 * NOTE: Does not re-dirty the page when clearing only PG_M.
 	 */
-	vm_page_spin_lock(m);
+	if ((bit & PG_RW) == 0) {
+		vm_page_spin_lock(m);
+		TAILQ_FOREACH(pv, &m->md.pv_list, pv_list) {
+	#if defined(PMAP_DIAGNOSTIC)
+			if (pv->pv_pmap == NULL) {
+				kprintf("Null pmap (cb) at pindex: %"PRIu64"\n",
+				    pv->pv_pindex);
+				continue;
+			}
+	#endif
+			pte = pmap_pte_quick(pv->pv_pmap,
+					     pv->pv_pindex << PAGE_SHIFT);
+			pbits = *pte;
+			if (pbits & bit)
+				atomic_clear_long(pte, bit);
+		}
+		vm_page_spin_unlock(m);
+		return;
+	}
+
+	/*
+	 * Clear PG_RW.  Also clears PG_M and marks the page dirty if PG_M
+	 * was set.
+	 */
+	pmap_inval_init(&info);
+
 restart:
+	vm_page_spin_lock(m);
 	TAILQ_FOREACH(pv, &m->md.pv_list, pv_list) {
 		/*
 		 * don't write protect pager mappings
 		 */
-		if (bit == PG_RW) {
-			if (!pmap_track_modified(pv->pv_pindex))
-				continue;
-		}
+		if (!pmap_track_modified(pv->pv_pindex))
+			continue;
 
 #if defined(PMAP_DIAGNOSTIC)
 		if (pv->pv_pmap == NULL) {
-			kprintf("Null pmap (cb) at va: 0x%lx\n", pv->pv_va);
+			kprintf("Null pmap (cb) at pindex: %"PRIu64"\n",
+			    pv->pv_pindex);
 			continue;
 		}
 #endif
+		/*
+		 * Skip pages which do not have PG_RW set.
+		 */
+		pte = pmap_pte_quick(pv->pv_pmap, pv->pv_pindex << PAGE_SHIFT);
+		if ((*pte & PG_RW) == 0)
+			continue;
 
 		/*
-		 * Careful here.  We can use a locked bus instruction to
-		 * clear PG_A or PG_M safely but we need to synchronize
-		 * with the target cpus when we mess with PG_RW.
-		 *
-		 * We do not have to force synchronization when clearing
-		 * PG_M even for PTEs generated via virtual memory maps,
-		 * because the virtual kernel will invalidate the pmap
-		 * entry when/if it needs to resynchronize the Modify bit.
+		 * Lock the PV
 		 */
-		if (bit & PG_RW) {
-			save_pmap = pv->pv_pmap;
-			save_pindex = pv->pv_pindex;
-			pv_hold(pv);
+		if (pv_hold_try(pv) == 0) {
 			vm_page_spin_unlock(m);
-			pmap_inval_interlock(&info, save_pmap,
-				     (vm_offset_t)save_pindex << PAGE_SHIFT);
-			vm_page_spin_lock(m);
-			if (pv->pv_pmap == NULL) {
-				pv_drop(pv);
-				goto restart;
-			}
-			pv_drop(pv);
+			pv_lock(pv);	/* held, now do a blocking lock */
+			pv_put(pv);	/* and release */
+			goto restart;	/* anything could have happened */
 		}
-		pte = pmap_pte_quick(pv->pv_pmap, pv->pv_pindex << PAGE_SHIFT);
-again:
-		pbits = *pte;
-		if (pbits & bit) {
-			if (bit == PG_RW) {
-				if (pbits & PG_M) {
-					vm_page_dirty(m);
-					atomic_clear_long(pte, PG_M|PG_RW);
-				} else {
-					/*
-					 * The cpu may be trying to set PG_M
-					 * simultaniously with our clearing
-					 * of PG_RW.
-					 */
-					if (!atomic_cmpset_long(pte, pbits,
-							       pbits & ~PG_RW))
-						goto again;
-				}
-			} else if (bit == PG_M) {
-				/*
-				 * We could also clear PG_RW here to force
-				 * a fault on write to redetect PG_M for
-				 * virtual kernels, but it isn't necessary
-				 * since virtual kernels invalidate the pte 
-				 * when they clear the VPTE_M bit in their
-				 * virtual page tables.
-				 */
-				atomic_clear_long(pte, PG_M);
-			} else {
-				atomic_clear_long(pte, bit);
+
+		save_pmap = pv->pv_pmap;
+		vm_page_spin_unlock(m);
+		pmap_inval_interlock(&info, save_pmap,
+				     (vm_offset_t)pv->pv_pindex << PAGE_SHIFT);
+		KKASSERT(pv->pv_pmap == save_pmap);
+		for (;;) {
+			pbits = *pte;
+			cpu_ccfence();
+			if (atomic_cmpset_long(pte, pbits,
+					       pbits & ~(PG_RW|PG_M))) {
+				break;
 			}
 		}
-		if (bit & PG_RW) {
-			save_pmap = pv->pv_pmap;
-			pv_hold(pv);
-			vm_page_spin_unlock(m);
-			pmap_inval_deinterlock(&info, save_pmap);
-			vm_page_spin_lock(m);
-			if (pv->pv_pmap == NULL) {
-				pv_drop(pv);
-				goto restart;
-			}
-			pv_drop(pv);
-		}
+		pmap_inval_deinterlock(&info, save_pmap);
+		vm_page_spin_lock(m);
+
+		/*
+		 * If PG_M was found to be set while we were clearing PG_RW
+		 * we also clear PG_M (done above) and mark the page dirty.
+		 * Callers expect this behavior.
+		 */
+		if (pbits & PG_M)
+			vm_page_dirty(m);
+		pv_put(pv);
 	}
 	vm_page_spin_unlock(m);
 	pmap_inval_done(&info);
@@ -4081,6 +4038,8 @@ pmap_setlwpvm(struct lwp *lp, struct vmspace *newvm)
  * this because the thread making the modifications has already set up its
  * SMP synchronization mask.
  *
+ * This function cannot sleep!
+ *
  * No requirements.
  */
 void
@@ -4090,6 +4049,7 @@ pmap_interlock_wait(struct vmspace *vm)
 
 	if (pmap->pm_active & CPUMASK_LOCK) {
 		crit_enter();
+		KKASSERT(curthread->td_critcount >= 2);
 		DEBUG_PUSH_INFO("pmap_interlock_wait");
 		while (pmap->pm_active & CPUMASK_LOCK) {
 			cpu_ccfence();

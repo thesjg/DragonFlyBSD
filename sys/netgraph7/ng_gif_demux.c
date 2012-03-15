@@ -63,7 +63,6 @@
  * OF SUCH DAMAGE.
  *
  * $FreeBSD: src/sys/netgraph/ng_gif_demux.c,v 1.10 2005/01/07 01:45:39 imp Exp $
- * $DragonFly: src/sys/netgraph7/ng_gif_demux.c,v 1.2 2008/06/26 23:05:35 dillon Exp $
  */
 
 /*
@@ -107,12 +106,11 @@ typedef const struct iffam *iffam_p;
 const static struct iffam gFamilies[] = {
 	{ AF_INET,	NG_GIF_DEMUX_HOOK_INET	},
 	{ AF_INET6,	NG_GIF_DEMUX_HOOK_INET6	},
-	{ AF_APPLETALK,	NG_GIF_DEMUX_HOOK_ATALK	},
 	{ AF_IPX,	NG_GIF_DEMUX_HOOK_IPX	},
 	{ AF_ATM,	NG_GIF_DEMUX_HOOK_ATM	},
 	{ AF_NATM,	NG_GIF_DEMUX_HOOK_NATM	},
 };
-#define NUM_FAMILIES		(sizeof(gFamilies) / sizeof(*gFamilies))
+#define NUM_FAMILIES		NELEM(gFamilies)
 
 /* Per-node private data */
 struct ng_gif_demux_private {
@@ -234,8 +232,8 @@ ng_gif_demux_constructor(node_p node)
 	priv_p priv;
 
 	/* Allocate and initialize private info */
-	MALLOC(priv, priv_p, sizeof(*priv), M_NETGRAPH_GIF_DEMUX,
-	    M_WAITOK | M_NULLOK | M_ZERO);
+	priv = kmalloc(sizeof(*priv), M_NETGRAPH_GIF_DEMUX,
+		       M_WAITOK | M_NULLOK | M_ZERO);
 	if (priv == NULL)
 		return (ENOMEM);
 	priv->node = node;
@@ -372,7 +370,7 @@ ng_gif_demux_shutdown(node_p node)
 {
 	const priv_p priv = NG_NODE_PRIVATE(node);
 
-	FREE(priv, M_NETGRAPH_GIF_DEMUX);
+	kfree(priv, M_NETGRAPH_GIF_DEMUX);
 	NG_NODE_SET_PRIVATE(node, NULL);
 	NG_NODE_UNREF(node);
 	return (0);

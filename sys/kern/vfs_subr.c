@@ -1251,10 +1251,6 @@ vclean_vxlocked(struct vnode *vp, int flags)
 	}
 
 	if (object != NULL) {
-		/*
-		 * Use vm_object_lock() rather than vm_object_hold to avoid
-		 * creating an extra (self-)hold on the object.
-		 */
 		if (object->ref_count == 0) {
 			if ((object->flags & OBJ_DEAD) == 0)
 				vm_object_terminate(object);
@@ -1329,16 +1325,25 @@ vrevoke(struct vnode *vp, struct ucred *cred)
 	reference_dev(dev);
 	lwkt_gettoken(&spechash_token);
 
+restart:
 	vqn = SLIST_FIRST(&dev->si_hlist);
 	if (vqn)
-		vref(vqn);
+		vhold(vqn);
 	while ((vq = vqn) != NULL) {
-		vqn = SLIST_NEXT(vqn, v_cdevnext);
+		if (sysref_isactive(&vq->v_sysref)) {
+			vref(vq);
+			fdrevoke(vq, DTYPE_VNODE, cred);
+			/*v_release_rdev(vq);*/
+			vrele(vq);
+			if (vq->v_rdev != dev) {
+				vdrop(vq);
+				goto restart;
+			}
+		}
+		vqn = SLIST_NEXT(vq, v_cdevnext);
 		if (vqn)
-			vref(vqn);
-		fdrevoke(vq, DTYPE_VNODE, cred);
-		/*v_release_rdev(vq);*/
-		vrele(vq);
+			vhold(vqn);
+		vdrop(vq);
 	}
 	lwkt_reltoken(&spechash_token);
 	dev_drevoke(dev);
@@ -1411,8 +1416,6 @@ vgone_vxlocked(struct vnode *vp)
 	 */
 	KKASSERT(vp->v_lock.lk_exclusivecount == 1);
 
-	get_mplock();
-
 	/*
 	 * Clean out the filesystem specific data and set the VRECLAIMED
 	 * bit.  Also deactivate the vnode if necessary. 
@@ -1441,7 +1444,6 @@ vgone_vxlocked(struct vnode *vp)
 	 * Set us to VBAD
 	 */
 	vp->v_type = VBAD;
-	rel_mplock();
 }
 
 /*
@@ -2054,7 +2056,7 @@ vfs_setpublicfs(struct mount *mp, struct netexport *nep,
 		if (nfs_pub.np_valid) {
 			nfs_pub.np_valid = 0;
 			if (nfs_pub.np_index != NULL) {
-				FREE(nfs_pub.np_index, M_TEMP);
+				kfree(nfs_pub.np_index, M_TEMP);
 				nfs_pub.np_index = NULL;
 			}
 		}
@@ -2090,8 +2092,7 @@ vfs_setpublicfs(struct mount *mp, struct netexport *nep,
 		error = vn_get_namelen(rvp, &namelen);
 		if (error)
 			return (error);
-		MALLOC(nfs_pub.np_index, char *, namelen, M_TEMP,
-		    M_WAITOK);
+		nfs_pub.np_index = kmalloc(namelen, M_TEMP, M_WAITOK);
 		error = copyinstr(argp->ex_indexfile, nfs_pub.np_index,
 		    namelen, NULL);
 		if (!error) {
@@ -2106,7 +2107,7 @@ vfs_setpublicfs(struct mount *mp, struct netexport *nep,
 			}
 		}
 		if (error) {
-			FREE(nfs_pub.np_index, M_TEMP);
+			kfree(nfs_pub.np_index, M_TEMP);
 			return (error);
 		}
 	}
@@ -2183,8 +2184,9 @@ vfs_msync(struct mount *mp, int flags)
 	vmsc_flags = VMSC_GETVP;
 	if (flags != MNT_WAIT)
 		vmsc_flags |= VMSC_NOWAIT;
-	vmntvnodescan(mp, vmsc_flags, vfs_msync_scan1, vfs_msync_scan2,
-			(void *)(intptr_t)flags);
+	vmntvnodescan(mp, vmsc_flags,
+		      vfs_msync_scan1, vfs_msync_scan2,
+		      (void *)(intptr_t)flags);
 }
 
 /*

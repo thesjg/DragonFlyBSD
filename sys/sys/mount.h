@@ -39,6 +39,7 @@
 #define _SYS_MOUNT_H_
 
 #include <sys/ucred.h>
+#include <sys/tree.h>
 
 #ifndef _KERNEL
 #if !defined(_POSIX_C_SOURCE) && !defined(_XOPEN_SOURCE)
@@ -62,6 +63,7 @@
 #ifndef _SYS_THREAD_H_
 #include <sys/thread.h>
 #endif
+#include <sys/vfs_quota.h>
 #endif
 
 struct thread;
@@ -142,6 +144,40 @@ struct bio_ops {
 	int	(*io_checkwrite) (struct buf *);
 };
 
+#endif
+
+/*
+ * storage accounting
+ *
+ * uids and gids often come in contiguous blocks; use a small linear
+ * array as the basic in-memory accounting allocation unit
+ */
+#define ACCT_CHUNK_BITS	5
+#define ACCT_CHUNK_NIDS	(1<<ACCT_CHUNK_BITS)
+#define ACCT_CHUNK_MASK	(ACCT_CHUNK_NIDS - 1)
+
+struct ac_unode {
+	RB_ENTRY(ac_unode)	rb_entry;
+	uid_t			left_bits;
+	uint64_t		uid_chunk[ACCT_CHUNK_NIDS];
+};
+
+struct ac_gnode {
+	RB_ENTRY(ac_gnode)	rb_entry;
+	gid_t			left_bits;
+	uint64_t		gid_chunk[ACCT_CHUNK_NIDS];
+};
+
+#if defined(_KERNEL) || defined(_KERNEL_STRUCTURES)
+
+struct vfs_acct {
+	RB_HEAD(ac_utree,ac_unode)	ac_uroot;
+	RB_HEAD(ac_gtree,ac_gnode)	ac_groot;
+	uint64_t			ac_bytes;	/* total bytes used */
+	struct spinlock			ac_spin;	/* protective spinlock */
+};
+
+
 /*
  * Structure per mounted file system.  Each mounted file system has an
  * array of operations and an instance record.  The file systems are
@@ -208,6 +244,8 @@ struct mount {
 	int16_t		mnt_streamid;		/* last streamid */
 
 	struct bio_ops	*mnt_bioops;		/* BIO ops (hammer, softupd) */
+
+	struct vfs_acct	mnt_acct;		/* vfs space accounting */
 };
 
 #endif /* _KERNEL || _KERNEL_STRUCTURES */
@@ -249,6 +287,7 @@ struct mount {
 #define	MNT_QUOTA	0x00002000	/* quotas are enabled on filesystem */
 #define	MNT_ROOTFS	0x00004000	/* identifies the root filesystem */
 #define	MNT_USER	0x00008000	/* mounted by a user */
+#define	MNT_ACCOUNTING	0x00020000	/* accounting is enabled on filesystem */
 #define	MNT_IGNORE	0x00800000	/* do not show entry in df */
 
 /*
@@ -263,7 +302,8 @@ struct mount {
 			MNT_LOCAL	| MNT_USER	| MNT_QUOTA	| \
 			MNT_ROOTFS	| MNT_NOATIME	| MNT_NOCLUSTERR| \
 			MNT_NOCLUSTERW	| MNT_SUIDDIR	| MNT_SOFTDEP	| \
-			MNT_IGNORE	| MNT_NOSYMFOLLOW | MNT_EXPUBLIC | MNT_TRIM)
+			MNT_IGNORE	| MNT_NOSYMFOLLOW | MNT_EXPUBLIC| \
+			MNT_ACCOUNTING  | MNT_TRIM)
 /*
  * External filesystem command modifier flags.
  * Unmount can use the MNT_FORCE flag.
@@ -501,7 +541,9 @@ typedef int vfs_uninit_t(struct vfsconf *);
 typedef int vfs_extattrctl_t(struct mount *mp, int cmd, struct vnode *vp,
 		    int attrnamespace, const char *attrname,
 		    struct ucred *cred);
-typedef int vfs_account_t(struct mount *mp,
+typedef int vfs_acinit_t(struct mount *mp);
+typedef int vfs_acdone_t(struct mount *mp);
+typedef void vfs_account_t(struct mount *mp,
 			uid_t uid, gid_t gid, int64_t delta);
 
 int vfs_mount(struct mount *mp, char *path, caddr_t data, struct ucred *cred);
@@ -543,6 +585,8 @@ struct vfsops {
 	vfs_uninit_t 	*vfs_uninit;
 	vfs_extattrctl_t *vfs_extattrctl;
 	vfs_statvfs_t 	*vfs_statvfs;
+	vfs_acinit_t	*vfs_acinit;
+	vfs_acdone_t	*vfs_acdone;
 	vfs_account_t	*vfs_account;
 };
 
@@ -572,6 +616,9 @@ struct vfsops {
 	vfs_checkexp(MP, NAM, EXFLG, CRED)
 #define VFS_EXTATTRCTL(MP, C, FVP, NS, N, CRED)	\
 	vfs_extattrctl(MP, C, FVP, NS, N, CRED)
+#define VFS_ACCOUNT(MP, U, G, D) \
+	if (MP->mnt_op->vfs_account != NULL) \
+		MP->mnt_op->vfs_account(MP, U, G, D);
 
 #endif
 
@@ -676,7 +723,10 @@ vfs_vptofh_t 	vfs_stdvptofh;
 vfs_init_t  	vfs_stdinit;
 vfs_uninit_t 	vfs_stduninit;
 vfs_extattrctl_t vfs_stdextattrctl;
+vfs_acinit_t	vfs_stdac_init;
+vfs_acdone_t	vfs_stdac_done;
 vfs_account_t	vfs_stdaccount;
+vfs_account_t	vfs_noaccount;
 
 struct vop_access_args;
 int vop_helper_access(struct vop_access_args *ap, uid_t ino_uid, gid_t ino_gid,

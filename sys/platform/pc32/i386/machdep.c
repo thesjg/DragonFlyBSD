@@ -40,7 +40,6 @@
 
 #include "use_npx.h"
 #include "use_isa.h"
-#include "opt_atalk.h"
 #include "opt_compat.h"
 #include "opt_cpu.h"
 #include "opt_ddb.h"
@@ -362,8 +361,9 @@ again:
 #endif
 
 	kprintf("avail memory = %ju (%ju MB)\n",
-		(intmax_t)ptoa(vmstats.v_free_count),
-		(intmax_t)ptoa(vmstats.v_free_count) / 1024 / 1024);
+		(intmax_t)ptoa(vmstats.v_free_count + vmstats.v_dma_pages),
+		(intmax_t)ptoa(vmstats.v_free_count + vmstats.v_dma_pages) /
+		1024 / 1024);
 
 	/*
 	 * Set up buffers, so they can be used to read disk labels.
@@ -424,12 +424,8 @@ sendsig(sig_t catcher, int sig, sigset_t *mask, u_long code)
 	/* make the size of the saved context visible to userland */
 	sf.sf_uc.uc_mcontext.mc_len = sizeof(sf.sf_uc.uc_mcontext);
 
-	/* save mailbox pending state for syscall interlock semantics */
-	if (p->p_flag & P_MAILBOX)
-		sf.sf_uc.uc_mcontext.mc_xflags |= PGEX_MAILBOX;
-
 	/* Allocate and validate space for the signal handler context. */
-        if ((lp->lwp_flag & LWP_ALTSTACK) != 0 && !oonstack &&
+        if ((lp->lwp_flags & LWP_ALTSTACK) != 0 && !oonstack &&
 	    SIGISMEMBER(psp->ps_sigonstack, sig)) {
 		sfp = (struct sigframe *)(lp->lwp_sigstk.ss_sp +
 		    lp->lwp_sigstk.ss_size - sizeof(struct sigframe));
@@ -603,7 +599,6 @@ int
 sys_sigreturn(struct sigreturn_args *uap)
 {
 	struct lwp *lp = curthread->td_lwp;
-	struct proc *p = lp->lwp_proc;
 	struct trapframe *regs;
 	ucontext_t uc;
 	ucontext_t *ucp;
@@ -698,13 +693,6 @@ sys_sigreturn(struct sigreturn_args *uap)
 	 */
 	crit_enter();
 	npxpop(&ucp->uc_mcontext);
-
-	/*
-	 * Merge saved signal mailbox pending flag to maintain interlock
-	 * semantics against system calls.
-	 */
-	if (ucp->uc_mcontext.mc_xflags & PGEX_MAILBOX)
-		p->p_flag |= P_MAILBOX;
 
 	if (ucp->uc_mcontext.mc_onstack & 1)
 		lp->lwp_sigstk.ss_flags |= SS_ONSTACK;
@@ -2025,7 +2013,7 @@ init386(int first)
 	 */
 	ldt_segs[LUCODE_SEL].ssd_limit = atop(VM_MAX_USER_ADDRESS - 1);
 	ldt_segs[LUDATA_SEL].ssd_limit = atop(VM_MAX_USER_ADDRESS - 1);
-	for (x = 0; x < sizeof ldt_segs / sizeof ldt_segs[0]; x++)
+	for (x = 0; x < NELEM(ldt_segs); x++)
 		ssdtosd(&ldt_segs[x], &ldt[x].sd);
 
 	_default_ldt = GSEL(GLDT_SEL, SEL_KPL);
@@ -2097,9 +2085,7 @@ init386(int first)
 	 * SHOULD be after elcr_probe()
 	 */
 	MachIntrABI_ICU.initmap();
-#ifdef SMP
 	MachIntrABI_IOAPIC.initmap();
-#endif
 
 #ifdef DDB
 	kdb_init();
@@ -2273,7 +2259,8 @@ fill_regs(struct lwp *lp, struct reg *regs)
 {
 	struct trapframe *tp;
 
-	tp = lp->lwp_md.md_regs;
+	if ((tp = lp->lwp_md.md_regs) == NULL)
+		return EINVAL;
 	regs->r_gs = tp->tf_gs;
 	regs->r_fs = tp->tf_fs;
 	regs->r_es = tp->tf_es;
@@ -2370,6 +2357,8 @@ set_fpregs_xmm(struct save87 *sv_87, struct savexmm *sv_xmm)
 int
 fill_fpregs(struct lwp *lp, struct fpreg *fpregs)
 {
+	if (lp->lwp_thread == NULL || lp->lwp_thread->td_pcb == NULL)
+		return EINVAL;
 #ifndef CPU_DISABLE_SSE
 	if (cpu_fxsr) {
 		fill_fpregs_xmm(&lp->lwp_thread->td_pcb->pcb_save.sv_xmm,
@@ -2398,6 +2387,8 @@ set_fpregs(struct lwp *lp, struct fpreg *fpregs)
 int
 fill_dbregs(struct lwp *lp, struct dbreg *dbregs)
 {
+	struct pcb *pcb;
+
         if (lp == NULL) {
                 dbregs->dr0 = rdr0();
                 dbregs->dr1 = rdr1();
@@ -2407,19 +2398,18 @@ fill_dbregs(struct lwp *lp, struct dbreg *dbregs)
                 dbregs->dr5 = rdr5();
                 dbregs->dr6 = rdr6();
                 dbregs->dr7 = rdr7();
-        } else {
-		struct pcb *pcb;
-
-                pcb = lp->lwp_thread->td_pcb;
-                dbregs->dr0 = pcb->pcb_dr0;
-                dbregs->dr1 = pcb->pcb_dr1;
-                dbregs->dr2 = pcb->pcb_dr2;
-                dbregs->dr3 = pcb->pcb_dr3;
-                dbregs->dr4 = 0;
-                dbregs->dr5 = 0;
-                dbregs->dr6 = pcb->pcb_dr6;
-                dbregs->dr7 = pcb->pcb_dr7;
-        }
+		return (0);
+	}
+	if (lp->lwp_thread == NULL || (pcb = lp->lwp_thread->td_pcb) == NULL)
+		return EINVAL;
+	dbregs->dr0 = pcb->pcb_dr0;
+	dbregs->dr1 = pcb->pcb_dr1;
+	dbregs->dr2 = pcb->pcb_dr2;
+	dbregs->dr3 = pcb->pcb_dr3;
+	dbregs->dr4 = 0;
+	dbregs->dr5 = 0;
+	dbregs->dr6 = pcb->pcb_dr6;
+	dbregs->dr7 = pcb->pcb_dr7;
 	return (0);
 }
 

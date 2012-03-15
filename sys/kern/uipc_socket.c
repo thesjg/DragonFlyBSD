@@ -91,6 +91,7 @@
 #include <sys/jail.h>
 #include <vm/vm_zone.h>
 #include <vm/pmap.h>
+#include <net/netmsg2.h>
 
 #include <sys/thread2.h>
 #include <sys/socketvar2.h>
@@ -98,6 +99,8 @@
 #include <machine/limits.h>
 
 extern int tcp_sosnd_agglim;
+extern int tcp_sosnd_async;
+extern int udp_sosnd_async;
 
 #ifdef INET
 static int	 do_setopt_accept_filter(struct socket *so, struct sockopt *sopt);
@@ -110,6 +113,10 @@ static boolean_t	so_filter_write(struct kev_filter_note *fn, long hint,
 static boolean_t	so_filter_listen(struct kev_filter_note *fn, long hint,
     caddr_t hook);
 
+static void	sodiscard(struct socket *so);
+static int	soclose_sync(struct socket *so, int fflag);
+static void	soclose_fast(struct socket *so);
+
 MALLOC_DEFINE(M_SOCKET, "socket", "socket struct");
 MALLOC_DEFINE(M_SONAME, "soname", "socket name");
 MALLOC_DEFINE(M_PCB, "pcb", "protocol control block");
@@ -118,6 +125,14 @@ MALLOC_DEFINE(M_PCB, "pcb", "protocol control block");
 static int somaxconn = SOMAXCONN;
 SYSCTL_INT(_kern_ipc, KIPC_SOMAXCONN, somaxconn, CTLFLAG_RW,
     &somaxconn, 0, "Maximum pending socket connection queue size");
+
+static int use_soclose_fast = 1;
+SYSCTL_INT(_kern_ipc, OID_AUTO, soclose_fast, CTLFLAG_RW,
+    &use_soclose_fast, 0, "Fast socket close");
+
+int use_soaccept_pred_fast = 1;
+SYSCTL_INT(_kern_ipc, OID_AUTO, soaccept_pred_fast, CTLFLAG_RW,
+    &use_soaccept_pred_fast, 0, "Fast socket accept predication");
 
 /*
  * Socket operation routines.
@@ -259,6 +274,8 @@ sodealloc(struct socket *so)
 		do_setopt_accept_filter(so, NULL);
 #endif /* INET */
 	crfree(so->so_cred);
+	if (so->so_faddr != NULL)
+		kfree(so->so_faddr, M_SONAME);
 	kfree(so, M_SOCKET);
 }
 
@@ -376,9 +393,54 @@ sofree(struct socket *so)
 int
 soclose(struct socket *so, int fflag)
 {
-	int error = 0;
+	int error;
 
 	funsetown(&so->so_sigio);
+	if (!use_soclose_fast ||
+	    (so->so_proto->pr_flags & PR_SYNC_PORT) ||
+	    (so->so_options & SO_LINGER)) {
+		error = soclose_sync(so, fflag);
+	} else {
+		soclose_fast(so);
+		error = 0;
+	}
+	return error;
+}
+
+static void
+sodiscard(struct socket *so)
+{
+	lwkt_getpooltoken(so);
+	if (so->so_options & SO_ACCEPTCONN) {
+		struct socket *sp;
+
+		while ((sp = TAILQ_FIRST(&so->so_incomp)) != NULL) {
+			TAILQ_REMOVE(&so->so_incomp, sp, so_list);
+			soclrstate(sp, SS_INCOMP);
+			sp->so_head = NULL;
+			so->so_incqlen--;
+			soaborta(sp);
+		}
+		while ((sp = TAILQ_FIRST(&so->so_comp)) != NULL) {
+			TAILQ_REMOVE(&so->so_comp, sp, so_list);
+			soclrstate(sp, SS_COMP);
+			sp->so_head = NULL;
+			so->so_qlen--;
+			soaborta(sp);
+		}
+	}
+	lwkt_relpooltoken(so);
+
+	if (so->so_state & SS_NOFDREF)
+		panic("soclose: NOFDREF");
+	sosetstate(so, SS_NOFDREF);	/* take ref */
+}
+
+static int
+soclose_sync(struct socket *so, int fflag)
+{
+	int error = 0;
+
 	if (so->so_pcb == NULL)
 		goto discard;
 	if (so->so_state & SS_ISCONNECTED) {
@@ -408,31 +470,97 @@ drop:
 			error = error2;
 	}
 discard:
-	lwkt_getpooltoken(so);
-	if (so->so_options & SO_ACCEPTCONN) {
-		struct socket *sp;
+	sodiscard(so);
+	so_pru_sync(so);	/* unpend async sending */
+	sofree(so);		/* dispose of ref */
 
-		while ((sp = TAILQ_FIRST(&so->so_incomp)) != NULL) {
-			TAILQ_REMOVE(&so->so_incomp, sp, so_list);
-			soclrstate(sp, SS_INCOMP);
-			sp->so_head = NULL;
-			so->so_incqlen--;
-			soaborta(sp);
-		}
-		while ((sp = TAILQ_FIRST(&so->so_comp)) != NULL) {
-			TAILQ_REMOVE(&so->so_comp, sp, so_list);
-			soclrstate(sp, SS_COMP);
-			sp->so_head = NULL;
-			so->so_qlen--;
-			soaborta(sp);
-		}
-	}
-	lwkt_relpooltoken(so);
-	if (so->so_state & SS_NOFDREF)
-		panic("soclose: NOFDREF");
-	sosetstate(so, SS_NOFDREF);	/* take ref */
-	sofree(so);			/* dispose of ref */
 	return (error);
+}
+
+static void
+soclose_sofree_async_handler(netmsg_t msg)
+{
+	sofree(msg->base.nm_so);
+}
+
+static void
+soclose_sofree_async(struct socket *so)
+{
+	struct netmsg_base *base = &so->so_clomsg;
+
+	netmsg_init(base, so, &netisr_apanic_rport, 0,
+	    soclose_sofree_async_handler);
+	lwkt_sendmsg(so->so_port, &base->lmsg);
+}
+
+static void
+soclose_disconn_async_handler(netmsg_t msg)
+{
+	struct socket *so = msg->base.nm_so;
+
+	if ((so->so_state & SS_ISCONNECTED) &&
+	    (so->so_state & SS_ISDISCONNECTING) == 0)
+		so_pru_disconnect_direct(so);
+
+	if (so->so_pcb)
+		so_pru_detach_direct(so);
+
+	sodiscard(so);
+	sofree(so);
+}
+
+static void
+soclose_disconn_async(struct socket *so)
+{
+	struct netmsg_base *base = &so->so_clomsg;
+
+	netmsg_init(base, so, &netisr_apanic_rport, 0,
+	    soclose_disconn_async_handler);
+	lwkt_sendmsg(so->so_port, &base->lmsg);
+}
+
+static void
+soclose_detach_async_handler(netmsg_t msg)
+{
+	struct socket *so = msg->base.nm_so;
+
+	if (so->so_pcb)
+		so_pru_detach_direct(so);
+
+	sodiscard(so);
+	sofree(so);
+}
+
+static void
+soclose_detach_async(struct socket *so)
+{
+	struct netmsg_base *base = &so->so_clomsg;
+
+	netmsg_init(base, so, &netisr_apanic_rport, 0,
+	    soclose_detach_async_handler);
+	lwkt_sendmsg(so->so_port, &base->lmsg);
+}
+
+static void
+soclose_fast(struct socket *so)
+{
+	if (so->so_pcb == NULL)
+		goto discard;
+
+	if ((so->so_state & SS_ISCONNECTED) &&
+	    (so->so_state & SS_ISDISCONNECTING) == 0) {
+		soclose_disconn_async(so);
+		return;
+	}
+
+	if (so->so_pcb) {
+		soclose_detach_async(so);
+		return;
+	}
+
+discard:
+	sodiscard(so);
+	soclose_sofree_async(so);
 }
 
 /*
@@ -464,15 +592,21 @@ soabort_oncpu(struct socket *so)
  * so is passed in ref'd, which becomes owned by
  * the cleared SS_NOFDREF flag.
  */
+void
+soaccept_generic(struct socket *so)
+{
+	if ((so->so_state & SS_NOFDREF) == 0)
+		panic("soaccept: !NOFDREF");
+	soclrstate(so, SS_NOFDREF);	/* owned by lack of SS_NOFDREF */
+}
+
 int
 soaccept(struct socket *so, struct sockaddr **nam)
 {
 	int error;
 
-	if ((so->so_state & SS_NOFDREF) == 0)
-		panic("soaccept: !NOFDREF");
-	soclrstate(so, SS_NOFDREF);	/* owned by lack of SS_NOFDREF */
-	error = so_pru_accept_direct(so, nam);
+	soaccept_generic(so);
+	error = so_pru_accept(so, nam);
 	return (error);
 }
 
@@ -750,9 +884,8 @@ int
 sosendudp(struct socket *so, struct sockaddr *addr, struct uio *uio,
 	  struct mbuf *top, struct mbuf *control, int flags, struct thread *td)
 {
-	boolean_t dontroute;		/* temporary SO_DONTROUTE setting */
 	size_t resid;
-	int error;
+	int error, pru_flags = 0;
 	int space;
 
 	if (td->td_lwp != NULL)
@@ -796,15 +929,16 @@ restart:
 			goto release;
 	}
 
-	dontroute = (flags & MSG_DONTROUTE) && !(so->so_options & SO_DONTROUTE);
-	if (dontroute)
-		so->so_options |= SO_DONTROUTE;
+	if (flags & MSG_DONTROUTE)
+		pru_flags |= PRUS_DONTROUTE;
 
-	error = so_pru_send(so, 0, top, addr, NULL, td);
+	if (udp_sosnd_async && (flags & MSG_SYNC) == 0) {
+		so_pru_send_async(so, pru_flags, top, addr, NULL, td);
+		error = 0;
+	} else {
+		error = so_pru_send(so, pru_flags, top, addr, NULL, td);
+	}
 	top = NULL;		/* sent or freed in lower layer */
-
-	if (dontroute)
-		so->so_options &= ~SO_DONTROUTE;
 
 release:
 	ssb_unlock(&so->so_snd);
@@ -902,7 +1036,7 @@ restart:
 		}
 		mp = &top;
 		do {
-		    int cnt = 0;
+		    int cnt = 0, async = 0;
 
 		    if (uio == NULL) {
 			/*
@@ -933,14 +1067,24 @@ restart:
 			++cnt;
 		    } while (space > 0 && cnt < tcp_sosnd_agglim);
 
+		    if (tcp_sosnd_async)
+			    async = 1;
+
 		    if (flags & MSG_OOB) {
 		    	    pru_flags = PRUS_OOB;
+			    async = 0;
+		    } else if ((flags & MSG_EOF) && resid == 0) {
+			    pru_flags = PRUS_EOF;
 		    } else if (resid > 0 && space > 0) {
 			    /* If there is more to send, set PRUS_MORETOCOME */
 		    	    pru_flags = PRUS_MORETOCOME;
+			    async = 1;
 		    } else {
 		    	    pru_flags = 0;
 		    }
+
+		    if (flags & MSG_SYNC)
+			    async = 0;
 
 		    /*
 		     * XXX all the SS_CANTSENDMORE checks previously
@@ -951,8 +1095,7 @@ restart:
 		     * here, but there are probably other places that this
 		     * also happens.  We must rethink this.
 		     */
-		    if ((pru_flags & PRUS_OOB) ||
-		        (pru_flags & PRUS_MORETOCOME) == 0) {
+		    if (!async) {
 			    error = so_pru_send(so, pru_flags, top,
 			        NULL, NULL, td);
 		    } else {
@@ -1419,9 +1562,9 @@ do_setopt_accept_filter(struct socket *so, struct sockopt *sopt)
 				af->so_accept_filter->accf_destroy(so);
 			}
 			if (af->so_accept_filter_str != NULL) {
-				FREE(af->so_accept_filter_str, M_ACCF);
+				kfree(af->so_accept_filter_str, M_ACCF);
 			}
-			FREE(af, M_ACCF);
+			kfree(af, M_ACCF);
 			so->so_accf = NULL;
 		}
 		so->so_options &= ~SO_ACCEPTFILTER;
@@ -1434,7 +1577,7 @@ do_setopt_accept_filter(struct socket *so, struct sockopt *sopt)
 		goto out;
 	}
 	/* don't put large objects on the kernel stack */
-	MALLOC(afap, struct accept_filter_arg *, sizeof(*afap), M_TEMP, M_WAITOK);
+	afap = kmalloc(sizeof(*afap), M_TEMP, M_WAITOK);
 	error = sooptcopyin(sopt, afap, sizeof *afap, sizeof *afap);
 	afap->af_name[sizeof(afap->af_name)-1] = '\0';
 	afap->af_arg[sizeof(afap->af_arg)-1] = '\0';
@@ -1445,18 +1588,19 @@ do_setopt_accept_filter(struct socket *so, struct sockopt *sopt)
 		error = ENOENT;
 		goto out;
 	}
-	MALLOC(af, struct so_accf *, sizeof(*af), M_ACCF, M_WAITOK | M_ZERO);
+	af = kmalloc(sizeof(*af), M_ACCF, M_WAITOK | M_ZERO);
 	if (afp->accf_create != NULL) {
 		if (afap->af_name[0] != '\0') {
 			int len = strlen(afap->af_name) + 1;
 
-			MALLOC(af->so_accept_filter_str, char *, len, M_ACCF, M_WAITOK);
+			af->so_accept_filter_str = kmalloc(len, M_ACCF,
+							   M_WAITOK);
 			strcpy(af->so_accept_filter_str, afap->af_name);
 		}
 		af->so_accept_filter_arg = afp->accf_create(so, afap->af_arg);
 		if (af->so_accept_filter_arg == NULL) {
-			FREE(af->so_accept_filter_str, M_ACCF);
-			FREE(af, M_ACCF);
+			kfree(af->so_accept_filter_str, M_ACCF);
+			kfree(af, M_ACCF);
 			so->so_accf = NULL;
 			error = EINVAL;
 			goto out;
@@ -1467,7 +1611,7 @@ do_setopt_accept_filter(struct socket *so, struct sockopt *sopt)
 	so->so_options |= SO_ACCEPTFILTER;
 out:
 	if (afap != NULL)
-		FREE(afap, M_TEMP);
+		kfree(afap, M_TEMP);
 	return (error);
 }
 #endif /* INET */
@@ -1725,15 +1869,15 @@ sogetopt(struct socket *so, struct sockopt *sopt)
 		case SO_ACCEPTFILTER:
 			if ((so->so_options & SO_ACCEPTCONN) == 0)
 				return (EINVAL);
-			MALLOC(afap, struct accept_filter_arg *, sizeof(*afap),
-				M_TEMP, M_WAITOK | M_ZERO);
+			afap = kmalloc(sizeof(*afap), M_TEMP,
+				       M_WAITOK | M_ZERO);
 			if ((so->so_options & SO_ACCEPTFILTER) != 0) {
 				strcpy(afap->af_name, so->so_accf->so_accept_filter->accf_name);
 				if (so->so_accf->so_accept_filter_str != NULL)
 					strcpy(afap->af_arg, so->so_accf->so_accept_filter_str);
 			}
 			error = sooptcopyout(sopt, afap, sizeof(*afap));
-			FREE(afap, M_TEMP);
+			kfree(afap, M_TEMP);
 			break;
 #endif /* INET */
 			

@@ -29,7 +29,7 @@ options 	NFS_ROOT		#NFS usable as root device, NFS required
 options 	MSDOSFS			#MSDOS Filesystem
 options 	CD9660			#ISO 9660 Filesystem
 options 	PROCFS			#Process filesystem
-options 	COMPAT_43		#Compatible with BSD 4.3 [KEEP THIS!]
+#options 	COMPAT_43		#Compatible with BSD 4.3
 options 	SCSI_DELAY=5000		#Delay (in ms) before probing SCSI
 options		DEVICE_POLLING		# Support mixed interrupt-polling
 					# handling of network device drivers
@@ -179,7 +179,7 @@ options 	SC_PIXEL_MODE		# add support for the raster text mode
 device		agp		# support several AGP chipsets
 
 # HW monitoring devices
-device		aps0	at isa? port 0x1600
+#device		aps0	at isa? port 0x1600
 device		lm0	at isa? port 0x290
 device		it0	at isa?	port 0x290
 device		it1	at isa?	port 0xc00

@@ -216,7 +216,7 @@ SYSCTL_INT(_lwkt, OID_AUTO, spin_fatal, CTLFLAG_RW,
 static int preempt_enable = 1;
 SYSCTL_INT(_lwkt, OID_AUTO, preempt_enable, CTLFLAG_RW,
 	&preempt_enable, 0, "Enable preemption");
-static int lwkt_cache_threads = 32;
+static int lwkt_cache_threads = 0;
 SYSCTL_INT(_lwkt, OID_AUTO, cache_threads, CTLFLAG_RD,
 	&lwkt_cache_threads, 0, "thread+kstack cache");
 
@@ -291,6 +291,7 @@ _lwkt_thread_ctor(void *obj, void *privdata, int ocflags)
 	td->td_kstack = NULL;
 	td->td_kstack_size = 0;
 	td->td_flags = TDF_ALLOCATED_THREAD;
+	td->td_mpflags = 0;
 	return (1);
 }
 
@@ -305,17 +306,25 @@ _lwkt_thread_dtor(void *obj, void *privdata)
 		td->td_kstack_size > 0,
 	    ("_lwkt_thread_dtor: corrupted stack"));
 	kmem_free(&kernel_map, (vm_offset_t)td->td_kstack, td->td_kstack_size);
+	td->td_kstack = NULL;
+	td->td_flags = 0;
 }
 
 /*
  * Initialize the lwkt s/system.
  *
- * Nominally cache up to 32 thread + kstack structures.
+ * Nominally cache up to 32 thread + kstack structures.  Cache more on
+ * systems with a lot of cpu cores.
  */
 void
 lwkt_init(void)
 {
     TUNABLE_INT("lwkt.cache_threads", &lwkt_cache_threads);
+    if (lwkt_cache_threads == 0) {
+	lwkt_cache_threads = ncpus * 4;
+	if (lwkt_cache_threads < 32)
+	    lwkt_cache_threads = 32;
+    }
     thread_cache = objcache_create_mbacked(
 				M_THREAD, sizeof(struct thread),
 				NULL, lwkt_cache_threads,
@@ -336,7 +345,8 @@ lwkt_schedule_self(thread_t td)
     crit_enter_quick(td);
     KASSERT(td != &td->td_gd->gd_idlethread,
 	    ("lwkt_schedule_self(): scheduling gd_idlethread is illegal!"));
-    KKASSERT(td->td_lwp == NULL || (td->td_lwp->lwp_flag & LWP_ONRUNQ) == 0);
+    KKASSERT(td->td_lwp == NULL ||
+	     (td->td_lwp->lwp_mpflags & LWP_MP_ONRUNQ) == 0);
     _lwkt_enqueue(td);
     crit_exit_quick(td);
 }
@@ -399,7 +409,8 @@ lwkt_alloc_thread(struct thread *td, int stksize, int cpu, int flags)
 	}
 	crit_exit_gd(gd);
     	KASSERT((td->td_flags &
-		 (TDF_ALLOCATED_THREAD|TDF_RUNNING)) == TDF_ALLOCATED_THREAD,
+		 (TDF_ALLOCATED_THREAD|TDF_RUNNING|TDF_PREEMPT_LOCK)) ==
+		 TDF_ALLOCATED_THREAD,
 		("lwkt_alloc_thread: corrupted td flags 0x%X", td->td_flags));
     	flags |= td->td_flags & (TDF_ALLOCATED_THREAD|TDF_ALLOCATED_STACK);
     }
@@ -470,11 +481,13 @@ lwkt_init_thread(thread_t td, void *stack, int stksize, int flags,
     td->td_kstack = stack;
     td->td_kstack_size = stksize;
     td->td_flags = flags;
+    td->td_mpflags = 0;
     td->td_gd = gd;
     td->td_pri = TDPRI_KERN_DAEMON;
     td->td_critcount = 1;
+    td->td_toks_have = NULL;
     td->td_toks_stop = &td->td_toks_base;
-    if (lwkt_use_spin_port)
+    if (lwkt_use_spin_port || (flags & TDF_FORCE_SPINPORT))
 	lwkt_initport_spin(&td->td_msgport);
     else
 	lwkt_initport_thread(&td->td_msgport, td);
@@ -513,6 +526,11 @@ lwkt_set_comm(thread_t td, const char *ctl, ...)
     KTR_LOG(ctxsw_newtd, td, &td->td_comm[0]);
 }
 
+/*
+ * Prevent the thread from getting destroyed.  Note that unlike PHOLD/PRELE
+ * this does not prevent the thread from migrating to another cpu so the
+ * gd_tdallq state is not protected by this.
+ */
 void
 lwkt_hold(thread_t td)
 {
@@ -527,17 +545,11 @@ lwkt_rele(thread_t td)
 }
 
 void
-lwkt_wait_free(thread_t td)
-{
-    while (td->td_refs)
-	tsleep(td, 0, "tdreap", hz);
-}
-
-void
 lwkt_free_thread(thread_t td)
 {
     KKASSERT(td->td_refs == 0);
-    KKASSERT((td->td_flags & (TDF_RUNNING|TDF_PREEMPT_LOCK|TDF_RUNQ)) == 0);
+    KKASSERT((td->td_flags & (TDF_RUNNING | TDF_PREEMPT_LOCK |
+			      TDF_RUNQ | TDF_TSLEEPQ)) == 0);
     if (td->td_flags & TDF_ALLOCATED_THREAD) {
     	objcache_put(thread_cache, td);
     } else if (td->td_flags & TDF_ALLOCATED_STACK) {
@@ -590,6 +602,7 @@ lwkt_switch(void)
     int spinning = 0;
 
     KKASSERT(gd->gd_processing_ipiq == 0);
+    KKASSERT(td->td_flags & TDF_RUNNING);
 
     /*
      * Switching from within a 'fast' (non thread switched) interrupt or IPI
@@ -891,22 +904,11 @@ skip:
 
 havethread:
     /*
-     * If the thread we came up with is a higher or equal priority verses
-     * the thread at the head of the queue we move our thread to the
-     * front.  This way we can always check the front of the queue.
-     *
      * Clear gd_idle_repeat when doing a normal switch to a non-idle
      * thread.
      */
     ntd->td_wmesg = NULL;
     ++gd->gd_cnt.v_swtch;
-#if 0
-    xtd = TAILQ_FIRST(&gd->gd_tdrunq);
-    if (ntd != xtd && ntd->td_pri >= xtd->td_pri) {
-	TAILQ_REMOVE(&gd->gd_tdrunq, ntd, td_threadq);
-	TAILQ_INSERT_HEAD(&gd->gd_tdrunq, ntd, td_threadq);
-    }
-#endif
     gd->gd_idle_repeat = 0;
 
 havethread_preempted:
@@ -929,6 +931,7 @@ haveidle:
 	 *
 	 * We are responsible for marking ntd as TDF_RUNNING.
 	 */
+	KKASSERT((ntd->td_flags & TDF_RUNNING) == 0);
 	++switch_count;
 	KTR_LOG(ctxsw_sw, gd->gd_cpuid, ntd);
 	ntd->td_flags |= TDF_RUNNING;
@@ -936,12 +939,11 @@ haveidle:
 	/* ntd invalid, td_switch() can return a different thread_t */
     }
 
-#if 1
     /*
-     * catch-all
+     * catch-all.  XXX is this strictly needed?
      */
     splz_check();
-#endif
+
     /* NOTE: current cpu may have changed after switch */
     crit_exit_quick(td);
 }
@@ -985,15 +987,10 @@ lwkt_switch_return(thread_t otd)
 
 /*
  * Request that the target thread preempt the current thread.  Preemption
- * only works under a specific set of conditions:
- *
- *	- We are not preempting ourselves
- *	- The target thread is owned by the current cpu
- *	- We are not currently being preempted
- *	- The target is not currently being preempted
- *	- We are not holding any spin locks
- *	- The target thread is not holding any tokens
- *	- We are able to satisfy the target's MP lock requirements (if any).
+ * can only occur if our only critical section is the one that we were called
+ * with, the relative priority of the target thread is higher, and the target
+ * thread holds no tokens.  This also only works if we are not holding any
+ * spinlocks (obviously).
  *
  * THE CALLER OF LWKT_PREEMPT() MUST BE IN A CRITICAL SECTION.  Typically
  * this is called via lwkt_schedule() through the td_preemptable callback.
@@ -1001,13 +998,15 @@ lwkt_switch_return(thread_t otd)
  * to determine whether preemption is possible (aka usually just the crit
  * priority of lwkt_schedule() itself).
  *
- * XXX at the moment we run the target thread in a critical section during
- * the preemption in order to prevent the target from taking interrupts
- * that *WE* can't.  Preemption is strictly limited to interrupt threads
- * and interrupt-like threads, outside of a critical section, and the
- * preempted source thread will be resumed the instant the target blocks
- * whether or not the source is scheduled (i.e. preemption is supposed to
- * be as transparent as possible).
+ * Preemption is typically limited to interrupt threads.
+ *
+ * Operation works in a fairly straight-forward manner.  The normal
+ * scheduling code is bypassed and we switch directly to the target
+ * thread.  When the target thread attempts to block or switch away
+ * code at the base of lwkt_switch() will switch directly back to our
+ * thread.  Our thread is able to retain whatever tokens it holds and
+ * if the target needs one of them the target will switch back to us
+ * and reschedule itself normally.
  */
 void
 lwkt_preempt(thread_t ntd, int critcount)
@@ -1031,10 +1030,6 @@ lwkt_preempt(thread_t ntd, int critcount)
 
     td = gd->gd_curthread;
     if (preempt_enable == 0) {
-#if 0
-	if (ntd->td_pri > td->td_pri)
-	    need_lwkt_resched();
-#endif
 	++preempt_miss;
 	return;
     }
@@ -1044,17 +1039,15 @@ lwkt_preempt(thread_t ntd, int critcount)
     }
     if (td->td_critcount > critcount) {
 	++preempt_miss;
-#if 0
-	need_lwkt_resched();
-#endif
 	return;
     }
 #ifdef SMP
+    if (td->td_cscount) {
+	++preempt_miss;
+	return;
+    }
     if (ntd->td_gd != gd) {
 	++preempt_miss;
-#if 0
-	need_lwkt_resched();
-#endif
 	return;
     }
 #endif
@@ -1070,23 +1063,14 @@ lwkt_preempt(thread_t ntd, int critcount)
 
     if (TD_TOKS_HELD(ntd)) {
 	++preempt_miss;
-#if 0
-	need_lwkt_resched();
-#endif
 	return;
     }
     if (td == ntd || ((td->td_flags | ntd->td_flags) & TDF_PREEMPT_LOCK)) {
 	++preempt_weird;
-#if 0
-	need_lwkt_resched();
-#endif
 	return;
     }
     if (ntd->td_preempted) {
 	++preempt_hit;
-#if 0
-	need_lwkt_resched();
-#endif
 	return;
     }
     KKASSERT(gd->gd_processing_ipiq == 0);
@@ -1108,6 +1092,8 @@ lwkt_preempt(thread_t ntd, int critcount)
     KTR_LOG(ctxsw_pre, gd->gd_cpuid, ntd);
     save_gd_intr_nesting_level = gd->gd_intr_nesting_level;
     gd->gd_intr_nesting_level = 0;
+
+    KKASSERT((ntd->td_flags & TDF_RUNNING) == 0);
     ntd->td_flags |= TDF_RUNNING;
     xtd = td->td_switch(ntd);
     KKASSERT(xtd == ntd);
@@ -1300,7 +1286,9 @@ _lwkt_schedule(thread_t td)
 	    ("lwkt_schedule(): scheduling gd_idlethread is illegal!"));
     KKASSERT((td->td_flags & TDF_MIGRATING) == 0);
     crit_enter_gd(mygd);
-    KKASSERT(td->td_lwp == NULL || (td->td_lwp->lwp_flag & LWP_ONRUNQ) == 0);
+    KKASSERT(td->td_lwp == NULL ||
+	     (td->td_lwp->lwp_mpflags & LWP_MP_ONRUNQ) == 0);
+
     if (td == mygd->gd_curthread) {
 	_lwkt_enqueue(td);
     } else {
@@ -1636,7 +1624,8 @@ lwkt_setcpu_remote(void *arg)
     cpu_mfence();
     td->td_flags &= ~TDF_MIGRATING;
     KKASSERT(td->td_migrate_gd == NULL);
-    KKASSERT(td->td_lwp == NULL || (td->td_lwp->lwp_flag & LWP_ONRUNQ) == 0);
+    KKASSERT(td->td_lwp == NULL ||
+	    (td->td_lwp->lwp_mpflags & LWP_MP_ONRUNQ) == 0);
     _lwkt_enqueue(td);
 }
 #endif
@@ -1681,10 +1670,10 @@ lwkt_create(void (*func)(void *), void *arg, struct thread **tdp,
     /*
      * Schedule the thread to run
      */
-    if ((td->td_flags & TDF_STOPREQ) == 0)
-	lwkt_schedule(td);
+    if (td->td_flags & TDF_NOSTART)
+	td->td_flags &= ~TDF_NOSTART;
     else
-	td->td_flags &= ~TDF_STOPREQ;
+	lwkt_schedule(td);
     return 0;
 }
 
@@ -1715,19 +1704,34 @@ lwkt_exit(void)
      *
      * We have to cache the current td in gd_freetd because objcache_put()ing
      * it would rip it out from under us while our thread is still active.
+     *
+     * We are the current thread so of course our own TDF_RUNNING bit will
+     * be set, so unlike the lwp reap code we don't wait for it to clear.
      */
     gd = mycpu;
     crit_enter_quick(td);
-    while ((std = gd->gd_freetd) != NULL) {
-	KKASSERT((std->td_flags & (TDF_RUNNING|TDF_PREEMPT_LOCK)) == 0);
-	gd->gd_freetd = NULL;
-	objcache_put(thread_cache, std);
+    for (;;) {
+	if (td->td_refs) {
+	    tsleep(td, 0, "tdreap", 1);
+	    continue;
+	}
+	if ((std = gd->gd_freetd) != NULL) {
+	    KKASSERT((std->td_flags & (TDF_RUNNING|TDF_PREEMPT_LOCK)) == 0);
+	    gd->gd_freetd = NULL;
+	    objcache_put(thread_cache, std);
+	    continue;
+	}
+	break;
     }
 
     /*
      * Remove thread resources from kernel lists and deschedule us for
      * the last time.  We cannot block after this point or we may end
      * up with a stale td on the tsleepq.
+     *
+     * None of this may block, the critical section is the only thing
+     * protecting tdallq and the only thing preventing new lwkt_hold()
+     * thread refs now.
      */
     if (td->td_flags & TDF_TSLEEPQ)
 	tsleep_remove(td);

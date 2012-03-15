@@ -38,7 +38,6 @@
  * Author: Archie Cobbs <archie@freebsd.org>
  *
  * $FreeBSD: src/sys/netgraph/ng_iface.c,v 1.48 2008/01/31 08:51:48 mav Exp $
- * $DragonFly: src/sys/netgraph7/ng_iface.c,v 1.2 2008/06/26 23:05:35 dillon Exp $
  * $Whistle: ng_iface.c,v 1.33 1999/11/01 09:24:51 julian Exp $
  */
 
@@ -53,7 +52,6 @@
  * This node also includes Berkeley packet filter support.
  */
 
-#include "opt_atalk.h"
 #include "opt_inet.h"
 #include "opt_inet6.h"
 #include "opt_ipx.h"
@@ -101,12 +99,11 @@ typedef const struct iffam *iffam_p;
 const static struct iffam gFamilies[] = {
 	{ AF_INET,	NG_IFACE_HOOK_INET	},
 	{ AF_INET6,	NG_IFACE_HOOK_INET6	},
-	{ AF_APPLETALK,	NG_IFACE_HOOK_ATALK	},
 	{ AF_IPX,	NG_IFACE_HOOK_IPX	},
 	{ AF_ATM,	NG_IFACE_HOOK_ATM	},
 	{ AF_NATM,	NG_IFACE_HOOK_NATM	},
 };
-#define NUM_FAMILIES		(sizeof(gFamilies) / sizeof(*gFamilies))
+#define NUM_FAMILIES		NELEM(gFamilies)
 
 /* Node private data */
 struct ng_iface_private {
@@ -510,12 +507,13 @@ ng_iface_constructor(node_p node)
 	priv_p priv;
 
 	/* Allocate node and interface private structures */
-	MALLOC(priv, priv_p, sizeof(*priv), M_NETGRAPH_IFACE, M_WAITOK | M_NULLOK | M_ZERO);
+	priv = kmalloc(sizeof(*priv), M_NETGRAPH_IFACE,
+		       M_WAITOK | M_NULLOK | M_ZERO);
 	if (priv == NULL)
 		return (ENOMEM);
 	ifp = if_alloc(IFT_PROPVIRTUAL);
 	if (ifp == NULL) {
-		FREE(priv, M_NETGRAPH_IFACE);
+		kfree(priv, M_NETGRAPH_IFACE);
 		return (ENOMEM);
 	}
 
@@ -744,11 +742,6 @@ ng_iface_rcvdata(hook_p hook, item_p item)
 		isr = NETISR_IPX;
 		break;
 #endif
-#ifdef NETATALK
-	case AF_APPLETALK:
-		isr = NETISR_ATALK2;
-		break;
-#endif
 	default:
 		m_freem(m);
 		return (EAFNOSUPPORT);
@@ -773,7 +766,7 @@ ng_iface_shutdown(node_p node)
 	if_free(priv->ifp);
 	priv->ifp = NULL;
 	free_unr(ng_iface_unit, priv->unit);
-	FREE(priv, M_NETGRAPH_IFACE);
+	kfree(priv, M_NETGRAPH_IFACE);
 	NG_NODE_SET_PRIVATE(node, NULL);
 	NG_NODE_UNREF(node);
 	return (0);

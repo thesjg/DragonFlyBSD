@@ -46,6 +46,8 @@ static MALLOC_DEFINE(M_ZONE, "ZONE", "Zone header");
 
 #define	ZENTRY_FREE	0x12342378
 
+int zone_burst = 32;
+
 static void *zget(vm_zone_t z);
 
 /*
@@ -59,11 +61,13 @@ zalloc(vm_zone_t z)
 {
 	globaldata_t gd = mycpu;
 	void *item;
+	int n;
 
 #ifdef INVARIANTS
 	if (z == NULL)
 		zerror(ZONE_ERROR_INVALID);
 #endif
+retry:
 	/*
 	 * Avoid spinlock contention by allocating from a per-cpu queue
 	 */
@@ -88,21 +92,27 @@ zalloc(vm_zone_t z)
 	}
 
 	/*
-	 * Per-zone spinlock for the remainder.
+	 * Per-zone spinlock for the remainder.  Always load at least one
+	 * item.
 	 */
 	spin_lock(&z->zlock);
 	if (z->zfreecnt > z->zfreemin) {
-		item = z->zitems;
+		n = zone_burst;
+		do {
+			item = z->zitems;
 #ifdef INVARIANTS
-		KASSERT(item != NULL, ("zitems unexpectedly NULL"));
-		if (((void **)item)[1] != (void *)ZENTRY_FREE)
-			zerror(ZONE_ERROR_NOTFREE);
-		((void **)item)[1] = 0;
+			KASSERT(item != NULL, ("zitems unexpectedly NULL"));
+			if (((void **)item)[1] != (void *)ZENTRY_FREE)
+				zerror(ZONE_ERROR_NOTFREE);
 #endif
-		z->zitems = ((void **)item)[0];
-		z->zfreecnt--;
-		z->znalloc++;
+			z->zitems = ((void **)item)[0];
+			z->zfreecnt--;
+			((void **)item)[0] = z->zitems_pcpu[gd->gd_cpuid];
+			z->zitems_pcpu[gd->gd_cpuid] = item;
+			++z->zfreecnt_pcpu[gd->gd_cpuid];
+		} while (--n > 0 && z->zfreecnt > z->zfreemin);
 		spin_unlock(&z->zlock);
+		goto retry;
 	} else {
 		spin_unlock(&z->zlock);
 		item = zget(z);
@@ -182,7 +192,8 @@ zfree(vm_zone_t z, void *item)
 
 LIST_HEAD(zlist, vm_zone) zlist = LIST_HEAD_INITIALIZER(zlist);
 static int sysctl_vm_zone(SYSCTL_HANDLER_ARGS);
-static int zone_kmem_pages, zone_kern_pages, zone_kmem_kvaspace;
+static int zone_kmem_pages, zone_kern_pages;
+static long zone_kmem_kvaspace;
 
 /*
  * Create a zone, but don't allocate the zone structure.  If the
@@ -212,7 +223,7 @@ int
 zinitna(vm_zone_t z, vm_object_t obj, char *name, int size,
 	int nentries, int flags, int zalloc)
 {
-	int totsize;
+	size_t totsize;
 
 	/*
 	 * Only zones created with zinit() are destroyable.
@@ -254,8 +265,8 @@ zinitna(vm_zone_t z, vm_object_t obj, char *name, int size,
 	 * vm_map_entry_reserve().
 	 */
 	if (z->zflags & ZONE_INTERRUPT) {
-		totsize = round_page(z->zsize * nentries);
-		zone_kmem_kvaspace += totsize;
+		totsize = round_page((size_t)z->zsize * nentries);
+		atomic_add_long(&zone_kmem_kvaspace, totsize);
 
 		z->zkva = kmem_alloc_pageable(&kernel_map, totsize);
 		if (z->zkva == 0) {
@@ -269,8 +280,10 @@ zinitna(vm_zone_t z, vm_object_t obj, char *name, int size,
 		} else {
 			z->zobj = obj;
 			_vm_object_allocate(OBJT_DEFAULT, z->zpagemax, obj);
+			vm_object_drop(obj);
 		}
-		z->zallocflag = VM_ALLOC_SYSTEM | VM_ALLOC_INTERRUPT;
+		z->zallocflag = VM_ALLOC_SYSTEM | VM_ALLOC_INTERRUPT |
+				VM_ALLOC_NORMAL | VM_ALLOC_RETRY;
 		z->zmax += nentries;
 	} else {
 		z->zallocflag = VM_ALLOC_NORMAL | VM_ALLOC_SYSTEM;
@@ -360,7 +373,7 @@ zbootinit(vm_zone_t z, char *name, int size, void *item, int nitems)
 	z->znalloc = 0;
 	spin_init(&z->zlock);
 
-	bzero(item, nitems * z->zsize);
+	bzero(item, (size_t)nitems * z->zsize);
 	z->zitems = NULL;
 	for (i = 0; i < nitems; i++) {
 		((void **)item)[0] = z->zitems;
@@ -387,6 +400,7 @@ zbootinit(vm_zone_t z, char *name, int size, void *item, int nitems)
 void
 zdestroy(vm_zone_t z)
 {
+	vm_page_t m;
 	int i;
 
 	if (z == NULL)
@@ -408,22 +422,31 @@ zdestroy(vm_zone_t z)
 		 * with kernel_pmap.pm_stats.resident_count.
 		 */
 		pmap_qremove(z->zkva, z->zpagemax);
+		vm_object_hold(z->zobj);
+		for (i = 0; i < z->zpagecount; ++i) {
+			m = vm_page_lookup_busy_wait(z->zobj, i, TRUE, "vmzd");
+			vm_page_unwire(m, 0);
+			vm_page_free(m);
+		}
 
 		/*
 		 * Free the mapping.
 		 */
-		kmem_free(&kernel_map, z->zkva, z->zpagemax*PAGE_SIZE);
-		atomic_subtract_int(&zone_kmem_kvaspace, z->zpagemax*PAGE_SIZE);
+		kmem_free(&kernel_map, z->zkva,
+			  (size_t)z->zpagemax * PAGE_SIZE);
+		atomic_subtract_long(&zone_kmem_kvaspace,
+				     (size_t)z->zpagemax * PAGE_SIZE);
 
 		/*
 		 * Free the backing object and physical pages.
 		 */
 		vm_object_deallocate(z->zobj);
+		vm_object_drop(z->zobj);
 		atomic_subtract_int(&zone_kmem_pages, z->zpagecount);
 	} else {
 		for (i=0; i < z->zkmcur; i++) {
 			kmem_free(&kernel_map, z->zkmvec[i],
-			    z->zalloc*PAGE_SIZE);
+				  (size_t)z->zalloc * PAGE_SIZE);
 			atomic_subtract_int(&zone_kern_pages, z->zalloc);
 		}
 		if (z->zkmvec != NULL)
@@ -455,8 +478,11 @@ zget(vm_zone_t z)
 {
 	int i;
 	vm_page_t m;
-	int nitems, nbytes;
+	int nitems;
+	int npages;
 	int savezpc;
+	size_t nbytes;
+	size_t noffset;
 	void *item;
 
 	if (z == NULL)
@@ -466,40 +492,44 @@ zget(vm_zone_t z)
 		/*
 		 * Interrupt zones do not mess with the kernel_map, they
 		 * simply populate an existing mapping.
+		 *
+		 * First reserve the required space.
 		 */
 		vm_object_hold(z->zobj);
+		noffset = (size_t)z->zpagecount * PAGE_SIZE;
+		noffset -= noffset % z->zsize;
 		savezpc = z->zpagecount;
-		nbytes = z->zpagecount * PAGE_SIZE;
-		nbytes -= nbytes % z->zsize;
-		item = (char *) z->zkva + nbytes;
-		for (i = 0; ((i < z->zalloc) && (z->zpagecount < z->zpagemax));
-		     i++) {
+		if (z->zpagecount + z->zalloc > z->zpagemax)
+			z->zpagecount = z->zpagemax;
+		else
+			z->zpagecount += z->zalloc;
+		item = (char *)z->zkva + noffset;
+		npages = z->zpagecount - savezpc;
+		nitems = ((size_t)(savezpc + npages) * PAGE_SIZE - noffset) /
+			 z->zsize;
+		atomic_add_int(&zone_kmem_pages, npages);
+
+		/*
+		 * Now allocate the pages.  Note that we can block in the
+		 * loop, so we've already done all the necessary calculations
+		 * and reservations above.
+		 */
+		for (i = 0; i < npages; ++i) {
 			vm_offset_t zkva;
 
-			m = vm_page_alloc(z->zobj, z->zpagecount,
-					  z->zallocflag);
+			m = vm_page_alloc(z->zobj, savezpc + i, z->zallocflag);
+			KKASSERT(m != NULL);
 			/* note: z might be modified due to blocking */
-			if (m == NULL) 
-				break;
 
-			/*
-			 * Unbusy page so it can freed in zdestroy().  Make
-			 * sure it is not on any queue and so can not be
-			 * recycled under our feet.
-			 */
 			KKASSERT(m->queue == PQ_NONE);
-			vm_page_flag_clear(m, PG_BUSY);
+			m->valid = VM_PAGE_BITS_ALL;
+			vm_page_wire(m);
+			vm_page_wakeup(m);
 
-			zkva = z->zkva + z->zpagecount * PAGE_SIZE;
-			pmap_kenter(zkva, VM_PAGE_TO_PHYS(m)); /* YYY */
+			zkva = z->zkva + (size_t)(savezpc + i) * PAGE_SIZE;
+			pmap_kenter(zkva, VM_PAGE_TO_PHYS(m));
 			bzero((void *)zkva, PAGE_SIZE);
-			KKASSERT(savezpc == z->zpagecount);
-			++savezpc;
-			z->zpagecount++;
-			zone_kmem_pages++;
-			vmstats.v_wire_count++;
 		}
-		nitems = ((z->zpagecount * PAGE_SIZE) - nbytes) / z->zsize;
 		vm_object_drop(z->zobj);
 	} else if (z->zflags & ZONE_SPECIAL) {
 		/*
@@ -509,7 +539,7 @@ zget(vm_zone_t z)
 		 * instead.  The map entries are pre-reserved by the kernel
 		 * by vm_map_entry_reserve_cpu_init().
 		 */
-		nbytes = z->zalloc * PAGE_SIZE;
+		nbytes = (size_t)z->zalloc * PAGE_SIZE;
 
 		item = (void *)kmem_alloc3(&kernel_map, nbytes, KM_KRESERVE);
 
@@ -525,7 +555,7 @@ zget(vm_zone_t z)
 		/*
 		 * Otherwise allocate KVA from the kernel_map.
 		 */
-		nbytes = z->zalloc * PAGE_SIZE;
+		nbytes = (size_t)z->zalloc * PAGE_SIZE;
 
 		item = (void *)kmem_alloc3(&kernel_map, nbytes, 0);
 
@@ -682,7 +712,9 @@ SYSCTL_OID(_vm, OID_AUTO, zone, CTLTYPE_STRING|CTLFLAG_RD, \
 
 SYSCTL_INT(_vm, OID_AUTO, zone_kmem_pages,
 	CTLFLAG_RD, &zone_kmem_pages, 0, "Number of interrupt safe pages allocated by zone");
-SYSCTL_INT(_vm, OID_AUTO, zone_kmem_kvaspace,
+SYSCTL_INT(_vm, OID_AUTO, zone_burst,
+	CTLFLAG_RW, &zone_burst, 0, "Burst from depot to pcpu cache");
+SYSCTL_LONG(_vm, OID_AUTO, zone_kmem_kvaspace,
 	CTLFLAG_RD, &zone_kmem_kvaspace, 0, "KVA space allocated by zone");
 SYSCTL_INT(_vm, OID_AUTO, zone_kern_pages,
 	CTLFLAG_RD, &zone_kern_pages, 0, "Number of non-interrupt safe pages allocated by zone");

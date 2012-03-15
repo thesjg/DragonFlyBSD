@@ -65,7 +65,6 @@
  *
  *	From: @(#)tcp_usrreq.c	8.2 (Berkeley) 1/3/94
  * $FreeBSD: src/sys/netinet/tcp_usrreq.c,v 1.51.2.17 2002/10/11 11:46:44 ume Exp $
- * $DragonFly: src/sys/netinet/tcp_usrreq.c,v 1.51 2008/09/29 20:52:23 dillon Exp $
  */
 
 #include "opt_ipsec.h"
@@ -732,13 +731,14 @@ tcp_usr_send(netmsg_t msg)
 	struct socket *so = msg->send.base.nm_so;
 	int flags = msg->send.nm_flags;
 	struct mbuf *m = msg->send.nm_m;
-	struct mbuf *control = msg->send.nm_control;
 	int error = 0;
 	struct inpcb *inp;
 	struct tcpcb *tp;
 	TCPDEBUG0;
 
-	KKASSERT(control == NULL);
+	KKASSERT(msg->send.nm_control == NULL);
+	KKASSERT(msg->send.nm_addr == NULL);
+	KKASSERT((flags & PRUS_FREEADDR) == 0);
 
 	inp = so->so_pcb;
 
@@ -757,6 +757,13 @@ tcp_usr_send(netmsg_t msg)
 	tp = intotcpcb(inp);
 	TCPDEBUG1();
 
+#ifdef foo
+	/*
+	 * This is no longer necessary, since:
+	 * - sosendtcp() has already checked it for us
+	 * - It does not work with asynchronized send
+	 */
+
 	/*
 	 * Don't let too much OOB data build up
 	 */
@@ -767,6 +774,7 @@ tcp_usr_send(netmsg_t msg)
 			goto out;
 		}
 	}
+#endif
 
 	/*
 	 * Pump the data into the socket.
@@ -857,6 +865,20 @@ tcp_usr_rcvoob(netmsg_t msg)
 	COMMON_END(PRU_RCVOOB);
 }
 
+static void
+tcp_usr_savefaddr(struct socket *so, const struct sockaddr *faddr)
+{
+	in_savefaddr(so, faddr);
+}
+
+#ifdef INET6
+static void
+tcp6_usr_savefaddr(struct socket *so, const struct sockaddr *faddr)
+{
+	in6_mapped_savefaddr(so, faddr);
+}
+#endif
+
 /* xxx - should be const */
 struct pr_usrreqs tcp_usrreqs = {
 	.pru_abort = tcp_usr_abort,
@@ -877,7 +899,8 @@ struct pr_usrreqs tcp_usrreqs = {
 	.pru_shutdown = tcp_usr_shutdown,
 	.pru_sockaddr = in_setsockaddr_dispatch,
 	.pru_sosend = sosendtcp,
-	.pru_soreceive = soreceive
+	.pru_soreceive = soreceive,
+	.pru_savefaddr = tcp_usr_savefaddr
 };
 
 #ifdef INET6
@@ -900,7 +923,8 @@ struct pr_usrreqs tcp6_usrreqs = {
 	.pru_shutdown = tcp_usr_shutdown,
 	.pru_sockaddr = in6_mapped_sockaddr_dispatch,
 	.pru_sosend = sosendtcp,
-	.pru_soreceive = soreceive
+	.pru_soreceive = soreceive,
+	.pru_savefaddr = tcp6_usr_savefaddr
 };
 #endif /* INET6 */
 

@@ -533,11 +533,6 @@ hardclock(systimer_t info, int in_ipi __unused, struct intrframe *frame)
 	     */
 	    cpu_sfence();
 	    basetime_index = ni;
-
-	    /*
-	     * Figure out how badly the system is starved for memory
-	     */
-	    vm_fault_ratecheck();
 	}
 
 	/*
@@ -554,17 +549,26 @@ hardclock(systimer_t info, int in_ipi __unused, struct intrframe *frame)
 	 * ITimer handling is per-tick, per-cpu.
 	 *
 	 * We must acquire the per-process token in order for ksignal()
-	 * to be non-blocking.
+	 * to be non-blocking.  For the moment this requires an AST fault,
+	 * the ksignal() cannot be safely issued from this hard interrupt.
+	 *
+	 * XXX Even the trytoken here isn't right, and itimer operation in
+	 *     a multi threaded environment is going to be weird at the
+	 *     very least.
 	 */
 	if ((p = curproc) != NULL && lwkt_trytoken(&p->p_token)) {
 		crit_enter_hard();
 		if (frame && CLKF_USERMODE(frame) &&
 		    timevalisset(&p->p_timer[ITIMER_VIRTUAL].it_value) &&
-		    itimerdecr(&p->p_timer[ITIMER_VIRTUAL], ustick) == 0)
-			ksignal(p, SIGVTALRM);
+		    itimerdecr(&p->p_timer[ITIMER_VIRTUAL], ustick) == 0) {
+			p->p_flags |= P_SIGVTALRM;
+			need_user_resched();
+		}
 		if (timevalisset(&p->p_timer[ITIMER_PROF].it_value) &&
-		    itimerdecr(&p->p_timer[ITIMER_PROF], ustick) == 0)
-			ksignal(p, SIGPROF);
+		    itimerdecr(&p->p_timer[ITIMER_PROF], ustick) == 0) {
+			p->p_flags |= P_SIGPROF;
+			need_user_resched();
+		}
 		crit_exit_hard();
 		lwkt_reltoken(&p->p_token);
 	}
@@ -625,7 +629,7 @@ statclock(systimer_t info, int in_ipi, struct intrframe *frame)
 		 * Came from userland, handle user time and deal with
 		 * possible process.
 		 */
-		if (p && (p->p_flag & P_PROFIL))
+		if (p && (p->p_flags & P_PROFIL))
 			addupc_intr(p, CLKF_PC(frame), 1);
 		td->td_uticks += bump;
 
@@ -922,8 +926,8 @@ tstohz_low(struct timespec *ts)
 void
 startprofclock(struct proc *p)
 {
-	if ((p->p_flag & P_PROFIL) == 0) {
-		p->p_flag |= P_PROFIL;
+	if ((p->p_flags & P_PROFIL) == 0) {
+		p->p_flags |= P_PROFIL;
 #if 0	/* XXX */
 		if (++profprocs == 1 && stathz != 0) {
 			crit_enter();
@@ -937,12 +941,14 @@ startprofclock(struct proc *p)
 
 /*
  * Stop profiling on a process.
+ *
+ * caller must hold p->p_token
  */
 void
 stopprofclock(struct proc *p)
 {
-	if (p->p_flag & P_PROFIL) {
-		p->p_flag &= ~P_PROFIL;
+	if (p->p_flags & P_PROFIL) {
+		p->p_flags &= ~P_PROFIL;
 #if 0	/* XXX */
 		if (--profprocs == 0 && stathz != 0) {
 			crit_enter();

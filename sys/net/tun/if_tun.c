@@ -17,7 +17,6 @@
  */
 
 #include "use_tun.h"
-#include "opt_atalk.h"
 #include "opt_inet.h"
 #include "opt_inet6.h"
 #include "opt_ipx.h"
@@ -149,7 +148,7 @@ tuncreate(cdev_t dev)
 	    UID_UUCP, GID_DIALER, 0600, "tun%d", lminor(dev));
 #endif
 
-	MALLOC(sc, struct tun_softc *, sizeof(*sc), M_TUN, M_WAITOK | M_ZERO);
+	sc = kmalloc(sizeof(*sc), M_TUN, M_WAITOK | M_ZERO);
 	sc->tun_flags = TUN_INITED;
 
 	ifp = &sc->tun_if;
@@ -434,20 +433,20 @@ tunioctl(struct dev_ioctl_args *ap)
  	struct tuninfo *tunp;
 
 	switch (ap->a_cmd) {
- 	case TUNSIFINFO:
- 		tunp = (struct tuninfo *)ap->a_data;
+	case TUNSIFINFO:
+		tunp = (struct tuninfo *)ap->a_data;
 		if (tunp->mtu < IF_MINMTU)
 			return (EINVAL);
- 		tp->tun_if.if_mtu = tunp->mtu;
- 		tp->tun_if.if_type = tunp->type;
- 		tp->tun_if.if_baudrate = tunp->baudrate;
- 		break;
- 	case TUNGIFINFO:
- 		tunp = (struct tuninfo *)ap->a_data;
- 		tunp->mtu = tp->tun_if.if_mtu;
- 		tunp->type = tp->tun_if.if_type;
- 		tunp->baudrate = tp->tun_if.if_baudrate;
- 		break;
+		tp->tun_if.if_mtu = tunp->mtu;
+		tp->tun_if.if_type = tunp->type;
+		tp->tun_if.if_baudrate = tunp->baudrate;
+		break;
+	case TUNGIFINFO:
+		tunp = (struct tuninfo *)ap->a_data;
+		tunp->mtu = tp->tun_if.if_mtu;
+		tunp->type = tp->tun_if.if_type;
+		tunp->baudrate = tp->tun_if.if_baudrate;
+		break;
 	case TUNSDEBUG:
 		tundebug = *(int *)ap->a_data;
 		break;
@@ -690,11 +689,6 @@ tunwrite(struct dev_write_args *ap)
 #ifdef IPX
 	case AF_IPX:
 		isr = NETISR_IPX;
-		break;
-#endif
-#ifdef NETATALK
-	case AF_APPLETALK:
-		isr = NETISR_ATALK2;
 		break;
 #endif
 	default:

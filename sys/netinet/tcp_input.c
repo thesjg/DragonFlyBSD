@@ -65,7 +65,6 @@
  *
  *	@(#)tcp_input.c	8.12 (Berkeley) 5/24/95
  * $FreeBSD: src/sys/netinet/tcp_input.c,v 1.107.2.38 2003/05/21 04:46:41 cjc Exp $
- * $DragonFly: src/sys/netinet/tcp_input.c,v 1.68 2008/08/22 09:14:17 sephe Exp $
  */
 
 #include "opt_ipfw.h"		/* for ipfw_fwd		*/
@@ -231,6 +230,10 @@ int tcp_sosnd_agglim = 2;
 SYSCTL_INT(_net_inet_tcp, OID_AUTO, sosnd_agglim, CTLFLAG_RW,
     &tcp_sosnd_agglim, 0, "TCP sosend mbuf aggregation limit");
 
+int tcp_sosnd_async = 1;
+SYSCTL_INT(_net_inet_tcp, OID_AUTO, sosnd_async, CTLFLAG_RW,
+    &tcp_sosnd_async, 0, "TCP asynchronized pru_send");
+
 static void	 tcp_dooptions(struct tcpopt *, u_char *, int, boolean_t);
 static void	 tcp_pulloutofband(struct socket *,
 		     struct tcphdr *, struct mbuf *, int);
@@ -239,6 +242,7 @@ static int	 tcp_reass(struct tcpcb *, struct tcphdr *, int *,
 static void	 tcp_xmit_timer(struct tcpcb *, int);
 static void	 tcp_newreno_partial_ack(struct tcpcb *, struct tcphdr *, int);
 static void	 tcp_sack_rexmt(struct tcpcb *, struct tcphdr *);
+static int	 tcp_rmx_msl(const struct tcpcb *);
 
 /* Neighbor Discovery, Neighbor Unreachability Detection Upper layer hint. */
 #ifdef INET6
@@ -304,8 +308,7 @@ tcp_reass(struct tcpcb *tp, struct tcphdr *th, int *tlenp, struct mbuf *m)
 	}
 
 	/* Allocate a new queue entry. */
-	MALLOC(te, struct tseg_qent *, sizeof(struct tseg_qent), M_TSEGQ,
-	       M_INTWAIT | M_NULLOK);
+	te = kmalloc(sizeof(struct tseg_qent), M_TSEGQ, M_INTWAIT | M_NULLOK);
 	if (te == NULL) {
 		tcpstat.tcps_rcvmemdrop++;
 		m_freem(m);
@@ -2305,7 +2308,8 @@ process_ACK:
 				tp->t_state = TCPS_TIME_WAIT;
 				tcp_canceltimers(tp);
 				tcp_callout_reset(tp, tp->tt_2msl,
-					    2 * tcp_msl, tcp_timer_2msl);
+					    2 * tcp_rmx_msl(tp),
+					    tcp_timer_2msl);
 				soisdisconnected(so);
 			}
 			break;
@@ -2329,7 +2333,7 @@ process_ACK:
 		 * it and restart the finack timer.
 		 */
 		case TCPS_TIME_WAIT:
-			tcp_callout_reset(tp, tp->tt_2msl, 2 * tcp_msl,
+			tcp_callout_reset(tp, tp->tt_2msl, 2 * tcp_rmx_msl(tp),
 			    tcp_timer_2msl);
 			goto dropafterack;
 		}
@@ -2532,7 +2536,7 @@ dodata:							/* XXX */
 		case TCPS_FIN_WAIT_2:
 			tp->t_state = TCPS_TIME_WAIT;
 			tcp_canceltimers(tp);
-			tcp_callout_reset(tp, tp->tt_2msl, 2 * tcp_msl,
+			tcp_callout_reset(tp, tp->tt_2msl, 2 * tcp_rmx_msl(tp),
 				    tcp_timer_2msl);
 			soisdisconnected(so);
 			break;
@@ -2541,7 +2545,7 @@ dodata:							/* XXX */
 		 * In TIME_WAIT state restart the 2 MSL time_wait timer.
 		 */
 		case TCPS_TIME_WAIT:
-			tcp_callout_reset(tp, tp->tt_2msl, 2 * tcp_msl,
+			tcp_callout_reset(tp, tp->tt_2msl, 2 * tcp_rmx_msl(tp),
 			    tcp_timer_2msl);
 			break;
 		}
@@ -3204,4 +3208,30 @@ tcp_timer_keep_activity(struct tcpcb *tp, int thflags)
 					  tcp_timer_keep);
 		}
 	}
+}
+
+static int
+tcp_rmx_msl(const struct tcpcb *tp)
+{
+	struct rtentry *rt;
+	struct inpcb *inp = tp->t_inpcb;
+	int msl;
+#ifdef INET6
+	boolean_t isipv6 = ((inp->inp_vflag & INP_IPV6) ? TRUE : FALSE);
+#else
+	const boolean_t isipv6 = FALSE;
+#endif
+
+	if (isipv6)
+		rt = tcp_rtlookup6(&inp->inp_inc);
+	else
+		rt = tcp_rtlookup(&inp->inp_inc);
+	if (rt == NULL || rt->rt_rmx.rmx_msl == 0)
+		return tcp_msl;
+
+	msl = (rt->rt_rmx.rmx_msl * hz) / 1000;
+	if (msl == 0)
+		msl = 1;
+
+	return msl;
 }

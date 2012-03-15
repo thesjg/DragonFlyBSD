@@ -546,6 +546,7 @@ hammer_flusher_flush_inode(hammer_inode_t ip, void *data)
 	++hammer_stats_inode_flushes;
 
 	hammer_flusher_clean_loose_ios(hmp);
+	vm_wait_nominal();
 	error = hammer_sync_inode(trans, ip);
 
 	/*

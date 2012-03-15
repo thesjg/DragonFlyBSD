@@ -96,7 +96,8 @@ SUBDIR=	adjkerntz \
 	tunefs \
 	udevd \
 	umount \
-	vinum
+	vinum \
+	vquota
 
 .if ${MACHINE_ARCH} == i386 || ${MACHINE_ARCH} == x86_64
 .if ${MACHINE_ARCH} == i386
@@ -114,5 +115,9 @@ SUBDIR+= ${MACHINE}
 .if exists(${.CURDIR}/${MACHINE_ARCH})
 SUBDIR+= ${MACHINE_ARCH}
 .endif
+
+# maximum parallelism
+#
+SUBDIR_ORDERED=
 
 .include <bsd.subdir.mk>

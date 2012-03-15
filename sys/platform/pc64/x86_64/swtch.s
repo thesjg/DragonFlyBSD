@@ -163,6 +163,7 @@ ENTRY(cpu_heavy_switch)
 	 * PCB_RSP.  We push the flags for later restore by cpu_heavy_restore.
 	 */
 	pushfq
+	cli
 	movq	$cpu_heavy_restore, %rax
 	pushq	%rax
 	movq	%rsp,TD_SP(%rbx)
@@ -239,8 +240,10 @@ ENTRY(cpu_exit_switch)
 	 */
 	movq	KPML4phys,%rcx
 	movq	%cr3,%rax
+#if 1
 	cmpq	%rcx,%rax
 	je	1f
+#endif
 	/* JG no increment of statistics counters? see cpu_heavy_restore */
 	movq	%rcx,%cr3
 1:
@@ -265,13 +268,14 @@ ENTRY(cpu_exit_switch)
 	 * thread but %rsp still points to the old thread's stack, but
 	 * we are protected by a critical section so it is ok.
 	 */
+	cli
 	movq	%rdi,%rax
 	movq	%rax,PCPU(curthread)
 	movq	TD_SP(%rax),%rsp
 	ret
 
 /*
- * cpu_heavy_restore()	(current thread in %rax on entry)
+ * cpu_heavy_restore()	(current thread in %rax on entry, old thread in %rbx)
  *
  *	Restore the thread after an LWKT switch.  This entry is normally
  *	called via the LWKT switch restore function, which was pulled 
@@ -296,8 +300,9 @@ ENTRY(cpu_exit_switch)
  */
 
 ENTRY(cpu_heavy_restore)
+	movq	TD_PCB(%rax),%rdx		/* RDX = PCB */
+	movq	%rdx, PCPU(common_tss) + TSS_RSP0
 	popfq
-	movq	TD_LWP(%rax),%rcx
 
 #if defined(SWTCH_OPTIM_STATS)
 	incl	_swtch_optim_stats
@@ -305,30 +310,60 @@ ENTRY(cpu_heavy_restore)
 	/*
 	 * Tell the pmap that our cpu is using the VMSPACE now.  We cannot
 	 * safely test/reload %cr3 until after we have set the bit in the
-	 * pmap (remember, we do not hold the MP lock in the switch code).
+	 * pmap.
 	 *
-	 * Also note that when switching between two lwps sharing the
-	 * same vmspace we have already avoided clearing the cpu bit
-	 * in pm_active.  If we had cleared it other cpus would not know
-	 * to IPI us and we would have to unconditionally reload %cr3.
+	 * We must do an interlocked test of the CPUMASK_BIT at the same
+	 * time.  If found to be set we will have to wait for it to clear
+	 * and then do a forced reload of %cr3 (even if the value matches).
 	 *
-	 * Also note that if the pmap is undergoing an atomic inval/mod
-	 * that is unaware that our cpu has been added to it we have to
-	 * wait for it to complete before we can continue.
+	 * XXX When switching between two LWPs sharing the same vmspace
+	 *     the cpu_heavy_switch() code currently avoids clearing the
+	 *     cpu bit in PM_ACTIVE.  So if the bit is already set we can
+	 *     avoid checking for the interlock via CPUMASK_BIT.  We currently
+	 *     do not perform this optimization.
+	 *
+	 * %rax is needed for the cmpxchgl so store newthread in %r12
+	 * temporarily.
 	 */
-	movq	LWP_VMSPACE(%rcx), %rcx		/* RCX = vmspace */
-	movq	PCPU(cpumask), %rsi
-	MPLOCKED orq	%rsi, VM_PMAP+PM_ACTIVE(%rcx)
+	movq	TD_LWP(%rax),%rcx
+	movq	LWP_VMSPACE(%rcx),%rcx		/* RCX = vmspace */
 #ifdef SMP
-	btq	$CPUMASK_BIT,VM_PMAP+PM_ACTIVE(%rcx)
-	jnc	1f
-	pushq	%rax
-	movq	%rcx,%rdi
-	call	pmap_interlock_wait		/* pmap_interlock_wait(vm) */
-	popq	%rax
+	movq	%rax,%r12			/* save newthread ptr */
 1:
+	movq	VM_PMAP+PM_ACTIVE(%rcx),%rax	/* old contents */
+	movq	PCPU(cpumask),%rsi		/* new contents */
+	orq	%rax,%rsi
+	MPLOCKED cmpxchgq %rsi,VM_PMAP+PM_ACTIVE(%rcx)
+	jnz	1b
+
+	/*
+	 * Check CPUMASK_BIT
+	 */
+	btq	$CPUMASK_BIT,%rax	/* test interlock */
+	jnc	1f
+
+#if 0
+	movq	TD_PCB(%r12),%rdx	/* XXX debugging unconditional */
+	movq	PCB_CR3(%rdx),%rdx	/*     reloading of %cr3 */
+	movq	%rdx,%cr3
 #endif
 
+	movq	%rcx,%rdi		/* (found to be set) */
+	call	pmap_interlock_wait	/* pmap_interlock_wait(%rdi:vm) */
+
+	/*
+	 * Need unconditional load cr3
+	 */
+	movq	%r12,%rax
+	movq	TD_PCB(%rax),%rdx	/* RDX = PCB */
+	movq	PCB_CR3(%rdx),%rcx	/* RCX = desired CR3 */
+	jmp	2f			/* unconditional reload */
+1:
+	movq	%r12,%rax		/* restore RAX = newthread */
+#else
+	movq	PCPU(cpumask),%rsi
+	orq	%rsi,VM_PMAP+PM_ACTIVE(%rcx)
+#endif
 	/*
 	 * Restore the MMU address space.  If it is the same as the last
 	 * thread we don't have to invalidate the tlb (i.e. reload cr3).
@@ -336,18 +371,20 @@ ENTRY(cpu_heavy_restore)
 	 * already have been set before we set it above, check? YYY
 	 */
 	movq	TD_PCB(%rax),%rdx		/* RDX = PCB */
-	movq	%cr3,%rsi
-	movq	PCB_CR3(%rdx),%rcx
+	movq	%cr3,%rsi			/* RSI = current CR3 */
+	movq	PCB_CR3(%rdx),%rcx		/* RCX = desired CR3 */
 	cmpq	%rsi,%rcx
 	je	4f
+2:
 #if defined(SWTCH_OPTIM_STATS)
 	decl	_swtch_optim_stats
 	incl	_tlb_flush_count
 #endif
 	movq	%rcx,%cr3
 4:
+
 	/*
-	 * NOTE: %rbx is the previous thread and %eax is the new thread.
+	 * NOTE: %rbx is the previous thread and %rax is the new thread.
 	 *	 %rbx is retained throughout so we can return it.
 	 *
 	 *	 lwkt_switch[_return] is responsible for handling TDF_RUNNING.
@@ -443,6 +480,8 @@ ENTRY(cpu_heavy_restore)
 	movq	PCB_R15(%rdx), %r15
 	movq	PCB_RIP(%rdx), %rax
 	movq	%rax, (%rsp)
+	movw	$KDSEL,%ax
+	movw	%ax,%es
 
 #if JG
 	/*
@@ -495,7 +534,13 @@ ENTRY(cpu_heavy_restore)
 	andq	$~0x0000fc00,%rcx
 	orq     %rcx,%rax
 	movq    %rax,%dr7
+
+	/*
+	 * Clear the QUICKRET flag when restoring a user process context
+	 * so we don't try to do a quick syscall return.
+	 */
 1:
+	andl	$~RQF_QUICKRET,PCPU(reqflags)
 	movq	%rbx,%rax
 	movq	PCB_RBX(%rdx),%rbx
 	ret
@@ -589,9 +634,7 @@ ENTRY(cpu_idle_restore)
 	pushq	$0
 	movq	%rcx,%cr3
 	andl	$~TDF_RUNNING,TD_FLAGS(%rbx)
-#if 0
-	orl	$TDF_RUNNING,TD_FLAGS(%rax)
-#endif
+	orl	$TDF_RUNNING,TD_FLAGS(%rax)	/* manual, no switch_return */
 #ifdef SMP
 	cmpl	$0,PCPU(cpuid)
 	je	1f
@@ -606,7 +649,8 @@ ENTRY(cpu_idle_restore)
 	jmp	cpu_idle
 
 /*
- * cpu_kthread_restore() (current thread is %rax on entry) (one-time execution)
+ * cpu_kthread_restore() (current thread is %rax on entry, previous is %rbx)
+ *			 (one-time execution)
  *
  *	Don't bother setting up any regs other then %rbp so backtraces
  *	don't die.  This restore function is used to bootstrap into an
@@ -624,8 +668,7 @@ ENTRY(cpu_kthread_restore)
 	sti
 	movq	KPML4phys,%rcx
 	movq	TD_PCB(%rax),%r13
-	/* JG "movq $0, %rbp"? "xorq %rbp, %rbp"? */
-	movq	$0,%rbp
+	xorq	%rbp,%rbp
 	movq	%rcx,%cr3
 
 	/*
@@ -638,10 +681,6 @@ ENTRY(cpu_kthread_restore)
 	movq	%rbx,%rdi
 	call	lwkt_switch_return
 	popq	%rax
-#if 0
-	andl	$~TDF_RUNNING,TD_FLAGS(%rbx)
-	orl	$TDF_RUNNING,TD_FLAGS(%rax)
-#endif
 	decl	TD_CRITCOUNT(%rax)
 	movq	PCB_R12(%r13),%rdi	/* argument to RBX function */
 	movq	PCB_RBX(%r13),%rax	/* thread function */
@@ -663,12 +702,13 @@ ENTRY(cpu_kthread_restore)
 ENTRY(cpu_lwkt_switch)
 	pushq	%rbp	/* JG note: GDB hacked to locate ebp rel to td_sp */
 	pushq	%rbx
-	movq	PCPU(curthread),%rbx
+	movq	PCPU(curthread),%rbx	/* becomes old thread in restore */
 	pushq	%r12
 	pushq	%r13
 	pushq	%r14
 	pushq	%r15
 	pushfq
+	cli
 
 #if 1
 	/*
@@ -691,12 +731,11 @@ ENTRY(cpu_lwkt_switch)
 	movq	%rdi,%rax		/* switch to this thread */
 	pushq	$cpu_lwkt_restore
 	movq	%rsp,TD_SP(%rbx)
-	movq	%rax,PCPU(curthread)
-	movq	TD_SP(%rax),%rsp
-
 	/*
 	 * %rax contains new thread, %rbx contains old thread.
 	 */
+	movq	%rax,PCPU(curthread)
+	movq	TD_SP(%rax),%rsp
 	ret
 
 /*
@@ -716,12 +755,23 @@ ENTRY(cpu_lwkt_switch)
 ENTRY(cpu_lwkt_restore)
 	movq	KPML4phys,%rcx	/* YYY borrow but beware desched/cpuchg/exit */
 	movq	%cr3,%rdx
+#if 1
 	cmpq	%rcx,%rdx
 	je	1f
+#endif
 	movq	%rcx,%cr3
 1:
 	/*
-	 * NOTE: %rbx is the previous thread and %eax is the new thread.
+	 * Safety, clear RSP0 in the tss so it isn't pointing at the
+	 * previous thread's kstack (if a heavy weight user thread).
+	 * RSP0 should only be used in ring 3 transitions and kernel
+	 * threads run in ring 0 so there should be none.
+	 */
+	xorq	%rdx,%rdx
+	movq	%rdx, PCPU(common_tss) + TSS_RSP0
+
+	/*
+	 * NOTE: %rbx is the previous thread and %rax is the new thread.
 	 *	 %rbx is retained throughout so we can return it.
 	 *
 	 *	 lwkt_switch[_return] is responsible for handling TDF_RUNNING.

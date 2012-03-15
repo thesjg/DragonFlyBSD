@@ -24,7 +24,6 @@
  * SUCH DAMAGE.
  *
  * $FreeBSD: src/sys/kern/kern_event.c,v 1.2.2.10 2004/04/04 07:03:14 cperciva Exp $
- * $DragonFly: src/sys/kern/kern_event.c,v 1.33 2007/02/03 17:05:57 corecode Exp $
  */
 
 #include <sys/param.h>
@@ -55,14 +54,6 @@
 #include <sys/thread2.h>
 #include <sys/file2.h>
 #include <sys/mplock2.h>
-
-/*
- * Global token for kqueue subsystem
- */
-struct lwkt_token kq_token = LWKT_TOKEN_INITIALIZER(kq_token);
-SYSCTL_LONG(_lwkt, OID_AUTO, kq_collisions,
-    CTLFLAG_RW, &kq_token.t_collisions, 0,
-    "Collision counter of kq_token");
 
 MALLOC_DEFINE(M_KQUEUE, "kqueue", "memory for kqueue system");
 
@@ -260,10 +251,12 @@ filt_proc(struct knote *kn, long hint)
 	if (event == NOTE_EXIT) {
 		struct proc *p = kn->kn_ptr.p_proc;
 		if ((kn->kn_status & KN_DETACHED) == 0) {
+			PHOLD(p);
 			knote_remove(&p->p_klist, kn);
 			kn->kn_status |= KN_DETACHED;
 			kn->kn_data = p->p_xstat;
 			kn->kn_ptr.p_proc = NULL;
+			PRELE(p);
 		}
 		kn->kn_flags |= (EV_EOF | EV_NODATA | EV_ONESHOT); 
 		return (1);
@@ -369,7 +362,7 @@ filt_timerdetach(struct knote *kn)
 
 	calloutp = (struct callout *)kn->kn_hook;
 	callout_terminate(calloutp);
-	FREE(calloutp, M_KQUEUE);
+	kfree(calloutp, M_KQUEUE);
 	kq_ncallouts--;
 }
 #endif
@@ -388,6 +381,8 @@ timer_vector_lookup(struct kev_filter **filt, struct kev_filter_note *fn, void *
  * If we cannot acquire the fevent we sleep and return 0.  The fevent
  * may be stale on return in this case and the caller must restart
  * whatever loop they are in.
+ *
+ * Related kq token must be held.
  */
 static __inline
 int
@@ -406,6 +401,8 @@ kev_filter_entry_acquire(struct kev_filter_entry *fe)
 /*
  * Release an acquired filter entry, clearing KFE_PROCESSING and handling
  * any KFE_REPROCESS events.
+ *
+ * Caller must be holding the related kq token
  *
  * Non-zero is returned if the filter entry is destroyed.
  */
@@ -459,9 +456,11 @@ kqueue_init(struct kqueue *kq, struct filedesc *fdp)
 void
 kqueue_terminate(struct kqueue *kq)
 {
+	struct lwkt_token *tok;
 	struct kev_filter_entry *fe;
 
-	lwkt_gettoken(&kq_token);
+	tok = lwkt_token_pool_lookup(kq);
+	lwkt_gettoken(tok);
 	while ((fe = TAILQ_FIRST(&kq->kq_felist)) != NULL) {
 		if (kev_filter_entry_acquire(fe))
 			kev_filter_entry_drop(fe);
@@ -471,7 +470,7 @@ kqueue_terminate(struct kqueue *kq)
 		kq->kq_fehash = NULL;
 		kq->kq_fehashmask = 0;
 	}
-	lwkt_reltoken(&kq_token);
+	lwkt_reltoken(tok);
 }
 
 /*
@@ -563,11 +562,13 @@ kern_kevent(struct kqueue *kq, int nevents, int *res, void *uap,
 	struct kevent kev[KQ_NEVENTS];
 	struct kev_filter_entry marker;
 	struct kev_filter_note *fn;
+	struct lwkt_token *tok;
 
 	tsp = tsp_in;
 	*res = 0;
 
-	lwkt_gettoken(&kq_token);
+	tok = lwkt_token_pool_lookup(kq);
+	lwkt_gettoken(tok);
 	for ( ;; ) {
 		n = 0;
 		error = kevent_copyinfn(uap, kev, KQ_NEVENTS, &n);
@@ -724,7 +725,7 @@ kern_kevent(struct kqueue *kq, int nevents, int *res, void *uap,
 		error = 0;
 
 done:
-	lwkt_reltoken(&kq_token);
+	lwkt_reltoken(tok);
 	return (error);
 }
 
@@ -786,6 +787,7 @@ kqueue_lookup_filter_entry(struct kqueue *kq, uintptr_t ident, struct file *fp)
 
 	if (fp != NULL) {
 again1:
+		lwkt_getpooltoken(&fp->f_kflist);
 		TAILQ_FOREACH(fe, &fp->f_kflist, fe_link) {
 			if (fe->fe_kq == kq &&
 			    fe->fe_ident == ident) {
@@ -794,12 +796,14 @@ again1:
 				break;
 			}
 		}
+		lwkt_relpooltoken(&fp->f_kflist);
 	} else {
 		if (kq->kq_fehashmask) {
 			struct kev_filter_entry_list *list;
 
 			list = &kq->kq_fehash[
 			    KFE_HASH((u_long)ident, kq->kq_fehashmask)];
+			lwkt_getpooltoken(&fp->f_kflist);
 again2:
 			TAILQ_FOREACH(fe, list, fe_link) {
 				if (fe->fe_ident ==ident) {
@@ -808,6 +812,7 @@ again2:
 					break;
 				}
 			}
+			lwkt_relpooltoken(list);
 		}
 	}
 
@@ -818,6 +823,7 @@ int
 kqueue_register_filter_note(struct kqueue *kq, uintptr_t ident,
     struct kev_filter_note *fn)
 {
+	struct lwkt_token *tok;
 	struct filedesc *fdp = kq->kq_fdp;
 	struct kev_filter_entry *fe;
 	struct kev_filter_entry_list *felist;
@@ -869,11 +875,14 @@ kqueue_register_filter_note(struct kqueue *kq, uintptr_t ident,
 	 */
 	if (isfd) {
 		fp = holdfp(fdp, ident, -1);
-		if (fp == NULL)
+		if (fp == NULL) {
+			lwkt_reltoken(tok);
 			return (EBADF);
+		}
 	}
 
-	lwkt_gettoken(&kq_token);
+	tok = lwkt_token_pool_lookup(kq);
+	lwkt_gettoken(tok);
 	fe = kqueue_lookup_filter_entry(kq, ident, fp);
 
 	/*
@@ -1091,7 +1100,7 @@ error:
 			kev_filter_entry_free(fe);
 	}
 done:
-	lwkt_reltoken(&kq_token);
+	lwkt_reltoken(tok);
 	if (fp != NULL)
 		fdrop(fp);
 
@@ -1102,6 +1111,8 @@ done:
  * Block as necessary until the target time is reached.
  * If tsp is NULL we block indefinitely.  If tsp->ts_secs/nsecs are both
  * 0 we do not block at all.
+ *
+ * Caller must be holding the kq token.
  */
 static int
 kqueue_sleep(struct kqueue *kq, struct timespec *tsp)
@@ -1143,6 +1154,8 @@ kqueue_sleep(struct kqueue *kq, struct timespec *tsp)
  *
  * Continuous mode events may get recycled, do not continue scanning past
  * marker unless no events have been collected.
+ *
+ * Caller must be holding the kq token
  */
 static int
 kqueue_scan(struct kqueue *kq, struct kevent *kevp, int count,
@@ -1306,11 +1319,13 @@ static int
 kqueue_ioctl(struct file *fp, u_long com, caddr_t data,
 	     struct ucred *cred, struct sysmsg *msg)
 {
+	struct lwkt_token *tok;
 	struct kqueue *kq;
 	int error;
 
-	lwkt_gettoken(&kq_token);
 	kq = (struct kqueue *)fp->f_data;
+	tok = lwkt_token_pool_lookup(kq);
+	lwkt_gettoken(tok);
 
 	switch(com) {
 	case FIOASYNC:
@@ -1327,7 +1342,7 @@ kqueue_ioctl(struct file *fp, u_long com, caddr_t data,
 		error = ENOTTY;
 		break;
 	}
-	lwkt_reltoken(&kq_token);
+	lwkt_reltoken(tok);
 	return (error);
 }
 
@@ -1469,11 +1484,25 @@ kev_filter_init(struct kev_filter *filter, struct kev_filter_ops *fops,
 void
 kev_filter(struct kev_filter *filter, short filter_type, long hint)
 {
-	struct kev_filter_entry *fe;
+	struct kqueue *kq;
+	struct kev_filter_entry *fe, *fetmp;
 
-	lwkt_gettoken(&kq_token);
+	lwkt_getpooltoken(list);
 restart:
 	TAILQ_FOREACH(fe, &filter->kf_entry, fe_link) {
+		kq = fe->fe_kq;
+		lwkt_getpooltoken(kq);
+
+		/* temporary verification hack */
+		TAILQ_FOREACH(fetmp, list, fe_link) {
+			if (fe == fetmp)
+				break;
+		}
+		if (fe != fetmp || fe->fe_kq != kq) {
+			lwkt_relpooltoken(kq);
+			goto restart;
+		}
+
 		if (fe->fe_status & KFE_PROCESSING) {
 			/*
 			 * Someone else is processing the filter event, ask
@@ -1482,6 +1511,7 @@ restart:
 			 */
 			if (hint == 0) {
 				fe->fe_status |= KFE_REPROCESS;
+				lwkt_relpooltoken(kq);
 				continue;
 			}
 
@@ -1495,7 +1525,8 @@ restart:
 			 *     we restart the list scan.  FIXME.
 			 */
 			fe->fe_status |= KFE_WAITING | KFE_REPROCESS;
-			tsleep(fe, 0, "kfnc", hz);
+			tsleep(fe, 0, "kfec", hz);
+			lwkt_relpooltoken(kq);
 			goto restart;
 		}
 
@@ -1511,10 +1542,13 @@ restart:
 			if (poll_filter_entry(fe, filter_type, hint))
 				KEV_FILTER_ENTRY_ACTIVATE(fe);
 		}
-		if (kev_filter_entry_release(fe))
+		if (kev_filter_entry_release(fe)) {
+			lwkt_relpooltoken(kq);
 			goto restart;
+		}
+		lwkt_relpooltoken(kq);
 	}
-	lwkt_reltoken(&kq_token);
+	lwkt_relpooltoken(list);
 }
 
 /*
@@ -1527,22 +1561,40 @@ restart:
 void
 kev_filter_entry_fdclose(struct file *fp, struct filedesc *fdp, int fd)
 {
-	struct kev_filter_entry *fe;
+	struct kqueue *kq;
+	struct kev_filter_entry *fe, *fetmp;
 
-	lwkt_gettoken(&kq_token);
+	lwkt_getpooltoken(&fp->f_kflist);
 restart:
 	TAILQ_FOREACH(fe, &fp->f_kflist, fe_link) {
 		if (fe->fe_kq->kq_fdp == fdp && fe->fe_ident == fd) {
+			kq = fe->fe_kq;
+			lwkt_getpooltoken(kq);
+
+			/* temporary verification hack */
+			TAILQ_FOREACH(fetmp, &fp->f_kflist, fe_link) {
+				if (fe == fetmp)
+					break;
+			}
+			if (fe != fetmp || fe->fe_kq->kq_fdp != fdp ||
+			    fe->fe_id != fd || fe->fe_kq != kq) {
+				lwkt_relpooltoken(kq);
+				goto restart;
+			}
+
 			if (kev_filter_entry_acquire(fe))
 				kev_filter_entry_drop(fe);
+			lwkt_relpooltoken(kq);
 			goto restart;
 		}
 	}
-	lwkt_reltoken(&kq_token);
+	lwkt_relpooltoken(&fp->f_kflist);
 }
 
 /*
- * Must be called with KQ token held
+ * Must be called with kq token held
+ *
+ * Caller must hold the related kq token.
  */
 static void
 kev_filter_entry_drop(struct kev_filter_entry *fe)
@@ -1551,13 +1603,14 @@ kev_filter_entry_drop(struct kev_filter_entry *fe)
 	struct kev_filter_entry_list *list;
 	int i;
 
-	ASSERT_LWKT_TOKEN_HELD(&kq_token);
+//	ASSERT_LWKT_TOKEN_HELD(&kq_token);
 
 	if (fe->fe_fd == TRUE)
 		list = &fe->fe_ptr.p_fp->f_kflist;
 	else
 		list = &kq->kq_fehash[KFE_HASH(fe->fe_ident, kq->kq_fehashmask)];
 
+	lwkt_getpooltoken(list);
 	TAILQ_REMOVE(list, fe, fe_link);
 	TAILQ_REMOVE(&kq->kq_felist, fe, fe_kqlink);
 	if (fe->fe_status & KFE_QUEUED) {
@@ -1578,10 +1631,12 @@ kev_filter_entry_drop(struct kev_filter_entry *fe)
 	}
 
 	kev_filter_entry_free(fe);
+	lwkt_relpooltoken(list);
 }
 
 /*
  *
+ * Caller must be holding the kq token
  */
 static void
 kev_filter_entry_enqueue(struct kev_filter_entry *fe)

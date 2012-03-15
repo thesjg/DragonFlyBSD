@@ -57,7 +57,6 @@
 #include <net/netmsg2.h>
 #include <sys/mplock2.h>
 
-static void netmsg_sync_func(netmsg_t msg);
 static void netmsg_service_loop(void *arg);
 static void cpu0_cpufn(struct mbuf **mp, int hoff);
 static void netisr_nohashck(struct mbuf *, const struct pktinfo *);
@@ -181,8 +180,8 @@ netisr_init(void)
 	 */
 	for (i = 0; i < ncpus; ++i) {
 		lwkt_create(netmsg_service_loop, NULL, NULL,
-			    &netisr_cpu[i], TDF_STOPREQ, i,
-			    "netisr_cpu %d", i);
+			    &netisr_cpu[i], TDF_NOSTART|TDF_FORCE_SPINPORT,
+			    i, "netisr_cpu %d", i);
 		netmsg_service_port_init(&netisr_cpu[i].td_msgport);
 		lwkt_schedule(&netisr_cpu[i]);
 	}
@@ -252,7 +251,7 @@ netmsg_service_sync(void)
 	struct netmsg_port_registration *reg;
 	struct netmsg_base smsg;
 
-	netmsg_init(&smsg, NULL, &curthread->td_msgport, 0, netmsg_sync_func);
+	netmsg_init(&smsg, NULL, &curthread->td_msgport, 0, netmsg_sync_handler);
 
 	TAILQ_FOREACH(reg, &netreglist, npr_entry) {
 		lwkt_domsg(reg->npr_port, &smsg.lmsg, 0);
@@ -263,8 +262,8 @@ netmsg_service_sync(void)
  * The netmsg function simply replies the message.  API semantics require
  * EASYNC to be returned if the netmsg function disposes of the message.
  */
-static void
-netmsg_sync_func(netmsg_t msg)
+void
+netmsg_sync_handler(netmsg_t msg)
 {
 	lwkt_replymsg(&msg->lmsg, 0);
 }

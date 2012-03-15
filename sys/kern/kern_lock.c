@@ -75,12 +75,13 @@
 #endif
 
 #define LK_ALL (LK_HAVE_EXCL | LK_WANT_EXCL | LK_WANT_UPGRADE | \
-	LK_SHARE_NONZERO | LK_WAIT_NONZERO)
+		LK_SHARE_NONZERO | LK_WAIT_NONZERO)
 
 static int acquire(struct lock *lkp, int extflags, int wanted);
 
 static LOCK_INLINE void
-sharelock(struct lock *lkp, int incr) {
+sharelock(struct lock *lkp, int incr)
+{
 	lkp->lk_flags |= LK_SHARE_NONZERO;
 	lkp->lk_sharecount += incr;
 }
@@ -368,8 +369,8 @@ lkmatch2:
 		 * lock, awaken upgrade requestor if we are the last shared
 		 * lock, then request an exclusive lock.
 		 */
-		if ( (lkp->lk_flags & (LK_SHARE_NONZERO|LK_WAIT_NONZERO)) ==
-			LK_WAIT_NONZERO) {
+		if ((lkp->lk_flags & (LK_SHARE_NONZERO|LK_WAIT_NONZERO)) ==
+		    LK_WAIT_NONZERO) {
 			++dowakeup;
 		}
 		/* fall into exclusive request */
@@ -486,6 +487,8 @@ lkmatch1:
 				    td->td_lockmgr_stack_id[i] > 0
 				) {
 					td->td_lockmgr_stack_id[i]--;
+					lkp->lk_filename = file;
+					lkp->lk_lineno = line;
 					break;
 				}
 			}
@@ -493,6 +496,8 @@ lkmatch1:
 		} else if (lkp->lk_flags & LK_SHARE_NONZERO) {
 			dowakeup += shareunlock(lkp, 1);
 			COUNT(td, -1);
+		} else {
+			panic("lockmgr: LK_RELEASE: no lock held");
 		}
 		if (lkp->lk_flags & LK_WAIT_NONZERO)
 			++dowakeup;
@@ -528,6 +533,9 @@ lockmgr_kernproc(struct lock *lp)
  * Set the lock to be exclusively held.  The caller is holding the lock's
  * spinlock and the spinlock remains held on return.  A panic will occur
  * if the lock cannot be set to exclusive.
+ *
+ * XXX not only unused but these functions also break EXCLUPGRADE's
+ * atomicy.
  */
 void
 lockmgr_setexclusive_interlocked(struct lock *lkp)

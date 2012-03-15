@@ -192,6 +192,7 @@ kern_execve(struct nlookupdata *nd, struct image_args *args)
 	struct thread *td = curthread;
 	struct lwp *lp = td->td_lwp;
 	struct proc *p = td->td_proc;
+	struct vnode *ovp;
 	register_t *stack_base;
 	struct pargs *pa;
 	struct sigacts *ops;
@@ -415,9 +416,9 @@ interpret:
 	 * mark as execed, wakeup the process that vforked (if any) and tell
 	 * it that it now has its own resources back
 	 */
-	p->p_flag |= P_EXEC;
-	if (p->p_pptr && (p->p_flag & P_PPWAIT)) {
-		p->p_flag &= ~P_PPWAIT;
+	p->p_flags |= P_EXEC;
+	if (p->p_pptr && (p->p_flags & P_PPWAIT)) {
+		p->p_flags &= ~P_PPWAIT;
 		wakeup((caddr_t)p->p_pptr);
 	}
 
@@ -430,7 +431,7 @@ interpret:
 	if ((((attr.va_mode & VSUID) && p->p_ucred->cr_uid != attr.va_uid) ||
 	     ((attr.va_mode & VSGID) && p->p_ucred->cr_gid != attr.va_gid)) &&
 	    (imgp->vp->v_mount->mnt_flag & MNT_NOSUID) == 0 &&
-	    (p->p_flag & P_TRACED) == 0) {
+	    (p->p_flags & P_TRACED) == 0) {
 		/*
 		 * Turn off syscall tracing for set-id programs, except for
 		 * root.  Record any set-id flags first to make sure that
@@ -464,7 +465,7 @@ interpret:
 	} else {
 		if (p->p_ucred->cr_uid == p->p_ucred->cr_ruid &&
 		    p->p_ucred->cr_gid == p->p_ucred->cr_rgid)
-			p->p_flag &= ~P_SUGID;
+			p->p_flags &= ~P_SUGID;
 	}
 
 	/*
@@ -478,12 +479,14 @@ interpret:
 	}
 
 	/*
-	 * Store the vp for use in procfs
+	 * Store the vp for use in procfs.  Be sure to keep p_textvp
+	 * consistent if we block during the switch-over.
 	 */
-	if (p->p_textvp)		/* release old reference */
-		vrele(p->p_textvp);
+	ovp = p->p_textvp;
+	vref(imgp->vp);			/* ref new vp */
 	p->p_textvp = imgp->vp;
-	vref(p->p_textvp);
+	if (ovp)			/* release old vp */
+		vrele(ovp);
 
 	/* Release old namecache handle to text file */
 	if (p->p_textnch.ncp)
@@ -497,7 +500,7 @@ interpret:
          * as we're now a bona fide freshly-execed process.
          */
 	kev_filter(&p->p_filter, 0, NOTE_EXEC);
-	p->p_flag &= ~P_INEXEC;
+	p->p_flags &= ~P_INEXEC;
 
 	/*
 	 * If tracing the process, trap to debugger so breakpoints
@@ -505,7 +508,7 @@ interpret:
 	 */
 	STOPEVENT(p, S_EXEC, 0);
 
-	if (p->p_flag & P_TRACED)
+	if (p->p_flags & P_TRACED)
 		ksignal(p, SIGTRAP);
 
 	/* clear "fork but no exec" flag, as we _are_ execing */
@@ -513,7 +516,7 @@ interpret:
 
 	/* Set values passed into the program in registers. */
 	exec_setregs(imgp->entry_addr, (u_long)(uintptr_t)stack_base,
-	    imgp->ps_strings);
+		     imgp->ps_strings);
 
 	/* Set the access time on the vnode */
 	vn_mark_atime(imgp->vp, td);
@@ -571,7 +574,7 @@ exec_fail:
 	 * clearing it.
 	 */
 	if (imgp->vmspace_destroyed & 2)
-		p->p_flag &= ~P_INEXEC;
+		p->p_flags &= ~P_INEXEC;
 	lwkt_reltoken(&p->p_token);
 	if (imgp->vmspace_destroyed) {
 		/*
@@ -663,6 +666,7 @@ exec_map_page(struct image_params *imgp, vm_pindex_t pageno,
 				vm_page_protect(m, VM_PROT_NONE);
 				vnode_pager_freepage(m);
 			}
+			vm_object_drop(object);
 			return EIO;
 		}
 	}
@@ -758,16 +762,25 @@ exec_new_vmspace(struct image_params *imgp, struct vmspace *vmcopy)
 			return (error);
 	}
 	imgp->vmspace_destroyed |= 2;	/* we are responsible for P_INEXEC */
-	p->p_flag |= P_INEXEC;
+	p->p_flags |= P_INEXEC;
+
+	/*
+	 * After setting P_INEXEC wait for any remaining references to
+	 * the process (p) to go away.
+	 *
+	 * In particular, a vfork/exec sequence will replace p->p_vmspace
+	 * and we must interlock anyone trying to access the space (aka
+	 * procfs or sys_process.c calling procfs_domem()).
+	 *
+	 * If P_PPWAIT is set the parent vfork()'d and has a PHOLD() on us.
+	 */
+	PSTALL(p, "exec1", ((p->p_flags & P_PPWAIT) ? 1 : 0));
 
 	/*
 	 * Blow away entire process VM, if address space not shared,
 	 * otherwise, create a new VM space so that other threads are
 	 * not disrupted.  If we are execing a resident vmspace we
 	 * create a duplicate of it and remap the stack.
-	 *
-	 * The exitingcnt test is not strictly necessary but has been
-	 * included for code sanity (to make the code more deterministic).
 	 */
 	map = &vmspace->vm_map;
 	if (vmcopy) {
@@ -775,13 +788,12 @@ exec_new_vmspace(struct image_params *imgp, struct vmspace *vmcopy)
 		vmspace = imgp->proc->p_vmspace;
 		pmap_remove_pages(vmspace_pmap(vmspace), stack_addr, USRSTACK);
 		map = &vmspace->vm_map;
-	} else if (vmspace->vm_sysref.refcnt == 1 &&
-		   vmspace->vm_exitingcnt == 0) {
+	} else if (vmspace->vm_sysref.refcnt == 1) {
 		shmexit(vmspace);
 		if (vmspace->vm_upcalls)
 			upc_release(vmspace, ONLY_LWP_IN_PROC(imgp->proc));
 		pmap_remove_pages(vmspace_pmap(vmspace),
-			0, VM_MAX_USER_ADDRESS);
+				  0, VM_MAX_USER_ADDRESS);
 		vm_map_remove(map, 0, VM_MAX_USER_ADDRESS);
 	} else {
 		vmspace_exec(imgp->proc, NULL);

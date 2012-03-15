@@ -42,7 +42,6 @@
 
 //#include "use_npx.h"
 #include "use_isa.h"
-#include "opt_atalk.h"
 #include "opt_compat.h"
 #include "opt_cpu.h"
 #include "opt_ddb.h"
@@ -384,8 +383,9 @@ again:
 #endif
 
 	kprintf("avail memory = %ju (%ju MB)\n",
-		(uintmax_t)ptoa(vmstats.v_free_count),
-		(uintmax_t)ptoa(vmstats.v_free_count) / 1024 / 1024);
+		(uintmax_t)ptoa(vmstats.v_free_count + vmstats.v_dma_pages),
+		(uintmax_t)ptoa(vmstats.v_free_count + vmstats.v_dma_pages) /
+		1024 / 1024);
 
 	/*
 	 * Set up buffers, so they can be used to read disk labels.
@@ -448,12 +448,8 @@ sendsig(sig_t catcher, int sig, sigset_t *mask, u_long code)
 	/* Make the size of the saved context visible to userland */
 	sf.sf_uc.uc_mcontext.mc_len = sizeof(sf.sf_uc.uc_mcontext);
 
-	/* Save mailbox pending state for syscall interlock semantics */
-	if (p->p_flag & P_MAILBOX)
-		sf.sf_uc.uc_mcontext.mc_xflags |= PGEX_MAILBOX;
-
 	/* Allocate and validate space for the signal handler context. */
-        if ((lp->lwp_flag & LWP_ALTSTACK) != 0 && !oonstack &&
+        if ((lp->lwp_flags & LWP_ALTSTACK) != 0 && !oonstack &&
 	    SIGISMEMBER(psp->ps_sigonstack, sig)) {
 		sp = (char *)(lp->lwp_sigstk.ss_sp + lp->lwp_sigstk.ss_size -
 			      sizeof(struct sigframe));
@@ -568,6 +564,7 @@ sendsig(sig_t catcher, int sig, sigset_t *mask, u_long code)
 	 */
 	regs->tf_cs = _ucodesel;
 	regs->tf_ss = _udatasel;
+	clear_quickret();
 }
 
 /*
@@ -620,7 +617,6 @@ int
 sys_sigreturn(struct sigreturn_args *uap)
 {
 	struct lwp *lp = curthread->td_lwp;
-	struct proc *p = lp->lwp_proc;
 	struct trapframe *regs;
 	ucontext_t uc;
 	ucontext_t *ucp;
@@ -720,13 +716,6 @@ sys_sigreturn(struct sigreturn_args *uap)
 	crit_enter();
 	npxpop(&ucp->uc_mcontext);
 
-	/*
-	 * Merge saved signal mailbox pending flag to maintain interlock
-	 * semantics against system calls.
-	 */
-	if (ucp->uc_mcontext.mc_xflags & PGEX_MAILBOX)
-		p->p_flag |= P_MAILBOX;
-
 	if (ucp->uc_mcontext.mc_onstack & 1)
 		lp->lwp_sigstk.ss_flags |= SS_ONSTACK;
 	else
@@ -734,6 +723,7 @@ sys_sigreturn(struct sigreturn_args *uap)
 
 	lp->lwp_sigmask = ucp->uc_sigmask;
 	SIG_CANTMASK(lp->lwp_sigmask);
+	clear_quickret();
 	crit_exit();
 	return(EJUSTRETURN);
 }
@@ -820,7 +810,7 @@ sendupcall(struct vmupcall *vu, int morepending)
 	upc_frame.rdx = regs->tf_rdx;
 	upc_frame.flags = regs->tf_rflags;
 	upc_frame.oldip = regs->tf_rip;
-	if (copyout(&upc_frame, (void *)(regs->tf_rsp - sizeof(upc_frame)),
+	if (copyout(&upc_frame, (void *)(regs->tf_rsp - sizeof(upc_frame) - 128),
 	    sizeof(upc_frame)) != 0) {
 		kprintf("bad stack on upcall\n");
 	} else {
@@ -828,7 +818,7 @@ sendupcall(struct vmupcall *vu, int morepending)
 		regs->tf_rcx = (register_t)vu->vu_data;
 		regs->tf_rdx = (register_t)lp->lwp_upcall;
 		regs->tf_rip = (register_t)vu->vu_ctx;
-		regs->tf_rsp -= sizeof(upc_frame);
+		regs->tf_rsp -= sizeof(upc_frame) + 128;
 	}
 }
 
@@ -1061,6 +1051,7 @@ exec_setregs(u_long entry, u_long stack, u_long ps_strings)
 	/* was i386_user_cleanup() in NetBSD */
 	user_ldt_free(pcb);
   
+	clear_quickret();
 	bzero((char *)regs, sizeof(struct trapframe));
 	regs->tf_rip = entry;
 	regs->tf_rsp = ((stack - 8) & ~0xFul) + 8; /* align the stack */
@@ -1183,14 +1174,14 @@ SYSCTL_ULONG(_machdep, OID_AUTO, guessed_bootdev,
 
 int _default_ldt;
 struct user_segment_descriptor gdt[NGDT * MAXCPU];	/* global descriptor table */
-static struct gate_descriptor idt0[NIDT];
-struct gate_descriptor *idt = &idt0[0];	/* interrupt descriptor table */
+struct gate_descriptor idt_arr[MAXCPU][NIDT];
 #if JG
 union descriptor ldt[NLDT];		/* local descriptor table */
 #endif
 
 /* table descriptors - used to load tables by cpu */
-struct region_descriptor r_gdt, r_idt;
+struct region_descriptor r_gdt;
+struct region_descriptor r_idt_arr[MAXCPU];
 
 /* JG proc0paddr is a virtual address */
 void *proc0paddr;
@@ -1285,19 +1276,22 @@ struct soft_segment_descriptor gdt_segs[] = {
 };
 
 void
-setidt(int idx, inthand_t *func, int typ, int dpl, int ist)
+setidt_global(int idx, inthand_t *func, int typ, int dpl, int ist)
 {
-	struct gate_descriptor *ip;
+	int cpu;
 
-	ip = idt + idx;
-	ip->gd_looffset = (uintptr_t)func;
-	ip->gd_selector = GSEL(GCODE_SEL, SEL_KPL);
-	ip->gd_ist = ist;
-	ip->gd_xx = 0;
-	ip->gd_type = typ;
-	ip->gd_dpl = dpl;
-	ip->gd_p = 1;
-	ip->gd_hioffset = ((uintptr_t)func)>>16 ;
+	for (cpu = 0; cpu < MAXCPU; ++cpu) {
+		struct gate_descriptor *ip = &idt_arr[cpu][idx];
+
+		ip->gd_looffset = (uintptr_t)func;
+		ip->gd_selector = GSEL(GCODE_SEL, SEL_KPL);
+		ip->gd_ist = ist;
+		ip->gd_xx = 0;
+		ip->gd_type = typ;
+		ip->gd_dpl = dpl;
+		ip->gd_p = 1;
+		ip->gd_hioffset = ((uintptr_t)func)>>16 ;
+	}
 }
 
 #define	IDTVEC(name)	__CONCAT(X,name)
@@ -1428,9 +1422,12 @@ getmemsize(caddr_t kmdp, u_int64_t first)
 						"memory region, ignoring "
 						"second region\n");
 				}
-				continue;
+				break;
 			}
 		}
+		if (i <= physmap_idx)
+			continue;
+
 		Realmem += smap->length;
 
 		if (smap->base == physmap[physmap_idx + 1]) {
@@ -1724,7 +1721,7 @@ u_int64_t
 hammer_time(u_int64_t modulep, u_int64_t physfree)
 {
 	caddr_t kmdp;
-	int gsel_tss, x;
+	int gsel_tss, x, cpu;
 #if JG
 	int metadata_missing, off;
 #endif
@@ -1828,30 +1825,33 @@ hammer_time(u_int64_t modulep, u_int64_t physfree)
 
 	/* exceptions */
 	for (x = 0; x < NIDT; x++)
-		setidt(x, &IDTVEC(rsvd), SDT_SYSIGT, SEL_KPL, 0);
-	setidt(IDT_DE, &IDTVEC(div),  SDT_SYSIGT, SEL_KPL, 0);
-	setidt(IDT_DB, &IDTVEC(dbg),  SDT_SYSIGT, SEL_KPL, 0);
-	setidt(IDT_NMI, &IDTVEC(nmi),  SDT_SYSIGT, SEL_KPL, 1);
- 	setidt(IDT_BP, &IDTVEC(bpt),  SDT_SYSIGT, SEL_UPL, 0);
-	setidt(IDT_OF, &IDTVEC(ofl),  SDT_SYSIGT, SEL_KPL, 0);
-	setidt(IDT_BR, &IDTVEC(bnd),  SDT_SYSIGT, SEL_KPL, 0);
-	setidt(IDT_UD, &IDTVEC(ill),  SDT_SYSIGT, SEL_KPL, 0);
-	setidt(IDT_NM, &IDTVEC(dna),  SDT_SYSIGT, SEL_KPL, 0);
-	setidt(IDT_DF, &IDTVEC(dblfault), SDT_SYSIGT, SEL_KPL, 1);
-	setidt(IDT_FPUGP, &IDTVEC(fpusegm),  SDT_SYSIGT, SEL_KPL, 0);
-	setidt(IDT_TS, &IDTVEC(tss),  SDT_SYSIGT, SEL_KPL, 0);
-	setidt(IDT_NP, &IDTVEC(missing),  SDT_SYSIGT, SEL_KPL, 0);
-	setidt(IDT_SS, &IDTVEC(stk),  SDT_SYSIGT, SEL_KPL, 0);
-	setidt(IDT_GP, &IDTVEC(prot),  SDT_SYSIGT, SEL_KPL, 0);
-	setidt(IDT_PF, &IDTVEC(page),  SDT_SYSIGT, SEL_KPL, 0);
-	setidt(IDT_MF, &IDTVEC(fpu),  SDT_SYSIGT, SEL_KPL, 0);
-	setidt(IDT_AC, &IDTVEC(align), SDT_SYSIGT, SEL_KPL, 0);
-	setidt(IDT_MC, &IDTVEC(mchk),  SDT_SYSIGT, SEL_KPL, 0);
-	setidt(IDT_XF, &IDTVEC(xmm), SDT_SYSIGT, SEL_KPL, 0);
+		setidt_global(x, &IDTVEC(rsvd), SDT_SYSIGT, SEL_KPL, 0);
+	setidt_global(IDT_DE, &IDTVEC(div),  SDT_SYSIGT, SEL_KPL, 0);
+	setidt_global(IDT_DB, &IDTVEC(dbg),  SDT_SYSIGT, SEL_KPL, 0);
+	setidt_global(IDT_NMI, &IDTVEC(nmi),  SDT_SYSIGT, SEL_KPL, 1);
+ 	setidt_global(IDT_BP, &IDTVEC(bpt),  SDT_SYSIGT, SEL_UPL, 0);
+	setidt_global(IDT_OF, &IDTVEC(ofl),  SDT_SYSIGT, SEL_KPL, 0);
+	setidt_global(IDT_BR, &IDTVEC(bnd),  SDT_SYSIGT, SEL_KPL, 0);
+	setidt_global(IDT_UD, &IDTVEC(ill),  SDT_SYSIGT, SEL_KPL, 0);
+	setidt_global(IDT_NM, &IDTVEC(dna),  SDT_SYSIGT, SEL_KPL, 0);
+	setidt_global(IDT_DF, &IDTVEC(dblfault), SDT_SYSIGT, SEL_KPL, 1);
+	setidt_global(IDT_FPUGP, &IDTVEC(fpusegm),  SDT_SYSIGT, SEL_KPL, 0);
+	setidt_global(IDT_TS, &IDTVEC(tss),  SDT_SYSIGT, SEL_KPL, 0);
+	setidt_global(IDT_NP, &IDTVEC(missing),  SDT_SYSIGT, SEL_KPL, 0);
+	setidt_global(IDT_SS, &IDTVEC(stk),  SDT_SYSIGT, SEL_KPL, 0);
+	setidt_global(IDT_GP, &IDTVEC(prot),  SDT_SYSIGT, SEL_KPL, 0);
+	setidt_global(IDT_PF, &IDTVEC(page),  SDT_SYSIGT, SEL_KPL, 0);
+	setidt_global(IDT_MF, &IDTVEC(fpu),  SDT_SYSIGT, SEL_KPL, 0);
+	setidt_global(IDT_AC, &IDTVEC(align), SDT_SYSIGT, SEL_KPL, 0);
+	setidt_global(IDT_MC, &IDTVEC(mchk),  SDT_SYSIGT, SEL_KPL, 0);
+	setidt_global(IDT_XF, &IDTVEC(xmm), SDT_SYSIGT, SEL_KPL, 0);
 
-	r_idt.rd_limit = sizeof(idt0) - 1;
-	r_idt.rd_base = (long) idt;
-	lidt(&r_idt);
+	for (cpu = 0; cpu < MAXCPU; ++cpu) {
+		r_idt_arr[cpu].rd_limit = sizeof(idt_arr[cpu]) - 1;
+		r_idt_arr[cpu].rd_base = (long) &idt_arr[cpu][0];
+	}
+
+	lidt(&r_idt_arr[0]);
 
 	/*
 	 * Initialize the console before we print anything out.
@@ -1876,9 +1876,7 @@ hammer_time(u_int64_t modulep, u_int64_t physfree)
 	 * SHOULD be after elcr_probe()
 	 */
 	MachIntrABI_ICU.initmap();
-#ifdef SMP
 	MachIntrABI_IOAPIC.initmap();
-#endif
 
 #ifdef DDB
 	kdb_init();
@@ -1922,7 +1920,7 @@ hammer_time(u_int64_t modulep, u_int64_t physfree)
 	msr = ((u_int64_t)GSEL(GCODE_SEL, SEL_KPL) << 32) |
 	      ((u_int64_t)GSEL(GUCODE32_SEL, SEL_UPL) << 48);
 	wrmsr(MSR_STAR, msr);
-	wrmsr(MSR_SF_MASK, PSL_NT|PSL_T|PSL_I|PSL_C|PSL_D);
+	wrmsr(MSR_SF_MASK, PSL_NT|PSL_T|PSL_I|PSL_C|PSL_D|PSL_IOPL);
 
 	getmemsize(kmdp, physfree);
 	init_param2(physmem);
@@ -1990,6 +1988,8 @@ is_globaldata_space(vm_offset_t saddr, vm_offset_t eaddr)
 	    eaddr <= (vm_offset_t)&CPU_prvspace[MAXCPU]) {
 		return (TRUE);
 	}
+	if (saddr >= DMAP_MIN_ADDRESS && eaddr <= DMAP_MAX_ADDRESS)
+		return (TRUE);
 	return (FALSE);
 }
 
@@ -2019,7 +2019,8 @@ fill_regs(struct lwp *lp, struct reg *regs)
 {
 	struct trapframe *tp;
 
-	tp = lp->lwp_md.md_regs;
+	if ((tp = lp->lwp_md.md_regs) == NULL)
+		return EINVAL;
 	bcopy(&tp->tf_rdi, &regs->r_rdi, sizeof(*regs));
 	return (0);
 }
@@ -2034,6 +2035,7 @@ set_regs(struct lwp *lp, struct reg *regs)
 	    !CS_SECURE(regs->r_cs))
 		return (EINVAL);
 	bcopy(&regs->r_rdi, &tp->tf_rdi, sizeof(*regs));
+	clear_quickret();
 	return (0);
 }
 
@@ -2086,6 +2088,8 @@ set_fpregs_xmm(struct save87 *sv_87, struct savexmm *sv_xmm)
 int
 fill_fpregs(struct lwp *lp, struct fpreg *fpregs)
 {
+	if (lp->lwp_thread == NULL || lp->lwp_thread->td_pcb == NULL)
+		return EINVAL;
 #ifndef CPU_DISABLE_SSE
 	if (cpu_fxsr) {
 		fill_fpregs_xmm(&lp->lwp_thread->td_pcb->pcb_save.sv_xmm,
@@ -2114,6 +2118,8 @@ set_fpregs(struct lwp *lp, struct fpreg *fpregs)
 int
 fill_dbregs(struct lwp *lp, struct dbreg *dbregs)
 {
+	struct pcb *pcb;
+
         if (lp == NULL) {
                 dbregs->dr[0] = rdr0();
                 dbregs->dr[1] = rdr1();
@@ -2123,19 +2129,18 @@ fill_dbregs(struct lwp *lp, struct dbreg *dbregs)
                 dbregs->dr[5] = rdr5();
                 dbregs->dr[6] = rdr6();
                 dbregs->dr[7] = rdr7();
-        } else {
-		struct pcb *pcb;
-
-                pcb = lp->lwp_thread->td_pcb;
-                dbregs->dr[0] = pcb->pcb_dr0;
-                dbregs->dr[1] = pcb->pcb_dr1;
-                dbregs->dr[2] = pcb->pcb_dr2;
-                dbregs->dr[3] = pcb->pcb_dr3;
-                dbregs->dr[4] = 0;
-                dbregs->dr[5] = 0;
-                dbregs->dr[6] = pcb->pcb_dr6;
-                dbregs->dr[7] = pcb->pcb_dr7;
+		return (0);
         }
+	if (lp->lwp_thread == NULL || (pcb = lp->lwp_thread->td_pcb) == NULL)
+		return EINVAL;
+	dbregs->dr[0] = pcb->pcb_dr0;
+	dbregs->dr[1] = pcb->pcb_dr1;
+	dbregs->dr[2] = pcb->pcb_dr2;
+	dbregs->dr[3] = pcb->pcb_dr3;
+	dbregs->dr[4] = 0;
+	dbregs->dr[5] = 0;
+	dbregs->dr[6] = pcb->pcb_dr6;
+	dbregs->dr[7] = pcb->pcb_dr7;
 	return (0);
 }
 

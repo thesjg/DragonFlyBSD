@@ -134,7 +134,7 @@
 int	current_postcode;
 
 /** XXX FIXME: what system files declare these??? */
-extern struct region_descriptor r_gdt, r_idt;
+extern struct region_descriptor r_gdt;
 
 extern int nkpt;
 extern int naps;
@@ -247,7 +247,7 @@ init_secondary(void)
 	wrmsr(MSR_GSBASE, (u_int64_t)ps);
 	wrmsr(MSR_KGSBASE, 0);		/* XXX User value while we're in the kernel */
 
-	lidt(&r_idt);
+	lidt(&r_idt_arr[mdcpu->mi.gd_cpuid]);
 
 #if 0
 	lldt(_default_ldt);
@@ -290,7 +290,7 @@ init_secondary(void)
 	msr = ((u_int64_t)GSEL(GCODE_SEL, SEL_KPL) << 32) |
 	      ((u_int64_t)GSEL(GUCODE32_SEL, SEL_UPL) << 48);
 	wrmsr(MSR_STAR, msr);
-	wrmsr(MSR_SF_MASK, PSL_NT|PSL_T|PSL_I|PSL_C|PSL_D);
+	wrmsr(MSR_SF_MASK, PSL_NT|PSL_T|PSL_I|PSL_C|PSL_D|PSL_IOPL);
 
 	pmap_set_opt();		/* PSE/4MB pages, etc */
 #if JGXXX

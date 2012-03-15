@@ -420,9 +420,13 @@ vfs_register(struct vfsconf *vfc)
 		/* extended attribute control */
 		vfsops->vfs_extattrctl = vfs_stdextattrctl;
 	}
-	if (vfsops->vfs_account == NULL) {
-		/* file system uid and gid accounting */
-		vfsops->vfs_account = vfs_stdaccount;
+
+	/* file system uid and gid accounting */
+	if (vfsops->vfs_acinit == NULL) {
+		vfsops->vfs_acinit = vfs_stdac_init;
+	}
+	if (vfsops->vfs_acdone == NULL) {
+		vfsops->vfs_acdone = vfs_stdac_done;
 	}
 
 	/*

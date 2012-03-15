@@ -275,7 +275,6 @@ extern void	kev_filter(struct kev_filter *filter, short filter_type,
 
 extern void	kev_filter_entry_fdclose(struct file *fp, struct filedesc *fdp,
     int fd);
-
 extern void	kqueue_init(struct kqueue *kq, struct filedesc *fdp);
 extern struct 	kev_filter_entry *kqueue_lookup_filter_entry(struct kqueue *kq,
     uintptr_t ident, struct file *fp);

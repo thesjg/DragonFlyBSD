@@ -200,6 +200,15 @@ userenter(struct thread *curtd, struct proc *curp)
 		if (ocred)
 			crfree(ocred);
 	}
+
+	/*
+	 * Debugging, remove top two user stack pages to catch kernel faults
+	 */
+	if (freeze_on_seg_fault > 1 && curtd->td_lwp) {
+		pmap_remove(vmspace_pmap(curtd->td_lwp->lwp_vmspace),
+			    0x00007FFFFFFFD000LU,
+			    0x0000800000000000LU);
+	}
 }
 
 /*
@@ -221,7 +230,7 @@ userret(struct lwp *lp, struct trapframe *frame, int sticks)
 	 * This may do a copyout and block, so do it first even though it
 	 * means some system time will be charged as user time.
 	 */
-	if (p->p_flag & P_PROFIL) {
+	if (p->p_flags & P_PROFIL) {
 		addupc_task(p, frame->tf_rip, 
 			(u_int)((int)lp->lwp_thread->td_sticks - sticks));
 	}
@@ -230,7 +239,7 @@ recheck:
 	/*
 	 * If the jungle wants us dead, so be it.
 	 */
-	if (lp->lwp_flag & LWP_WEXIT) {
+	if (lp->lwp_mpflags & LWP_MP_WEXIT) {
 		lwkt_gettoken(&p->p_token);
 		lwp_exit(0);
 		lwkt_reltoken(&p->p_token);	/* NOT REACHED */
@@ -240,9 +249,9 @@ recheck:
 	 * Block here if we are in a stopped state.
 	 */
 	if (p->p_stat == SSTOP || dump_stop_usertds) {
-		get_mplock();
+		lwkt_gettoken(&p->p_token);
 		tstop();
-		rel_mplock();
+		lwkt_reltoken(&p->p_token);
 		goto recheck;
 	}
 
@@ -250,10 +259,20 @@ recheck:
 	 * Post any pending upcalls.  If running a virtual kernel be sure
 	 * to restore the virtual kernel's vmspace before posting the upcall.
 	 */
-	if (p->p_flag & P_UPCALLPEND) {
+	if (p->p_flags & (P_SIGVTALRM | P_SIGPROF | P_UPCALLPEND)) {
 		lwkt_gettoken(&p->p_token);
-		p->p_flag &= ~P_UPCALLPEND;
-		postupcall(lp);
+		if (p->p_flags & P_SIGVTALRM) {
+			p->p_flags &= ~P_SIGVTALRM;
+			ksignal(p, SIGVTALRM);
+		}
+		if (p->p_flags & P_SIGPROF) {
+			p->p_flags &= ~P_SIGPROF;
+			ksignal(p, SIGPROF);
+		}
+		if (p->p_flags & P_UPCALLPEND) {
+			p->p_flags &= ~P_UPCALLPEND;
+			postupcall(lp);
+		}
 		lwkt_reltoken(&p->p_token);
 		goto recheck;
 	}
@@ -276,14 +295,16 @@ recheck:
 	 * (such as SIGKILL).  proc0 (the swapin scheduler) is already
 	 * aware of our situation, we do not have to wake it up.
 	 */
-	if (p->p_flag & P_SWAPPEDOUT) {
+	if (p->p_flags & P_SWAPPEDOUT) {
+		lwkt_gettoken(&p->p_token);
 		get_mplock();
-		p->p_flag |= P_SWAPWAIT;
+		p->p_flags |= P_SWAPWAIT;
 		swapin_request();
-		if (p->p_flag & P_SWAPWAIT)
+		if (p->p_flags & P_SWAPWAIT)
 			tsleep(p, PCATCH, "SWOUT", 0);
-		p->p_flag &= ~P_SWAPWAIT;
+		p->p_flags &= ~P_SWAPWAIT;
 		rel_mplock();
+		lwkt_reltoken(&p->p_token);
 		goto recheck;
 	}
 
@@ -291,7 +312,7 @@ recheck:
 	 * Make sure postsig() handled request to restore old signal mask after
 	 * running signal handler.
 	 */
-	KKASSERT((lp->lwp_flag & LWP_OLDMASK) == 0);
+	KKASSERT((lp->lwp_flags & LWP_OLDMASK) == 0);
 }
 
 /*
@@ -310,9 +331,9 @@ userexit(struct lwp *lp)
 	 * after this loop will generate another AST.
 	 */
 	while (lp->lwp_proc->p_stat == SSTOP) {
-		get_mplock();
+		lwkt_gettoken(&lp->lwp_proc->p_token);
 		tstop();
-		rel_mplock();
+		lwkt_reltoken(&lp->lwp_proc->p_token);
 	}
 
 	/*
@@ -384,6 +405,7 @@ trap(struct trapframe *frame)
 	vm_offset_t eva;
 
 	p = td->td_proc;
+	clear_quickret();
 
 #ifdef DDB
         /*
@@ -836,6 +858,19 @@ trap_pfault(struct trapframe *frame, int usermode)
 			goto nogo;
 		}
 
+		/*
+		 * Debugging, try to catch kernel faults on the user address space when not inside
+		 * on onfault (e.g. copyin/copyout) routine.
+		 */
+		if (usermode == 0 && (td->td_pcb == NULL || td->td_pcb->pcb_onfault == NULL)) {
+			if (freeze_on_seg_fault) {
+				kprintf("trap_pfault: user address fault from kernel mode "
+					"%016lx\n", (long)frame->tf_addr);
+				while (freeze_on_seg_fault) {
+					    tsleep(&freeze_on_seg_fault, 0, "frzseg", hz * 20);
+				}
+			}
+		}
 		map = &vm->vm_map;
 	}
 
@@ -902,11 +937,11 @@ nogo:
 	if (td->td_lwp->lwp_vkernel == NULL) {
 		if (bootverbose || freeze_on_seg_fault || ddb_on_seg_fault) {
 			kprintf("seg-fault ft=%04x ff=%04x addr=%p rip=%p "
-			    "pid=%d p_comm=%s\n",
+			    "pid=%d cpu=%d p_comm=%s\n",
 			    ftype, fault_flags,
 			    (void *)frame->tf_addr,
 			    (void *)frame->tf_rip,
-			    p->p_pid, p->p_comm);
+			    p->p_pid, mycpu->gd_cpuid, p->p_comm);
 		}
 #ifdef DDB
 		while (freeze_on_seg_fault) {
@@ -1241,6 +1276,9 @@ out:
 		 * (which was holding the value of %rcx) is restored for
 		 * the next iteration.
 		 */
+		if (frame->tf_err != 0 && frame->tf_err != 2)
+			kprintf("lp %s:%d frame->tf_err is weird %ld\n",
+				td->td_comm, lp->lwp_proc->p_pid, frame->tf_err);
 		frame->tf_rip -= frame->tf_err;
 		frame->tf_r10 = frame->tf_rcx;
 		break;
@@ -1352,9 +1390,9 @@ generic_lwp_return(struct lwp *lp, struct trapframe *frame)
 	if (KTRPOINT(lp->lwp_thread, KTR_SYSRET))
 		ktrsysret(lp, SYS_fork, 0, 0);
 #endif
-	p->p_flag |= P_PASSIVE_ACQ;
+	lp->lwp_flags |= LWP_PASSIVE_ACQ;
 	userexit(lp);
-	p->p_flag &= ~P_PASSIVE_ACQ;
+	lp->lwp_flags &= ~LWP_PASSIVE_ACQ;
 }
 
 /*

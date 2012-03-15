@@ -347,6 +347,9 @@ ioapic_gsi_setup(int gsi)
 		return;
 	}
 
+	trig = 0;	/* silence older gcc's */
+	pola = 0;	/* silence older gcc's */
+
 	for (irq = 0; irq < ISA_IRQ_CNT; ++irq) {
 		const struct ioapic_intsrc *int_src =
 		    &ioapic_conf.ioc_intsrc[irq];
@@ -374,9 +377,11 @@ ioapic_gsi_setup(int gsi)
 				 *
 				 * This GSI is not used, disable it.
 				 */
+				imen_lock();
 				ioapic_pin_setup(ioapic_gsi_ioaddr(gsi),
 				    ioapic_gsi_pin(gsi), 0,
 				    INTR_TRIGGER_EDGE, INTR_POLARITY_HIGH, 0);
+				imen_unlock();
 				return;
 			}
 			trig = INTR_TRIGGER_EDGE;

@@ -36,7 +36,6 @@
  * SUCH DAMAGE.
  *
  * $FreeBSD: src/sys/ntfs/ntfs_vnops.c,v 1.9.2.4 2002/08/06 19:35:18 semenu Exp $
- * $DragonFly: src/sys/vfs/ntfs/ntfs_vnops.c,v 1.44 2007/11/20 21:03:50 dillon Exp $
  *
  */
 
@@ -69,6 +68,8 @@
 #include <vm/vm_extern.h>
 
 #include <sys/sysctl.h>
+
+#include <sys/buf2.h>
 
 /*#define NTFS_DEBUG 1*/
 #include "ntfs.h"
@@ -663,8 +664,7 @@ readdone:
 		ddprintf(("ntfs_readdir: %d cookies\n",ncookies));
 		if (uio->uio_segflg != UIO_SYSSPACE || uio->uio_iovcnt != 1)
 			panic("ntfs_readdir: unexpected uio from NFS server");
-		MALLOC(cookies, off_t *, ncookies * sizeof(off_t),
-		       M_TEMP, M_WAITOK);
+		cookies = kmalloc(ncookies * sizeof(off_t), M_TEMP, M_WAITOK);
 		cookiep = cookies;
 		while (off < num)
 			*cookiep++ = ++off;

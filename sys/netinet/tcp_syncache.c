@@ -69,7 +69,6 @@
  * SUCH DAMAGE.
  *
  * $FreeBSD: src/sys/netinet/tcp_syncache.c,v 1.5.2.14 2003/02/24 04:02:27 silby Exp $
- * $DragonFly: src/sys/netinet/tcp_syncache.c,v 1.35 2008/11/22 11:03:35 sephe Exp $
  */
 
 #include "opt_inet.h"
@@ -313,9 +312,8 @@ syncache_init(void)
 
 		syncache_percpu = &tcp_syncache_percpu[cpu];
 		/* Allocate the hash table. */
-		MALLOC(syncache_percpu->hashbase, struct syncache_head *,
-		    tcp_syncache.hashsize * sizeof(struct syncache_head),
-		    M_SYNCACHE, M_WAITOK);
+		syncache_percpu->hashbase = kmalloc(tcp_syncache.hashsize * sizeof(struct syncache_head),
+						    M_SYNCACHE, M_WAITOK);
 
 		/* Initialize the hash buckets. */
 		for (i = 0; i < tcp_syncache.hashsize; i++) {
@@ -329,7 +327,7 @@ syncache_init(void)
 		for (i = 0; i <= SYNCACHE_MAXREXMTS; i++) {
 			/* Initialize the timer queues. */
 			TAILQ_INIT(&syncache_percpu->timerq[i]);
-			callout_init(&syncache_percpu->tt_timerq[i]);
+			callout_init_mp(&syncache_percpu->tt_timerq[i]);
 
 			syncache_percpu->mrec[i].slot = i;
 			syncache_percpu->mrec[i].port = cpu_portfn(cpu);
@@ -686,6 +684,25 @@ syncache_socket(struct syncache *sc, struct socket *lso, struct mbuf *m)
 #else
 	const boolean_t isipv6 = FALSE;
 #endif
+	struct sockaddr_in sin_faddr;
+	struct sockaddr_in6 sin6_faddr;
+	struct sockaddr *faddr;
+
+	if (isipv6) {
+		faddr = (struct sockaddr *)&sin6_faddr;
+		sin6_faddr.sin6_family = AF_INET6;
+		sin6_faddr.sin6_len = sizeof(sin6_faddr);
+		sin6_faddr.sin6_addr = sc->sc_inc.inc6_faddr;
+		sin6_faddr.sin6_port = sc->sc_inc.inc_fport;
+		sin6_faddr.sin6_flowinfo = sin6_faddr.sin6_scope_id = 0;
+	} else {
+		faddr = (struct sockaddr *)&sin_faddr;
+		sin_faddr.sin_family = AF_INET;
+		sin_faddr.sin_len = sizeof(sin_faddr);
+		sin_faddr.sin_addr = sc->sc_inc.inc_faddr;
+		sin_faddr.sin_port = sc->sc_inc.inc_fport;
+		bzero(sin_faddr.sin_zero, sizeof(sin_faddr.sin_zero));
+	}
 
 	/*
 	 * Ok, create the full blown connection, and set things up
@@ -696,7 +713,7 @@ syncache_socket(struct syncache *sc, struct socket *lso, struct mbuf *m)
 	 * Set the protocol processing port for the socket to the current
 	 * port (that the connection came in on).
 	 */
-	so = sonewconn(lso, SS_ISCONNECTED);
+	so = sonewconn_faddr(lso, SS_ISCONNECTED, faddr);
 	if (so == NULL) {
 		/*
 		 * Drop the connection; we will send a RST if the peer
@@ -742,7 +759,6 @@ syncache_socket(struct syncache *sc, struct socket *lso, struct mbuf *m)
 #endif
 	if (isipv6) {
 		struct in6_addr laddr6;
-		struct sockaddr_in6 sin6;
 		/*
 		 * Inherit socket options from the listening socket.
 		 * Note that in6p_inputopts are not (and should not be)
@@ -759,21 +775,15 @@ syncache_socket(struct syncache *sc, struct socket *lso, struct mbuf *m)
 		inp->in6p_route = sc->sc_route6;
 		sc->sc_route6.ro_rt = NULL;
 
-		sin6.sin6_family = AF_INET6;
-		sin6.sin6_len = sizeof sin6;
-		sin6.sin6_addr = sc->sc_inc.inc6_faddr;
-		sin6.sin6_port = sc->sc_inc.inc_fport;
-		sin6.sin6_flowinfo = sin6.sin6_scope_id = 0;
 		laddr6 = inp->in6p_laddr;
 		if (IN6_IS_ADDR_UNSPECIFIED(&inp->in6p_laddr))
 			inp->in6p_laddr = sc->sc_inc.inc6_laddr;
-		if (in6_pcbconnect(inp, (struct sockaddr *)&sin6, &thread0)) {
+		if (in6_pcbconnect(inp, faddr, &thread0)) {
 			inp->in6p_laddr = laddr6;
 			goto abort;
 		}
 	} else {
 		struct in_addr laddr;
-		struct sockaddr_in sin;
 
 		inp->inp_options = ip_srcroute(m);
 		if (inp->inp_options == NULL) {
@@ -783,15 +793,10 @@ syncache_socket(struct syncache *sc, struct socket *lso, struct mbuf *m)
 		inp->inp_route = sc->sc_route;
 		sc->sc_route.ro_rt = NULL;
 
-		sin.sin_family = AF_INET;
-		sin.sin_len = sizeof sin;
-		sin.sin_addr = sc->sc_inc.inc_faddr;
-		sin.sin_port = sc->sc_inc.inc_fport;
-		bzero(sin.sin_zero, sizeof sin.sin_zero);
 		laddr = inp->inp_laddr;
 		if (inp->inp_laddr.s_addr == INADDR_ANY)
 			inp->inp_laddr = sc->sc_inc.inc_laddr;
-		if (in_pcbconnect(inp, (struct sockaddr *)&sin, &thread0)) {
+		if (in_pcbconnect(inp, faddr, &thread0)) {
 			inp->inp_laddr = laddr;
 			goto abort;
 		}
@@ -1381,7 +1386,7 @@ syncookie_generate(struct syncache *sc)
 			tcp_secret[idx].ts_secbits[i] = karc4random();
 		tcp_secret[idx].ts_expire = ticks + SYNCOOKIE_TIMEOUT;
 	}
-	for (data = sizeof(tcp_msstab) / sizeof(int) - 1; data > 0; data--)
+	for (data = NELEM(tcp_msstab) - 1; data > 0; data--)
 		if (tcp_msstab[data] <= sc->sc_peer_mss)
 			break;
 	data = (data << SYNCOOKIE_WNDBITS) | idx;

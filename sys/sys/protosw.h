@@ -144,6 +144,7 @@ struct protosw {
 #define	PR_ADDR_OPT	0x80		/* allow addresses during delivery */
 #define PR_MPSAFE	0x0100		/* protocal is MPSAFE */
 #define PR_SYNC_PORT	0x0200		/* synchronous port (no proto thrds) */
+#define PR_ASYNC_SEND	0x0400		/* async pru_send */
 
 /*
  * The arguments to usrreq are:
@@ -217,18 +218,19 @@ struct pru_attach_info {
  * These are netmsg'd requests almost universally in the context of the
  * appropriate protocol thread.  Exceptions:
  *
- *	pru_accept() - called synchronously from user context
- *
  *	pru_sosend() - called synchronously from user context, typically
  *		       runs generic kernel code and then messages via
  *		       pru_send().
  *
  *	pru_soreceive() - called synchronously from user context.  Typically
  *			  runs generic kernel code and remains synchronous.
+ *
+ *	pru_savefaddr() - called synchronoutly by protocol thread. Typically
+ *			  save the foreign address into socket.so_faddr.
  */
 struct pr_usrreqs {
 	void	(*pru_abort) (netmsg_t msg);
-	void	(*pru_accept) (netmsg_t msg);	/* synchronous call */
+	void	(*pru_accept) (netmsg_t msg);
 	void	(*pru_attach) (netmsg_t msg);
 	void	(*pru_bind) (netmsg_t msg);
 	void	(*pru_connect) (netmsg_t msg);
@@ -264,6 +266,10 @@ struct pr_usrreqs {
 				      struct uio *uio,
 				      struct sockbuf *sio,
 				      struct mbuf **controlp, int *flagsp);
+
+	/* synchronously called by protocol thread */
+	void	(*pru_savefaddr) (struct socket *so,
+				      const struct sockaddr *addr);
 };
 
 typedef int (*pru_sosend_fn_t) (struct socket *so, struct sockaddr *addr,

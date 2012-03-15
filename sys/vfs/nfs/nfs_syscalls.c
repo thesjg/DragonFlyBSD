@@ -35,7 +35,6 @@
  *
  *	@(#)nfs_syscalls.c	8.5 (Berkeley) 3/30/95
  * $FreeBSD: src/sys/nfs/nfs_syscalls.c,v 1.58.2.1 2000/11/26 02:30:06 dillon Exp $
- * $DragonFly: src/sys/vfs/nfs/nfs_syscalls.c,v 1.31 2008/01/05 14:02:41 swildner Exp $
  */
 
 #include <sys/param.h>
@@ -260,7 +259,7 @@ sys_nfssvc(struct nfssvc_args *uap)
 				    TAILQ_REMOVE(&slp->ns_uidlruhead, nuidp,
 					nu_lru);
 				    if (nuidp->nu_flag & NU_NAM)
-					FREE(nuidp->nu_nam, M_SONAME);
+					kfree(nuidp->nu_nam, M_SONAME);
 			        }
 				nuidp->nu_flag = 0;
 				nuidp->nu_cr = nsd->nsd_cr;
@@ -337,7 +336,7 @@ nfssvc_addsock(struct file *fp, struct sockaddr *mynam, struct thread *td)
 		tslp = nfs_udpsock;
 		if (tslp->ns_flag & SLP_VALID) {
 			if (mynam != NULL)
-				FREE(mynam, M_SONAME);
+				kfree(mynam, M_SONAME);
 			return (EPERM);
 		}
 	}
@@ -360,7 +359,7 @@ nfssvc_addsock(struct file *fp, struct sockaddr *mynam, struct thread *td)
 	error = soreserve(so, siz, siz, NULL);
 	if (error) {
 		if (mynam != NULL)
-			FREE(mynam, M_SONAME);
+			kfree(mynam, M_SONAME);
 		return (error);
 	}
 
@@ -603,8 +602,10 @@ nfssvc_nfsd(struct nfsd_srvargs *nsd, caddr_t argp, struct thread *td)
 			    !copyout(nfsd->nfsd_verfstr, nsd->nsd_verfstr,
 				nfsd->nfsd_verflen) &&
 			    !copyout((caddr_t)nsd, argp, sizeof (*nsd)))
+			{
 			    lwkt_reltoken(&slp->ns_token);
 			    return (ENEEDAUTH);
+			}
 			cacherep = RC_DROPIT;
 		    } else {
 			cacherep = nfsrv_getcache(nd, slp, &mreq);
@@ -668,7 +669,7 @@ nfssvc_nfsd(struct nfsd_srvargs *nsd, caddr_t argp, struct thread *td)
 					nfsstats.srv_errs++;
 				nfsrv_updatecache(nd, FALSE, mreq);
 				if (nd->nd_nam2)
-					FREE(nd->nd_nam2, M_SONAME);
+					kfree(nd->nd_nam2, M_SONAME);
 				break;
 			}
 			nfsstats.srvrpccnt[nd->nd_procnum]++;
@@ -713,7 +714,7 @@ skip:
 			if (nfsrtton)
 				nfsd_rt(sotype, nd, cacherep);
 			if (nd->nd_nam2)
-				FREE(nd->nd_nam2, M_SONAME);
+				kfree(nd->nd_nam2, M_SONAME);
 			if (nd->nd_mrep)
 				m_freem(nd->nd_mrep);
 			if (error == EPIPE || error == ENOBUFS)
@@ -734,11 +735,11 @@ skip:
 				nfsd_rt(sotype, nd, cacherep);
 			m_freem(nd->nd_mrep);
 			if (nd->nd_nam2)
-				FREE(nd->nd_nam2, M_SONAME);
+				kfree(nd->nd_nam2, M_SONAME);
 			break;
 		    };
 		    if (nd) {
-			FREE((caddr_t)nd, M_NFSRVDESC);
+			kfree((caddr_t)nd, M_NFSRVDESC);
 			nd = NULL;
 		    }
 
@@ -813,13 +814,13 @@ nfsrv_zapsock(struct nfssvc_sock *slp)
 		soshutdown(so, SHUT_RDWR);
 		closef(fp, NULL);
 		if (slp->ns_nam)
-			FREE(slp->ns_nam, M_SONAME);
+			kfree(slp->ns_nam, M_SONAME);
 		m_freem(slp->ns_raw);
 		while ((rec = STAILQ_FIRST(&slp->ns_rec)) != NULL) {
 			--slp->ns_numrec;
 			STAILQ_REMOVE_HEAD(&slp->ns_rec, nr_link);
 			if (rec->nr_address)
-				FREE(rec->nr_address, M_SONAME);
+				kfree(rec->nr_address, M_SONAME);
 			m_freem(rec->nr_packet);
 			kfree(rec, M_NFSRVDESC);
 		}
@@ -830,7 +831,7 @@ nfsrv_zapsock(struct nfssvc_sock *slp)
 			LIST_REMOVE(nuidp, nu_hash);
 			TAILQ_REMOVE(&slp->ns_uidlruhead, nuidp, nu_lru);
 			if (nuidp->nu_flag & NU_NAM)
-				FREE(nuidp->nu_nam, M_SONAME);
+				kfree(nuidp->nu_nam, M_SONAME);
 			kfree((caddr_t)nuidp, M_NFSUID);
 		}
 		crit_enter();
@@ -1037,7 +1038,7 @@ nfs_getauth(struct nfsmount *nmp, struct nfsreq *rep,
 	else {
 		*auth_len = nmp->nm_authlen;
 		*verf_len = nmp->nm_verflen;
-		bcopy((caddr_t)nmp->nm_key, (caddr_t)key, sizeof (key));
+		bcopy((caddr_t)nmp->nm_key, (caddr_t)key, sizeof (NFSKERBKEY_T));
 	}
 	nmp->nm_state &= ~NFSSTA_HASAUTH;
 	nmp->nm_state |= NFSSTA_WAITAUTH;
@@ -1173,7 +1174,7 @@ nfs_savenickauth(struct nfsmount *nmp, struct ucred *cred, int len,
 			nuidp->nu_expire = time_second + NFS_KERBTTL;
 			nuidp->nu_timestamp = ktvout;
 			nuidp->nu_nickname = nick;
-			bcopy(key, nuidp->nu_key, sizeof (key));
+			bcopy(key, nuidp->nu_key, sizeof (NFSKERBKEY_T));
 			TAILQ_INSERT_TAIL(&nmp->nm_uidlruhead, nuidp,
 				nu_lru);
 			LIST_INSERT_HEAD(NMUIDHASH(nmp, cred->cr_uid),

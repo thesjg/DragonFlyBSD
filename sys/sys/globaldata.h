@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003,2004 The DragonFly Project.  All rights reserved.
+ * Copyright (c) 2003-2011 The DragonFly Project.  All rights reserved.
  * 
  * This code is derived from software contributed to The DragonFly Project
  * by Matthew Dillon <dillon@backplane.com>
@@ -53,9 +53,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD: src/sys/i386/include/globaldata.h,v 1.11.2.1 2000/05/16 06:58:10 dillon Exp $
- * $DragonFly: src/sys/sys/globaldata.h,v 1.49 2008/06/02 16:54:20 dillon Exp $
  */
 
 #ifndef _SYS_GLOBALDATA_H_
@@ -185,6 +182,7 @@ typedef struct globaldata *globaldata_t;
 #define RQB_TIMER		7	/* 0080 */
 #define RQB_RUNNING		8	/* 0100 */
 #define RQB_SPINNING		9	/* 0200 */
+#define RQB_QUICKRET		10	/* 0400 */
 
 #define RQF_IPIQ		(1 << RQB_IPIQ)
 #define RQF_INTPEND		(1 << RQB_INTPEND)
@@ -196,6 +194,7 @@ typedef struct globaldata *globaldata_t;
 #define RQF_AST_UPCALL		(1 << RQB_AST_UPCALL)
 #define RQF_RUNNING		(1 << RQB_RUNNING)
 #define RQF_SPINNING		(1 << RQB_SPINNING)
+#define RQF_QUICKRET		(1 << RQB_QUICKRET)
 
 #define RQF_AST_MASK		(RQF_AST_OWEUPC|RQF_AST_SIGNAL|\
 				RQF_AST_USER_RESCHED|RQF_AST_LWKT_RESCHED|\

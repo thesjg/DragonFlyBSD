@@ -84,6 +84,8 @@
 #include <netinet/sctp_peeloff.h>
 #endif /* SCTP */
 
+extern int use_soaccept_pred_fast;
+
 /*
  * System call interface to the socket abstraction.
  */
@@ -168,7 +170,7 @@ sys_bind(struct bind_args *uap)
 	if (error)
 		return (error);
 	error = kern_bind(uap->s, sa);
-	FREE(sa, M_SONAME);
+	kfree(sa, M_SONAME);
 
 	return (error);
 }
@@ -296,6 +298,26 @@ kern_accept(int s, int fflags, struct sockaddr **name, int *namelen, int *res)
 	else
 		fflags = lfp->f_flag;
 
+	if (use_soaccept_pred_fast) {
+		boolean_t pred;
+
+		/* Initialize necessary parts for soaccept_predicate() */
+		netmsg_init(&msg.base, head, &netisr_apanic_rport, 0, NULL);
+		msg.nm_fflags = fflags;
+
+		lwkt_getpooltoken(head);
+		pred = soaccept_predicate(&msg);
+		lwkt_relpooltoken(head);
+
+		if (pred) {
+			error = msg.base.lmsg.ms_error;
+			if (error)
+				goto done;
+			else
+				goto accepted;
+		}
+	}
+
 	/* optimize for uniprocessor case later XXX JH */
 	netmsg_init_abortable(&msg.base, head, &curthread->td_msgport,
 			      0, netmsg_so_notify, netmsg_so_notify_doabort);
@@ -306,6 +328,7 @@ kern_accept(int s, int fflags, struct sockaddr **name, int *namelen, int *res)
 	if (error)
 		goto done;
 
+accepted:
 	/*
 	 * At this point we have the connection that's ready to be accepted.
 	 *
@@ -333,7 +356,15 @@ kern_accept(int s, int fflags, struct sockaddr **name, int *namelen, int *res)
 	fo_ioctl(nfp, FIOASYNC, (caddr_t)&tmp, td->td_ucred, NULL);
 
 	sa = NULL;
-	error = soaccept(so, &sa);
+	if (so->so_faddr != NULL) {
+		sa = so->so_faddr;
+		so->so_faddr = NULL;
+
+		soaccept_generic(so);
+		error = 0;
+	} else {
+		error = soaccept(so, &sa);
+	}
 
 	/*
 	 * Set the returned name and namelen as applicable.  Set the returned
@@ -347,7 +378,7 @@ kern_accept(int s, int fflags, struct sockaddr **name, int *namelen, int *res)
 			*name = sa;
 		} else {
 			if (sa)
-				FREE(sa, M_SONAME);
+				kfree(sa, M_SONAME);
 		}
 	}
 
@@ -397,7 +428,7 @@ sys_accept(struct accept_args *uap)
 			    sizeof(*uap->anamelen));
 		}
 		if (sa)
-			FREE(sa, M_SONAME);
+			kfree(sa, M_SONAME);
 	} else {
 		error = kern_accept(uap->s, 0, NULL, 0,
 				    &uap->sysmsg_iresult);
@@ -433,7 +464,7 @@ sys_extaccept(struct extaccept_args *uap)
 			    sizeof(*uap->anamelen));
 		}
 		if (sa)
-			FREE(sa, M_SONAME);
+			kfree(sa, M_SONAME);
 	} else {
 		error = kern_accept(uap->s, fflags, NULL, 0,
 				    &uap->sysmsg_iresult);
@@ -534,7 +565,7 @@ sys_connect(struct connect_args *uap)
 	if (error)
 		return (error);
 	error = kern_connect(uap->s, 0, sa);
-	FREE(sa, M_SONAME);
+	kfree(sa, M_SONAME);
 
 	return (error);
 }
@@ -555,7 +586,7 @@ sys_extconnect(struct extconnect_args *uap)
 	if (error)
 		return (error);
 	error = kern_connect(uap->s, fflags, sa);
-	FREE(sa, M_SONAME);
+	kfree(sa, M_SONAME);
 
 	return (error);
 }
@@ -663,7 +694,7 @@ kern_sendmsg(int s, struct sockaddr *sa, struct uio *auio,
 	if (KTRPOINT(td, KTR_GENIO)) {
 		int iovlen = auio->uio_iovcnt * sizeof (struct iovec);
 
-		MALLOC(ktriov, struct iovec *, iovlen, M_TEMP, M_WAITOK);
+		ktriov = kmalloc(iovlen, M_TEMP, M_WAITOK);
 		bcopy((caddr_t)auio->uio_iov, (caddr_t)ktriov, iovlen);
 		ktruio = *auio;
 	}
@@ -689,7 +720,7 @@ kern_sendmsg(int s, struct sockaddr *sa, struct uio *auio,
 			ktruio.uio_resid = len - auio->uio_resid;
 			ktrgenio(lp, s, UIO_WRITE, &ktruio, error);
 		}
-		FREE(ktriov, M_TEMP);
+		kfree(ktriov, M_TEMP);
 	}
 #endif
 	if (error == 0)
@@ -731,7 +762,7 @@ sys_sendto(struct sendto_args *uap)
 			     &uap->sysmsg_szresult);
 
 	if (sa)
-		FREE(sa, M_SONAME);
+		kfree(sa, M_SONAME);
 	return (error);
 }
 
@@ -808,7 +839,7 @@ cleanup:
 	iovec_free(&iov, aiov);
 cleanup2:
 	if (sa)
-		FREE(sa, M_SONAME);
+		kfree(sa, M_SONAME);
 	return (error);
 }
 
@@ -840,7 +871,7 @@ kern_recvmsg(int s, struct sockaddr **sa, struct uio *auio,
 	if (KTRPOINT(td, KTR_GENIO)) {
 		int iovlen = auio->uio_iovcnt * sizeof (struct iovec);
 
-		MALLOC(ktriov, struct iovec *, iovlen, M_TEMP, M_WAITOK);
+		ktriov = kmalloc(iovlen, M_TEMP, M_WAITOK);
 		bcopy(auio->uio_iov, ktriov, iovlen);
 		ktruio = *auio;
 	}
@@ -872,7 +903,7 @@ kern_recvmsg(int s, struct sockaddr **sa, struct uio *auio,
 			ktruio.uio_resid = len - auio->uio_resid;
 			ktrgenio(td->td_lwp, s, UIO_READ, &ktruio, error);
 		}
-		FREE(ktriov, M_TEMP);
+		kfree(ktriov, M_TEMP);
 	}
 #endif
 	if (error == 0)
@@ -932,7 +963,7 @@ sys_recvfrom(struct recvfrom_args *uap)
 		}
 	}
 	if (sa)
-		FREE(sa, M_SONAME);
+		kfree(sa, M_SONAME);
 
 	return (error);
 }
@@ -1047,7 +1078,7 @@ sys_recvmsg(struct recvmsg_args *uap)
 
 cleanup:
 	if (sa)
-		FREE(sa, M_SONAME);
+		kfree(sa, M_SONAME);
 	iovec_free(&iov, aiov);
 	if (control)
 		m_freem(control);
@@ -1071,7 +1102,7 @@ kern_setsockopt(int s, struct sockopt *sopt)
 		return (EFAULT);
 	if (sopt->sopt_val != NULL && sopt->sopt_valsize == 0)
 		return (EINVAL);
-	if (sopt->sopt_valsize < 0)
+	if (sopt->sopt_valsize > SOMAXOPT_SIZE)	/* unsigned */
 		return (EINVAL);
 
 	error = holdsock(p->p_fd, s, &fp);
@@ -1101,7 +1132,7 @@ sys_setsockopt(struct setsockopt_args *uap)
 	sopt.sopt_td = td;
 	sopt.sopt_val = NULL;
 
-	if (sopt.sopt_valsize < 0 || sopt.sopt_valsize > SOMAXOPT_SIZE)
+	if (sopt.sopt_valsize > SOMAXOPT_SIZE) /* unsigned */
 		return (EINVAL);
 	if (uap->val) {
 		sopt.sopt_val = kmalloc(sopt.sopt_valsize, M_TEMP, M_WAITOK);
@@ -1134,7 +1165,7 @@ kern_getsockopt(int s, struct sockopt *sopt)
 		return (EFAULT);
 	if (sopt->sopt_val != NULL && sopt->sopt_valsize == 0)
 		return (EINVAL);
-	if (sopt->sopt_valsize < 0 || sopt->sopt_valsize > SOMAXOPT_SIZE)
+	if (sopt->sopt_valsize > SOMAXOPT_SIZE) /* unsigned */
 		return (EINVAL);
 
 	error = holdsock(p->p_fd, s, &fp);
@@ -1172,7 +1203,7 @@ sys_getsockopt(struct getsockopt_args *uap)
 	sopt.sopt_td = td;
 	sopt.sopt_val = NULL;
 
-	if (sopt.sopt_valsize < 0 || sopt.sopt_valsize > SOMAXOPT_SIZE)
+	if (sopt.sopt_valsize > SOMAXOPT_SIZE) /* unsigned */
 		return (EINVAL);
 	if (uap->val) {
 		sopt.sopt_val = kmalloc(sopt.sopt_valsize, M_TEMP, M_WAITOK);
@@ -1258,7 +1289,7 @@ sys_getsockname(struct getsockname_args *uap)
 	if (error == 0)
 		error = copyout(&sa_len, uap->alen, sizeof(*uap->alen));
 	if (sa)
-		FREE(sa, M_SONAME);
+		kfree(sa, M_SONAME);
 	return (error);
 }
 
@@ -1328,7 +1359,7 @@ sys_getpeername(struct getpeername_args *uap)
 	if (error == 0)
 		error = copyout(&sa_len, uap->alen, sizeof(*uap->alen));
 	if (sa)
-		FREE(sa, M_SONAME);
+		kfree(sa, M_SONAME);
 	return (error);
 }
 
@@ -1343,10 +1374,10 @@ getsockaddr(struct sockaddr **namp, caddr_t uaddr, size_t len)
 		return ENAMETOOLONG;
 	if (len < offsetof(struct sockaddr, sa_data[0]))
 		return EDOM;
-	MALLOC(sa, struct sockaddr *, len, M_SONAME, M_WAITOK);
+	sa = kmalloc(len, M_SONAME, M_WAITOK);
 	error = copyin(uaddr, sa, len);
 	if (error) {
-		FREE(sa, M_SONAME);
+		kfree(sa, M_SONAME);
 	} else {
 #if BYTE_ORDER != BIG_ENDIAN
 		/*
@@ -1768,7 +1799,7 @@ retry_space:
 			}
 			goto retry_space;
 		}
-		error = so_pru_send(so, 0, m, NULL, NULL, td);
+		error = so_pru_senda(so, 0, m, NULL, NULL, td);
 		crit_exit();
 		if (error) {
 			ssb_unlock(&so->so_snd);
@@ -1777,7 +1808,7 @@ retry_space:
 	}
 	if (mheader != NULL) {
 		*sbytes += mheader->m_pkthdr.len;
-		error = so_pru_send(so, 0, mheader, NULL, NULL, td);
+		error = so_pru_senda(so, 0, mheader, NULL, NULL, td);
 		mheader = NULL;
 	}
 	ssb_unlock(&so->so_snd);

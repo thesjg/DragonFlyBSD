@@ -60,6 +60,8 @@
 
 #include <sys/buf2.h>
 #include <sys/signal2.h>
+#include <vm/vm_page2.h>
+
 #include "hammer_disk.h"
 #include "hammer_mount.h"
 #include "hammer_ioctl.h"
@@ -911,9 +913,9 @@ struct hammer_mount {
 	struct hammer_mod_rb_tree data_root;	/* dirty data buffers */
 	struct hammer_mod_rb_tree meta_root;	/* dirty meta bufs    */
 	struct hammer_mod_rb_tree lose_root;	/* loose buffers      */
-	int	locked_dirty_space;		/* meta/volu count    */
-	int	io_running_space;		/* io_token */
-	int	io_running_wakeup;		/* io_token */
+	long	locked_dirty_space;		/* meta/volu count    */
+	long	io_running_space;		/* io_token */
+	int	unused01;
 	int	objid_cache_count;
 	int	dedup_cache_count;
 	int	error;				/* critical I/O error */
@@ -1038,14 +1040,13 @@ extern int64_t hammer_stats_inode_flushes;
 extern int64_t hammer_stats_commits;
 extern int64_t hammer_stats_undo;
 extern int64_t hammer_stats_redo;
-extern int hammer_count_dirtybufspace;
+extern long hammer_count_dirtybufspace;
 extern int hammer_count_refedbufs;
 extern int hammer_count_reservations;
-extern int hammer_count_io_running_read;
-extern int hammer_count_io_running_write;
+extern long hammer_count_io_running_read;
+extern long hammer_count_io_running_write;
 extern int hammer_count_io_locked;
-extern int hammer_limit_dirtybufspace;
-extern int hammer_limit_running_io;
+extern long hammer_limit_dirtybufspace;
 extern int hammer_limit_recs;
 extern int hammer_limit_inode_recs;
 extern int hammer_limit_reclaims;

@@ -71,10 +71,6 @@
 #ifndef	_VM_VM_PAGE_H_
 #define	_VM_VM_PAGE_H_
 
-#if !defined(KLD_MODULE) && defined(_KERNEL)
-#include "opt_vmpage.h"
-#endif
-
 #ifndef _SYS_TYPES_H_
 #include <sys/types.h>
 #endif
@@ -201,69 +197,46 @@ typedef struct vm_page *vm_page_t;
 #endif
 
 /*
- * Page coloring parameters.  We default to a middle of the road optimization.
- * Larger selections would not really hurt us but if a machine does not have
- * a lot of memory it could cause vm_page_alloc() to eat more cpu cycles 
- * looking for free pages.
+ * Page coloring parameters.  We use generous parameters designed to
+ * statistically spread pages over available cpu cache space.  This has
+ * become less important over time as cache associativity is higher
+ * in modern times but we still use the core algorithm to help reduce
+ * lock contention between cpus.
  *
- * Page coloring cannot be disabled.  Modules do not have access to most PQ
- * constants because they can change between builds.
+ * Page coloring cannot be disabled.
  */
-#if defined(_KERNEL) && !defined(KLD_MODULE)
 
-#if !defined(PQ_CACHESIZE)
-#define PQ_CACHESIZE 256	/* max is 1024 (MB) */
-#endif
-
-#if PQ_CACHESIZE >= 1024
 #define PQ_PRIME1 31	/* Prime number somewhat less than PQ_HASH_SIZE */
 #define PQ_PRIME2 23	/* Prime number somewhat less than PQ_HASH_SIZE */
 #define PQ_L2_SIZE 256	/* A number of colors opt for 1M cache */
 
-#elif PQ_CACHESIZE >= 512
+#if 0
 #define PQ_PRIME1 31	/* Prime number somewhat less than PQ_HASH_SIZE */
 #define PQ_PRIME2 23	/* Prime number somewhat less than PQ_HASH_SIZE */
 #define PQ_L2_SIZE 128	/* A number of colors opt for 512K cache */
 
-#elif PQ_CACHESIZE >= 256
 #define PQ_PRIME1 13	/* Prime number somewhat less than PQ_HASH_SIZE */
 #define PQ_PRIME2 7	/* Prime number somewhat less than PQ_HASH_SIZE */
 #define PQ_L2_SIZE 64	/* A number of colors opt for 256K cache */
 
-#elif PQ_CACHESIZE >= 128
 #define PQ_PRIME1 9	/* Produces a good PQ_L2_SIZE/3 + PQ_PRIME1 */
 #define PQ_PRIME2 5	/* Prime number somewhat less than PQ_HASH_SIZE */
 #define PQ_L2_SIZE 32	/* A number of colors opt for 128k cache */
 
-#else
 #define PQ_PRIME1 5	/* Prime number somewhat less than PQ_HASH_SIZE */
 #define PQ_PRIME2 3	/* Prime number somewhat less than PQ_HASH_SIZE */
 #define PQ_L2_SIZE 16	/* A reasonable number of colors (opt for 64K cache) */
-
 #endif
 
 #define PQ_L2_MASK	(PQ_L2_SIZE - 1)
 
-#endif /* KERNEL && !KLD_MODULE */
-
-/*
- *
- * The queue array is always based on PQ_MAXL2_SIZE regardless of the actual
- * cache size chosen in order to present a uniform interface for modules.
- */
-#define PQ_MAXL2_SIZE	256	/* fixed maximum (in pages) / module compat */
-
-#if PQ_L2_SIZE > PQ_MAXL2_SIZE
-#error "Illegal PQ_L2_SIZE"
-#endif
-
 #define PQ_NONE		0
-#define PQ_FREE		(1 + 0*PQ_MAXL2_SIZE)
-#define PQ_INACTIVE	(1 + 1*PQ_MAXL2_SIZE)
-#define PQ_ACTIVE	(1 + 2*PQ_MAXL2_SIZE)
-#define PQ_CACHE	(1 + 3*PQ_MAXL2_SIZE)
-#define PQ_HOLD		(1 + 4*PQ_MAXL2_SIZE)
-#define PQ_COUNT	(1 + 5*PQ_MAXL2_SIZE)
+#define PQ_FREE		(1 + 0*PQ_L2_SIZE)
+#define PQ_INACTIVE	(1 + 1*PQ_L2_SIZE)
+#define PQ_ACTIVE	(1 + 2*PQ_L2_SIZE)
+#define PQ_CACHE	(1 + 3*PQ_L2_SIZE)
+#define PQ_HOLD		(1 + 4*PQ_L2_SIZE)
+#define PQ_COUNT	(1 + 5*PQ_L2_SIZE)
 
 /*
  * Scan support
@@ -439,14 +412,15 @@ vm_page_flash(vm_page_t m)
  * must be specified.  VM_ALLOC_RETRY may only be specified if VM_ALLOC_NORMAL
  * is also specified.
  */
-#define VM_ALLOC_NORMAL		0x01	/* ok to use cache pages */
-#define VM_ALLOC_SYSTEM		0x02	/* ok to exhaust most of free list */
-#define VM_ALLOC_INTERRUPT	0x04	/* ok to exhaust entire free list */
-#define	VM_ALLOC_ZERO		0x08	/* req pre-zero'd memory if avail */
-#define	VM_ALLOC_QUICK		0x10	/* like NORMAL but do not use cache */
-#define VM_ALLOC_FORCE_ZERO	0x20	/* zero page even if already valid */
-#define VM_ALLOC_NULL_OK	0x40	/* ok to return NULL on collision */
-#define	VM_ALLOC_RETRY		0x80	/* indefinite block (vm_page_grab()) */
+#define VM_ALLOC_NORMAL		0x0001	/* ok to use cache pages */
+#define VM_ALLOC_SYSTEM		0x0002	/* ok to exhaust most of free list */
+#define VM_ALLOC_INTERRUPT	0x0004	/* ok to exhaust entire free list */
+#define	VM_ALLOC_ZERO		0x0008	/* req pre-zero'd memory if avail */
+#define	VM_ALLOC_QUICK		0x0010	/* like NORMAL but do not use cache */
+#define VM_ALLOC_FORCE_ZERO	0x0020	/* zero page even if already valid */
+#define VM_ALLOC_NULL_OK	0x0040	/* ok to return NULL on collision */
+#define	VM_ALLOC_RETRY		0x0080	/* indefinite block (vm_page_grab()) */
+#define VM_ALLOC_USE_GD		0x0100	/* use per-gd cache */
 
 void vm_page_queue_spin_lock(vm_page_t);
 void vm_page_queues_spin_lock(u_short);
@@ -462,7 +436,11 @@ void vm_page_wakeup(vm_page_t m);
 void vm_page_hold(vm_page_t);
 void vm_page_unhold(vm_page_t);
 void vm_page_activate (vm_page_t);
+void vm_page_pcpu_cache(void);
 vm_page_t vm_page_alloc (struct vm_object *, vm_pindex_t, int);
+vm_page_t vm_page_alloc_contig(vm_paddr_t low, vm_paddr_t high,
+                     unsigned long alignment, unsigned long boundary,
+		     unsigned long size);
 vm_page_t vm_page_grab (struct vm_object *, vm_pindex_t, int);
 void vm_page_cache (vm_page_t);
 int vm_page_try_to_cache (vm_page_t);
@@ -472,9 +450,12 @@ void vm_page_deactivate (vm_page_t);
 void vm_page_deactivate_locked (vm_page_t);
 int vm_page_insert (vm_page_t, struct vm_object *, vm_pindex_t);
 vm_page_t vm_page_lookup (struct vm_object *, vm_pindex_t);
-vm_page_t VM_PAGE_DEBUG_EXT(vm_page_lookup_busy_wait)(struct vm_object *, vm_pindex_t,
-				int, const char * VM_PAGE_DEBUG_ARGS);
-vm_page_t VM_PAGE_DEBUG_EXT(vm_page_lookup_busy_try)(struct vm_object *, vm_pindex_t, int, int * VM_PAGE_DEBUG_ARGS);
+vm_page_t VM_PAGE_DEBUG_EXT(vm_page_lookup_busy_wait)(
+		struct vm_object *, vm_pindex_t, int, const char *
+		VM_PAGE_DEBUG_ARGS);
+vm_page_t VM_PAGE_DEBUG_EXT(vm_page_lookup_busy_try)(
+		struct vm_object *, vm_pindex_t, int, int *
+		VM_PAGE_DEBUG_ARGS);
 void vm_page_remove (vm_page_t);
 void vm_page_rename (vm_page_t, struct vm_object *, vm_pindex_t);
 void vm_page_startup (void);
@@ -496,6 +477,7 @@ int vm_page_bits (int, int);
 vm_page_t vm_page_list_find(int basequeue, int index, boolean_t prefer_zero);
 void vm_page_zero_invalid(vm_page_t m, boolean_t setvalid);
 void vm_page_free_toq(vm_page_t m);
+void vm_page_free_contig(vm_page_t m, unsigned long size);
 vm_page_t vm_page_free_fromq_fast(void);
 void vm_page_event_internal(vm_page_t, vm_page_event_t);
 void vm_page_dirty(vm_page_t m);

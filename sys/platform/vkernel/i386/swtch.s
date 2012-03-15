@@ -502,9 +502,7 @@ ENTRY(cpu_idle_restore)
 	movl	$0,%ebp
 	pushl	$0
 	andl	$~TDF_RUNNING,TD_FLAGS(%ebx)
-#if 0
-	orl	$TDF_RUNNING,TD_FLAGS(%eax)
-#endif
+	orl	$TDF_RUNNING,TD_FLAGS(%eax)	/* manual, no switch_return */
 #ifdef SMP
 	cmpl	$0,PCPU(cpuid)
 	je	1f
@@ -539,10 +537,6 @@ ENTRY(cpu_kthread_restore)
 	call    lwkt_switch_return
 	addl    $4,%esp
 	popl    %eax
-#if 0
-	andl	$~TDF_RUNNING,TD_FLAGS(%ebx)
-	orl	$TDF_RUNNING,TD_FLAGS(%eax)
-#endif
 	decl	TD_CRITCOUNT(%eax)
 	popl	%eax		/* kthread exit function */
 	pushl	PCB_EBX(%esi)	/* argument to ESI function */

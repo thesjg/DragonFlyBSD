@@ -54,7 +54,8 @@ DIRS+=	libexec/dma
 #
 BIN2=	pccard_ether rc.firewall rc.suspend rc.resume
 
-DEFAULTS= compilers.conf devfs.conf make.conf periodic.conf rc.conf uuids
+DEFAULTS= compilers.conf devfs.conf make.conf mkinitrd.conf periodic.conf \
+	  rc.conf uuids
 
 MTREE=	BSD.include.dist BSD.local.dist BSD.root.dist BSD.usr.dist \
 	BSD.var.dist
@@ -348,6 +349,8 @@ distribution:
 	    ${DESTDIR}/var/crash
 	cd ${.CURDIR}/..; ${INSTALL} -o ${BINOWN} -g ${BINGRP} -m 444 \
 	    ${FREEBSD} ${DESTDIR}/
+	${LN} -s "../dev/video/bktr/ioctl_bt848.h" ${DESTDIR}/usr/include/machine/ioctl_bt848.h
+	${LN} -s "../dev/video/meteor/ioctl_meteor.h" ${DESTDIR}/usr/include/machine/ioctl_meteor.h
 .if !defined(NOMAN)
 	cd ${.CURDIR}/../share/man; ${MAKE} makedb
 .endif

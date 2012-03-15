@@ -32,7 +32,6 @@
  *
  *	@(#)subr_prof.c	8.3 (Berkeley) 9/23/93
  * $FreeBSD: src/sys/kern/subr_prof.c,v 1.32.2.2 2000/08/03 00:09:32 ps Exp $
- * $DragonFly: src/sys/kern/subr_prof.c,v 1.16 2007/01/06 03:23:18 dillon Exp $
  */
 
 #include <sys/param.h>
@@ -115,12 +114,11 @@ kmstartup(void *dummy)
 		p->tolimit = MAXARCS;
 	p->tossize = p->tolimit * sizeof(struct tostruct);
 	cp = (char *)kmalloc(p->kcountsize + p->fromssize + p->tossize,
-	    M_GPROF, M_NOWAIT);
+	    M_GPROF, M_NOWAIT | M_ZERO);
 	if (cp == 0) {
 		kprintf("No memory for profiling.\n");
 		return;
 	}
-	bzero(cp, p->kcountsize + p->tossize + p->fromssize);
 	p->tos = (struct tostruct *)cp;
 	cp += p->tossize;
 	p->kcount = (HISTCOUNTER *)cp;
@@ -298,6 +296,7 @@ sysctl_kern_prof(SYSCTL_HANDLER_ARGS)
 			return (error);
 		if (!req->newptr)
 			return (0);
+		lwkt_gettoken(&proc0.p_token);
 		if (state == GMON_PROF_OFF) {
 			gp->state = state;
 			stopprofclock(&proc0);
@@ -315,9 +314,11 @@ sysctl_kern_prof(SYSCTL_HANDLER_ARGS)
 			startguprof(gp);
 			gp->state = state;
 #endif
-		} else if (state != gp->state)
-			return (EINVAL);
-		return (0);
+		} else if (state != gp->state) {
+			error = EINVAL;
+		}
+		lwkt_reltoken(&proc0.p_token);
+		return (error);
 	case GPROF_COUNT:
 		return (sysctl_handle_opaque(oidp, 
 			gp->kcount, gp->kcountsize, req));
@@ -431,7 +432,7 @@ addupc_task(struct proc *p, u_long pc, u_int ticks)
 	u_short v;
 
 	/* Testing P_PROFIL may be unnecessary, but is certainly safe. */
-	if ((p->p_flag & P_PROFIL) == 0 || ticks == 0)
+	if ((p->p_flags & P_PROFIL) == 0 || ticks == 0)
 		return;
 
 	prof = &p->p_prof;

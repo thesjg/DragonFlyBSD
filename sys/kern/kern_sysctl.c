@@ -38,7 +38,6 @@
  *
  *	@(#)kern_sysctl.c	8.4 (Berkeley) 4/14/94
  * $FreeBSD: src/sys/kern/kern_sysctl.c,v 1.92.2.9 2003/05/01 22:48:09 trhodes Exp $
- * $DragonFly: src/sys/kern/kern_sysctl.c,v 1.30 2008/08/03 11:00:32 sephe Exp $
  */
 
 #include <sys/param.h>
@@ -557,12 +556,12 @@ sysctl_sysctl_name(SYSCTL_HANDLER_ARGS)
 	int error = 0;
 	struct sysctl_oid *oid;
 	struct sysctl_oid_list *lsp = &sysctl__children, *lsp2;
-	char buf[10];
+	char buf[16];
 
 	sysctl_lock(LK_SHARED);
 	while (namelen) {
 		if (!lsp) {
-			ksnprintf(buf,sizeof(buf),"%d",*name);
+			ksnprintf(buf, sizeof(buf), "%d", *name);
 			if (req->oldidx)
 				error = SYSCTL_OUT(req, ".", 1);
 			if (!error)
@@ -1216,7 +1215,7 @@ sys___sysctl(struct sysctl_args *uap)
 	if (uap->namelen > CTL_MAXNAME || uap->namelen < 2)
 		return (EINVAL);
 
- 	error = copyin(uap->name, &name, uap->namelen * sizeof(int));
+	error = copyin(uap->name, &name, uap->namelen * sizeof(int));
  	if (error)
 		return (error);
 

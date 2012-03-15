@@ -163,6 +163,7 @@ db_print_stack_entry(const char *name, int narg, char **argnp, int *argp,
   	}
 	db_printf(") at ");
 	db_printsym(callpc, DB_STGY_PROC);
+	db_printf(" %p ",  (void*) callpc);
 	db_printf("\n");
 }
 
@@ -297,7 +298,7 @@ db_stack_trace_cmd(db_expr_t addr, boolean_t have_addr, db_expr_t count,
 				db_printf("pid %d not found\n", pid);
 				return;
 			}
-			if ((p->p_flag & P_SWAPPEDOUT)) {
+			if ((p->p_flags & P_SWAPPEDOUT)) {
 				db_printf("pid %d swapped out\n", pid);
 				return;
 			}

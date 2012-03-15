@@ -32,6 +32,8 @@
 .Nm net80211_vap
 .Nd 802.11 network layer virtual radio support
 .Sh SYNOPSIS
+.In net/if.h
+.In net/if_media.h
 .In netproto/802_11/ieee80211_var.h
 .Ft int
 .Fo ieee80211_vap_setup
@@ -87,7 +89,7 @@ method where the driver can decide if the request should be accepted.
 .Pp
 The vap creation process is done in three steps.
 First the driver allocates the data structure with
-.Xr malloc 9 .
+.Xr kmalloc 9 .
 This data structure must have an
 .Vt ieee80211vap
 structure at the front but is usually extended with driver-private state.
@@ -151,4 +153,4 @@ that beacon are stopped before stopping the hardware timers).
 .Sh SEE ALSO
 .Xr ieee80211 9 ,
 .Xr ifnet 9 ,
-.Xr malloc 9
+.Xr kmalloc 9

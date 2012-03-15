@@ -91,6 +91,15 @@ bsfl(u_int mask)
 	return (result);
 }
 
+static __inline u_int
+bsflong(u_long mask)
+{
+	u_long	result;
+
+	__asm __volatile("bsfl %0,%0" : "=r" (result) : "0" (mask));
+	return (result);
+}
+
 /*
  * Find the last 1 in mask, starting with bit 31 and return the
  * bit number.  If mask is 0 the result is undefined.
@@ -522,7 +531,7 @@ rdmsr(u_int msr)
 {
 	u_int64_t rv;
 
-	__asm __volatile(".byte 0x0f, 0x32" : "=A" (rv) : "c" (msr));
+	__asm __volatile("rdmsr" : "=A" (rv) : "c" (msr));
 	return (rv);
 }
 
@@ -531,7 +540,7 @@ rdpmc(u_int pmc)
 {
 	u_int64_t rv;
 
-	__asm __volatile(".byte 0x0f, 0x33" : "=A" (rv) : "c" (pmc));
+	__asm __volatile("rdpmc" : "=A" (rv) : "c" (pmc));
 	return (rv);
 }
 
@@ -542,7 +551,7 @@ rdtsc(void)
 {
 	u_int64_t rv;
 
-	__asm __volatile(".byte 0x0f, 0x31" : "=A" (rv));
+	__asm __volatile("rdtsc" : "=A" (rv));
 	return (rv);
 }
 
@@ -561,7 +570,7 @@ write_eflags(u_int ef)
 static __inline void
 wrmsr(u_int msr, u_int64_t newval)
 {
-	__asm __volatile(".byte 0x0f, 0x30" : : "A" (newval), "c" (msr));
+	__asm __volatile("wrmsr" : : "A" (newval), "c" (msr));
 }
 
 static __inline u_short

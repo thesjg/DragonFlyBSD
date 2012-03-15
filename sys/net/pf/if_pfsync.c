@@ -43,7 +43,6 @@
 #include <sys/module.h>
 #include <sys/sockio.h>
 #include <sys/thread2.h>
-#include <vm/vm_zone.h>
 
 #include <machine/inttypes.h>
 
@@ -127,8 +126,7 @@ pfsync_clone_create(struct if_clone *ifc, int unit, caddr_t param __unused)
 
 	lwkt_gettoken(&pf_token);
 
-	MALLOC(sc, struct pfsync_softc *, sizeof(*sc), M_PFSYNC,
-	    M_WAITOK|M_ZERO);
+	sc = kmalloc(sizeof(*sc), M_PFSYNC, M_WAITOK | M_ZERO);
 	pfsync_sync_ok = 1;
 	sc->sc_mbuf = NULL;
 	sc->sc_mbuf_net = NULL;
@@ -224,7 +222,8 @@ pfsync_alloc_scrub_memory(struct pfsync_state_peer *s,
     struct pf_state_peer *d)
 {
 	if (s->scrub.scrub_flag && d->scrub == NULL) {
-		d->scrub = pool_get(&pf_state_scrub_pl, PR_NOWAIT | PR_ZERO);
+		d->scrub = kmalloc(sizeof(struct pf_state_scrub), M_PFSYNC, M_NOWAIT|M_ZERO);
+
 		if (d->scrub == NULL)
 			return (ENOMEM);
 	}
@@ -334,11 +333,11 @@ pfsync_state_import(struct pfsync_state *sp, u_int8_t flags)
 		goto cleanup;
 
 	if (flags & PFSYNC_SI_IOCTL)
-		pool_flags = PR_WAITOK | PR_LIMITFAIL | PR_ZERO;
+		pool_flags = M_WAITOK | M_NULLOK | M_ZERO;
 	else
-		pool_flags = PR_LIMITFAIL | PR_ZERO;
+		pool_flags = M_WAITOK | M_ZERO;
 
-	if ((st = pool_get(&pf_state_pl, pool_flags)) == NULL)
+	if ((st = kmalloc(sizeof(struct pf_state), M_PFSYNC, pool_flags)) == NULL)
 		goto cleanup;
 
 	if ((skw = pf_alloc_state_key(pool_flags)) == NULL)
@@ -423,17 +422,17 @@ pfsync_state_import(struct pfsync_state *sp, u_int8_t flags)
 	if (skw == sks)
 		sks = NULL;
 	if (skw != NULL)
-		pool_put(&pf_state_key_pl, skw);
+		kfree(skw, M_PFSYNC);
 	if (sks != NULL)
-		pool_put(&pf_state_key_pl, sks);
+		kfree(sks, M_PFSYNC);
 
  cleanup_state:	/* pf_state_insert frees the state keys */
 	if (st) {
 		if (st->dst.scrub)
-			pool_put(&pf_state_scrub_pl, st->dst.scrub);
+			kfree(st->dst.scrub, M_PFSYNC);
 		if (st->src.scrub)
-			pool_put(&pf_state_scrub_pl, st->src.scrub);
-		pool_put(&pf_state_pl, st);
+			kfree(st->src.scrub, M_PFSYNC);
+		kfree(st, M_PFSYNC);
 	}
 	return (error);
 }

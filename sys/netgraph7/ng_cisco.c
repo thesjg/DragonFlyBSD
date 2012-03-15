@@ -38,7 +38,6 @@
  * Author: Julian Elischer <julian@freebsd.org>
  *
  * $FreeBSD: src/sys/netgraph/ng_cisco.c,v 1.29 2007/11/30 23:27:39 julian Exp $
- * $DragonFly: src/sys/netgraph7/ng_cisco.c,v 1.2 2008/06/26 23:05:35 dillon Exp $
  * $Whistle: ng_cisco.c,v 1.25 1999/11/01 09:24:51 julian Exp $
  */
 
@@ -55,8 +54,6 @@
 
 #include <netinet/in.h>
 #include <netinet/if_ether.h>
-
-#include <netatalk/at.h>
 
 #include <netipx/ipx.h>
 #include <netipx/ipx_if.h>
@@ -111,7 +108,6 @@ struct cisco_priv {
 	struct in_addr localip;
 	struct in_addr localmask;
 	struct protoent inet6;		/* IPv6 information */
-	struct protoent atalk;		/* AppleTalk information */
 	struct protoent ipx;		/* IPX information */
 };
 typedef struct cisco_priv *sc_p;
@@ -194,7 +190,7 @@ cisco_constructor(node_p node)
 {
 	sc_p sc;
 
-	MALLOC(sc, sc_p, sizeof(*sc), M_NETGRAPH, M_WAITOK | M_NULLOK | M_ZERO);
+	sc = kmalloc(sizeof(*sc), M_NETGRAPH, M_WAITOK | M_NULLOK | M_ZERO);
 	if (sc == NULL)
 		return (ENOMEM);
 
@@ -206,7 +202,6 @@ cisco_constructor(node_p node)
 	sc->downstream.af = 0xffff;
 	sc->inet.af = AF_INET;
 	sc->inet6.af = AF_INET6;
-	sc->atalk.af = AF_APPLETALK;
 	sc->ipx.af = AF_IPX;
 	return (0);
 }
@@ -232,9 +227,6 @@ cisco_newhook(node_p node, hook_p hook, const char *name)
 	} else if (strcmp(name, NG_CISCO_HOOK_INET6) == 0) {
 		sc->inet6.hook = hook;
 		NG_HOOK_SET_PRIVATE(hook, &sc->inet6);
-	} else if (strcmp(name, NG_CISCO_HOOK_APPLETALK) == 0) {
-		sc->atalk.hook = hook;
-		NG_HOOK_SET_PRIVATE(hook, &sc->atalk);
 	} else if (strcmp(name, NG_CISCO_HOOK_IPX) == 0) {
 		sc->ipx.hook = hook;
 		NG_HOOK_SET_PRIVATE(hook, &sc->ipx);
@@ -379,9 +371,6 @@ cisco_rcvdata(hook_p hook, item_p item)
 	case AF_INET6:
 		h->protocol = htons(ETHERTYPE_IPV6);
 		break;
-	case AF_APPLETALK:	/* AppleTalk Protocol */
-		h->protocol = htons(ETHERTYPE_AT);
-		break;
 	case AF_IPX:		/* Novell IPX Protocol */
 		h->protocol = htons(ETHERTYPE_IPX);
 		break;
@@ -409,7 +398,7 @@ cisco_shutdown(node_p node)
 
 	NG_NODE_SET_PRIVATE(node, NULL);
 	NG_NODE_UNREF(sc->node);
-	FREE(sc, M_NETGRAPH);
+	kfree(sc, M_NETGRAPH);
 	return (0);
 }
 
@@ -551,9 +540,6 @@ cisco_input(sc_p sc, item_p item)
 			break;
 		case ETHERTYPE_IPV6:
 			pep = &sc->inet6;
-			break;
-		case ETHERTYPE_AT:
-			pep = &sc->atalk;
 			break;
 		case ETHERTYPE_IPX:
 			pep = &sc->ipx;

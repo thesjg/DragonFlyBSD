@@ -327,7 +327,8 @@ sosetport(struct socket *so, lwkt_port_t port)
  * The reference is implied by so_pcb.
  */
 struct socket *
-sonewconn(struct socket *head, int connstatus)
+sonewconn_faddr(struct socket *head, int connstatus,
+    const struct sockaddr *faddr)
 {
 	struct socket *so;
 	struct socket *sp;
@@ -384,10 +385,34 @@ sonewconn(struct socket *head, int connstatus)
 	so->so_snd.ssb_lowat = head->so_snd.ssb_lowat;
 	so->so_rcv.ssb_timeo = head->so_rcv.ssb_timeo;
 	so->so_snd.ssb_timeo = head->so_snd.ssb_timeo;
-	so->so_rcv.ssb_flags |= head->so_rcv.ssb_flags &
-				(SSB_AUTOSIZE | SSB_AUTOLOWAT);
-	so->so_snd.ssb_flags |= head->so_snd.ssb_flags &
-				(SSB_AUTOSIZE | SSB_AUTOLOWAT);
+
+	if (head->so_rcv.ssb_flags & SSB_AUTOLOWAT)
+		so->so_rcv.ssb_flags |= SSB_AUTOLOWAT;
+	else
+		so->so_rcv.ssb_flags &= ~SSB_AUTOLOWAT;
+
+	if (head->so_snd.ssb_flags & SSB_AUTOLOWAT)
+		so->so_snd.ssb_flags |= SSB_AUTOLOWAT;
+	else
+		so->so_snd.ssb_flags &= ~SSB_AUTOLOWAT;
+
+	if (head->so_rcv.ssb_flags & SSB_AUTOSIZE)
+		so->so_rcv.ssb_flags |= SSB_AUTOSIZE;
+	else
+		so->so_rcv.ssb_flags &= ~SSB_AUTOSIZE;
+
+	if (head->so_snd.ssb_flags & SSB_AUTOSIZE)
+		so->so_snd.ssb_flags |= SSB_AUTOSIZE;
+	else
+		so->so_snd.ssb_flags &= ~SSB_AUTOSIZE;
+
+	/*
+	 * Save the faddr, if the information is provided and
+	 * the protocol can perform the saving opertation.
+	 */
+	if (faddr != NULL && so->so_proto->pr_usrreqs->pru_savefaddr != NULL)
+		so->so_proto->pr_usrreqs->pru_savefaddr(so, faddr);
+
 	lwkt_getpooltoken(head);
 	if (connstatus) {
 		TAILQ_INSERT_TAIL(&head->so_comp, so, so_list);
@@ -418,6 +443,12 @@ sonewconn(struct socket *head, int connstatus)
 	}
 	soclrstate(so, SS_ASSERTINPROG);
 	return (so);
+}
+
+struct socket *
+sonewconn(struct socket *head, int connstatus)
+{
+	return sonewconn_faddr(head, connstatus, NULL);
 }
 
 /*
@@ -506,7 +537,6 @@ sowakeup(struct socket *so, struct signalsockbuf *ssb)
 	if (ssb->ssb_flags & SSB_MEVENT) {
 		struct netmsg_so_notify *msg, *nmsg;
 
-		lwkt_gettoken(&kq_token);
 		lwkt_getpooltoken(so);
 		TAILQ_FOREACH_MUTABLE(msg, &ssb->ssb_mlist, nm_list, nmsg) {
 			if (msg->nm_predicate(msg)) {
@@ -518,7 +548,6 @@ sowakeup(struct socket *so, struct signalsockbuf *ssb)
 		if (TAILQ_EMPTY(&ssb->ssb_mlist))
 			atomic_clear_int(&ssb->ssb_flags, SSB_MEVENT);
 		lwkt_relpooltoken(so);
-		lwkt_reltoken(&kq_token);
 	}
 }
 

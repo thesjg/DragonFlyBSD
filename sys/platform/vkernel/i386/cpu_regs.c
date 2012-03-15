@@ -40,7 +40,6 @@
  */
 
 #include "use_npx.h"
-#include "opt_atalk.h"
 #include "opt_compat.h"
 #include "opt_ddb.h"
 #include "opt_directio.h"
@@ -236,13 +235,8 @@ sendsig(sig_t catcher, int sig, sigset_t *mask, u_long code)
 	/* make the size of the saved context visible to userland */
 	sf.sf_uc.uc_mcontext.mc_len = sizeof(sf.sf_uc.uc_mcontext); 
 
-	/* save mailbox pending state for syscall interlock semantics */
-	if (p->p_flag & P_MAILBOX)
-		sf.sf_uc.uc_mcontext.mc_xflags |= PGEX_MAILBOX;
-
-
 	/* Allocate and validate space for the signal handler context. */
-        if ((lp->lwp_flag & LWP_ALTSTACK) != 0 && !oonstack &&
+        if ((lp->lwp_flags & LWP_ALTSTACK) != 0 && !oonstack &&
 	    SIGISMEMBER(psp->ps_sigonstack, sig)) {
 		sfp = (struct sigframe *)(lp->lwp_sigstk.ss_sp +
 		    lp->lwp_sigstk.ss_size - sizeof(struct sigframe));
@@ -409,7 +403,6 @@ int
 sys_sigreturn(struct sigreturn_args *uap)
 {
 	struct lwp *lp = curthread->td_lwp;
-	struct proc *p = lp->lwp_proc;
 	struct trapframe *regs;
 	ucontext_t ucp;
 	int cs;
@@ -501,13 +494,6 @@ sys_sigreturn(struct sigreturn_args *uap)
 	 */
 	crit_enter();
 	npxpop(&ucp.uc_mcontext);
-
-	/*
-	 * Merge saved signal mailbox pending flag to maintain interlock
-	 * semantics against system calls.
-	 */
-	if (ucp.uc_mcontext.mc_xflags & PGEX_MAILBOX)
-		p->p_flag |= P_MAILBOX;
 
 	if (ucp.uc_mcontext.mc_onstack & 1)
 		lp->lwp_sigstk.ss_flags |= SS_ONSTACK;
@@ -932,7 +918,8 @@ fill_regs(struct lwp *lp, struct reg *regs)
 {
 	struct trapframe *tp;
 
-	tp = lp->lwp_md.md_regs;
+	if ((tp = lp->lwp_md.md_regs) == NULL)
+		return EINVAL;
 	regs->r_gs = tp->tf_gs;
 	regs->r_fs = tp->tf_fs;
 	regs->r_es = tp->tf_es;
@@ -1029,6 +1016,8 @@ set_fpregs_xmm(struct save87 *sv_87, struct savexmm *sv_xmm)
 int
 fill_fpregs(struct lwp *lp, struct fpreg *fpregs)
 {
+	if (lp->lwp_thread == NULL || lp->lwp_thread->td_pcb == NULL)
+		return EINVAL;
 #ifndef CPU_DISABLE_SSE
 	if (cpu_fxsr) {
 		fill_fpregs_xmm(&lp->lwp_thread->td_pcb->pcb_save.sv_xmm,

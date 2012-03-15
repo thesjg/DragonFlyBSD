@@ -154,35 +154,14 @@ nexus_probe(device_t dev)
 	for (cpuid = 0; cpuid < ncpus; ++cpuid) {
 		struct rman *rm = &irq_rman[cpuid];
 
-		/*
-		 * IRQ's are on the mainboard on old systems, but on
-		 * the ISA part of PCI->ISA bridges.  There would be
-		 * multiple sets of IRQs on multi-ISA-bus systems.
-		 * PCI interrupts are routed to the ISA component,
-		 * so in a way, PCI can be a partial child of an ISA
-		 * bus(!).  APIC interrupts are global though.  In the
-		 * non-APIC case, disallow the use of IRQ 2.
-		 */
 		rm->rm_start = 0;
+		rm->rm_end = IDT_HWI_VECTORS - 1;
 		rm->rm_type = RMAN_ARRAY;
 		rm->rm_descr = "Interrupt request lines";
 
-		/*
-		 * XXX should use MachIntrABI.rman_setup
-		 */
-		if (ioapic_enable) {
-			rm->rm_end = IDT_HWI_VECTORS - 1;
-			if (rman_init(rm, cpuid) ||
-			    rman_manage_region(rm,
-			    rm->rm_start, rm->rm_end))
-				panic("nexus_probe irq_rman");
-		} else {
-			rm->rm_end = 15;
-			if (rman_init(rm, cpuid) ||
-			    rman_manage_region(rm, rm->rm_start, 1) ||
-			    rman_manage_region(rm, 3, rm->rm_end))
-				panic("nexus_probe irq_rman");
-		}
+		if (rman_init(rm, cpuid))
+			panic("nexus_probe rman_init");
+		MachIntrABI.rman_setup(rm);
 	}
 
 	/*
@@ -372,11 +351,8 @@ nexus_alloc_resource(device_t bus, device_t child, int type, int *rid,
 
 	switch (type) {
 	case SYS_RES_IRQ:
-		if (cpuid < 0 || cpuid >= ncpus) {
-			kprintf("NEXUS cpuid %d:\n", cpuid);
-			print_backtrace(-1);
-			cpuid = 0; /* XXX */
-		}
+		KASSERT(cpuid >= 0 && cpuid < ncpus,
+		    ("nexus invalid cpuid %d:\n", cpuid));
 		rm = &irq_rman[cpuid];
 		break;
 
@@ -399,6 +375,7 @@ nexus_alloc_resource(device_t bus, device_t child, int type, int *rid,
 	rv = rman_reserve_resource(rm, start, end, count, flags, child);
 	if (rv == 0)
 		return 0;
+	rman_set_rid(rv, *rid);
 
 	if (type == SYS_RES_MEMORY) {
 		rman_set_bustag(rv, I386_BUS_SPACE_MEM);

@@ -309,7 +309,6 @@ IPTUNNEL		opt_ipx.h
 LIBMCHAIN
 MPLS			opt_mpls.h
 NCP			opt_ncp.h
-NETATALK		opt_atalk.h
 PPP_BSDCOMP		opt_ppp.h
 PPP_DEFLATE		opt_ppp.h
 PPP_FILTER		opt_ppp.h
@@ -453,7 +452,6 @@ LPT_DEBUG		opt_lpt.h
 PLIP_DEBUG		opt_plip.h
 LOCKF_DEBUG		opt_debug_lockf.h
 NPX_DEBUG		opt_debug_npx.h
-NETATALKDEBUG		opt_atalk.h
 SI_DEBUG		opt_debug_si.h
 
 # Fb options
@@ -471,6 +469,7 @@ ENABLE_ALART		opt_intpm.h
 BLKDEV_IOSIZE		opt_global.h
 DEBUG			opt_global.h
 DEBUG_LOCKS		opt_global.h
+DEBUG_LOCKS_LATENCY	opt_global.h
 DEBUG_CRIT_SECTIONS	opt_global.h
 DIAGNOSTIC		opt_global.h
 INVARIANTS		opt_global.h
@@ -488,7 +487,6 @@ DEBUG_PCTRACK		opt_pctrack.h
 
 # These are VM related options
 NO_SWAPPING		opt_vm.h
-PQ_CACHESIZE		opt_vmpage.h
 
 # Standard SMP options
 SMP			opt_global.h

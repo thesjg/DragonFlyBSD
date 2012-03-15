@@ -1,4 +1,4 @@
-    /*
+/*
  * Copyright (c) 1989, 1993, 1995
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -35,7 +35,6 @@
  *
  *	@(#)nfs_vfsops.c	8.12 (Berkeley) 5/20/95
  * $FreeBSD: src/sys/nfs/nfs_vfsops.c,v 1.91.2.7 2003/01/27 20:04:08 dillon Exp $
- * $DragonFly: src/sys/vfs/nfs/nfs_vfsops.c,v 1.54 2008/07/31 20:23:40 swildner Exp $
  */
 
 #include "opt_bootp.h"
@@ -709,7 +708,6 @@ nfs_mountroot(struct mount *mp)
 	}
 
 	mp->mnt_flag |= MNT_ROOTFS;
-	vfs_unbusy(mp);
 
 	/*
 	 * This is not really an nfs issue, but it is much easier to
@@ -778,10 +776,9 @@ haderror:
 #endif
 		kprintf("nfs_mountroot: mount %s on %s: %d", path, which, error);
 		mp->mnt_vfc->vfc_refcount--;
-		vfs_unbusy(mp);
 		if (didalloc)
 			kfree(mp, M_MOUNT);
-		FREE(nam, M_SONAME);
+		kfree(nam, M_SONAME);
 		return (error);
 	}
 	*mpp = mp;
@@ -1035,7 +1032,7 @@ mountnfs(struct nfs_args *argp, struct mount *mp, struct sockaddr *nam,
 	if (mp->mnt_flag & MNT_UPDATE) {
 		nmp = VFSTONFS(mp);
 		/* update paths, file handles, etc, here	XXX */
-		FREE(nam, M_SONAME);
+		kfree(nam, M_SONAME);
 		return (0);
 	} else {
 		nmp = objcache_get(nfsmount_objcache, M_WAITOK);
@@ -1265,7 +1262,7 @@ nfs_free_mount(struct nfsmount *nmp)
 		nmp->nm_cred = NULL;
 	}
 	if (nmp->nm_nam) {
-		FREE(nmp->nm_nam, M_SONAME);
+		kfree(nmp->nm_nam, M_SONAME);
 		nmp->nm_nam = NULL;
 	}
 	objcache_put(nfsmount_objcache, nmp);

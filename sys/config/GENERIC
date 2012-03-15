@@ -32,8 +32,8 @@ options 	NFS_ROOT		#NFS usable as root device, NFS required
 options 	MSDOSFS			#MSDOS Filesystem
 options 	CD9660			#ISO 9660 Filesystem
 options 	PROCFS			#Process filesystem
-options 	COMPAT_43		#Compatible with BSD 4.3 [KEEP THIS!]
-options		COMPAT_DF12		#Compatible with DragonFly 1.2 and earlier
+#options 	COMPAT_43		#Compatible with BSD 4.3
+#options	COMPAT_DF12		#Compatible with DragonFly 1.2 and earlier
 options 	SCSI_DELAY=5000		#Delay (in ms) before probing SCSI
 options		DEVICE_POLLING		# Support mixed interrupt-polling
 					# handling of network device drivers
@@ -200,7 +200,7 @@ device		npx0	at nexus? port IO_NPX irq 13
 device		apm0	at nexus? disable flags 0x20 # Advanced Power Management
 
 # HW monitoring devices
-device		aps0	at isa? port 0x1600
+#device		aps0	at isa? port 0x1600
 device		lm0	at isa? port 0x290
 device		it0	at isa?	port 0x290
 device		it1	at isa?	port 0xc00

@@ -423,9 +423,8 @@ swap_pager_alloc(void *handle, off_t size, vm_prot_t prot, off_t offset)
 	vm_object_t object;
 
 	KKASSERT(handle == NULL);
-	object = vm_object_allocate(OBJT_DEFAULT,
-				    OFF_TO_IDX(offset + PAGE_MASK + size));
-	vm_object_hold(object);
+	object = vm_object_allocate_hold(OBJT_DEFAULT,
+					 OFF_TO_IDX(offset + PAGE_MASK + size));
 	swp_pager_meta_convert(object);
 	vm_object_drop(object);
 
@@ -484,7 +483,8 @@ swp_pager_getswapspace(vm_object_t object, int npages)
 	lwkt_gettoken(&vm_token);
 	if ((blk = blist_alloc(swapblist, npages)) == SWAPBLK_NONE) {
 		if (swap_pager_full != 2) {
-			kprintf("swap_pager_getswapspace: failed\n");
+			kprintf("swap_pager_getswapspace: failed alloc=%d\n",
+				npages);
 			swap_pager_full = 2;
 			swap_pager_almost_full = 1;
 		}
@@ -595,6 +595,8 @@ int
 swap_pager_condfree(vm_object_t object, vm_pindex_t *basei, int count)
 {
 	struct swfreeinfo info;
+	int n;
+	int t;
 
 	ASSERT_LWKT_TOKEN_HELD(vm_object_token(object));
 
@@ -606,9 +608,17 @@ swap_pager_condfree(vm_object_t object, vm_pindex_t *basei, int count)
 	swblock_rb_tree_RB_SCAN(&object->swblock_root, rb_swblock_condcmp,
 				swap_pager_condfree_callback, &info);
 	*basei = info.basei;
-	if (info.endi < 0 && info.begi <= count)
-		info.begi = count + 1;
-	return(count - (int)info.begi);
+
+	/*
+	 * Take the higher difference swblocks vs pages
+	 */
+	n = count - (int)info.begi;
+	t = count * 8 - (int)info.endi;
+	if (n < t)
+		n = t;
+	if (n < 1)
+		n = 1;
+	return(n);
 }
 
 /*

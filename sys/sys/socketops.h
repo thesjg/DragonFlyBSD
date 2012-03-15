@@ -77,7 +77,7 @@ so_pru_soreceive(struct socket *so, struct sockaddr **paddr, struct uio *uio,
 void so_pru_abort (struct socket *so);
 void so_pru_aborta (struct socket *so);
 void so_pru_abort_oncpu (struct socket *so);
-int so_pru_accept_direct(struct socket *so, struct sockaddr **nam);
+int so_pru_accept (struct socket *so, struct sockaddr **nam);
 int so_pru_attach (struct socket *so, int proto, struct pru_attach_info *ai);
 int so_pru_attach_direct(struct socket *so, int proto,
 		struct pru_attach_info *ai);
@@ -87,11 +87,14 @@ int so_pru_connect2 (struct socket *so1, struct socket *so2);
 int so_pru_control_direct(struct socket *so, u_long cmd, caddr_t data,
 		struct ifnet *ifp);
 int so_pru_detach (struct socket *so);
+void so_pru_detach_direct (struct socket *so);
 int so_pru_disconnect (struct socket *so);
+void so_pru_disconnect_direct (struct socket *so);
 int so_pru_listen (struct socket *so, struct thread *td);
 int so_pru_peeraddr (struct socket *so, struct sockaddr **nam);
 int so_pru_rcvd (struct socket *so, int flags);
 int so_pru_rcvoob (struct socket *so, struct mbuf *m, int flags);
+void so_pru_sync (struct socket *so);
 int so_pru_send (struct socket *so, int flags, struct mbuf *m,
 		struct sockaddr *addr, struct mbuf *control,
 		struct thread *td);
@@ -104,6 +107,18 @@ int so_pru_sockaddr (struct socket *so, struct sockaddr **nam);
 int so_pr_ctloutput(struct socket *so, struct sockopt *sopt);
 void so_pru_ctlinput(struct protosw *pr, int cmd,
 		struct sockaddr *arg, void *extra);
+
+static __inline int
+so_pru_senda(struct socket *so, int flags, struct mbuf *m,
+	     struct sockaddr *addr, struct mbuf *control, struct thread *td)
+{
+	if (so->so_proto->pr_flags & PR_ASYNC_SEND) {
+		so_pru_send_async(so, flags, m, addr, control, td);
+		return 0;
+	} else {
+		return so_pru_send(so, flags, m, addr, control, td);
+	}
+}
 
 #endif	/* _KERNEL */
 #endif	/* _SYS_SOCKETOPS_H_ */

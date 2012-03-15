@@ -38,7 +38,6 @@
  * Author: Archie Cobbs <archie@freebsd.org>
  *
  * $FreeBSD: src/sys/netgraph/ng_ksocket.c,v 1.61 2008/03/07 21:12:56 mav Exp $
- * $DragonFly: src/sys/netgraph7/ng_ksocket.c,v 1.2 2008/06/26 23:05:35 dillon Exp $
  * $Whistle: ng_ksocket.c,v 1.1 1999/11/16 20:04:40 archie Exp $
  */
 
@@ -67,7 +66,6 @@
 #include "ng_ksocket.h"
 
 #include <netinet/in.h>
-#include <netatalk/at.h>
 
 #ifdef NG_SEPARATE_MALLOC
 MALLOC_DEFINE(M_NETGRAPH_KSOCKET, "netgraph_ksock", "netgraph ksock node ");
@@ -120,7 +118,6 @@ static const struct ng_ksocket_alias ng_ksocket_families[] = {
 	{ "local",	PF_LOCAL	},
 	{ "inet",	PF_INET		},
 	{ "inet6",	PF_INET6	},
-	{ "atalk",	PF_APPLETALK	},
 	{ "ipx",	PF_IPX		},
 	{ "atm",	PF_ATM		},
 	{ NULL,		-1		},
@@ -151,8 +148,6 @@ static const struct ng_ksocket_alias ng_ksocket_protos[] = {
 	{ "encap",	IPPROTO_ENCAP,		PF_INET		},
 	{ "divert",	IPPROTO_DIVERT,		PF_INET		},
 	{ "pim",	IPPROTO_PIM,		PF_INET		},
-	{ "ddp",	ATPROTO_DDP,		PF_APPLETALK	},
-	{ "aarp",	ATPROTO_AARP,		PF_APPLETALK	},
 	{ NULL,		-1					},
 };
 
@@ -251,17 +246,17 @@ ng_ksocket_sockaddr_parse(const struct ng_parse_type *type,
 			return (EINVAL);
 		pathlen = strlen(path);
 		if (pathlen > SOCK_MAXADDRLEN) {
-			FREE(path, M_NETGRAPH_KSOCKET);
+			kfree(path, M_NETGRAPH_KSOCKET);
 			return (E2BIG);
 		}
 		if (*buflen < pathoff + pathlen) {
-			FREE(path, M_NETGRAPH_KSOCKET);
+			kfree(path, M_NETGRAPH_KSOCKET);
 			return (ERANGE);
 		}
 		*off += toklen;
 		bcopy(path, sun->sun_path, pathlen);
 		sun->sun_len = pathoff + pathlen;
-		FREE(path, M_NETGRAPH_KSOCKET);
+		kfree(path, M_NETGRAPH_KSOCKET);
 		break;
 	    }
 
@@ -300,7 +295,6 @@ ng_ksocket_sockaddr_parse(const struct ng_parse_type *type,
 	    }
 
 #if 0
-	case PF_APPLETALK:	/* XXX implement these someday */
 	case PF_INET6:
 	case PF_IPX:
 #endif
@@ -336,7 +330,7 @@ ng_ksocket_sockaddr_unparse(const struct ng_parse_type *type,
 		if ((pathtoken = ng_encode_string(pathbuf, pathlen)) == NULL)
 			return (ENOMEM);
 		slen += snprintf(cbuf, cbuflen, "local/%s", pathtoken);
-		FREE(pathtoken, M_NETGRAPH_KSOCKET);
+		kfree(pathtoken, M_NETGRAPH);
 		if (slen >= cbuflen)
 			return (ERANGE);
 		*off += sun->sun_len;
@@ -364,7 +358,6 @@ ng_ksocket_sockaddr_unparse(const struct ng_parse_type *type,
 	    }
 
 #if 0
-	case PF_APPLETALK:	/* XXX implement these someday */
 	case PF_INET6:
 	case PF_IPX:
 #endif
@@ -524,8 +517,8 @@ ng_ksocket_constructor(node_p node)
 	priv_p priv;
 
 	/* Allocate private structure */
-	MALLOC(priv, priv_p, sizeof(*priv),
-	    M_NETGRAPH_KSOCKET, M_WAITOK | M_NULLOK | M_ZERO);
+	priv = kmalloc(sizeof(*priv), M_NETGRAPH,
+		       M_WAITOK | M_NULLOK | M_ZERO);
 	if (priv == NULL)
 		return (ENOMEM);
 
@@ -812,7 +805,7 @@ ng_ksocket_rcvmsg(node_p node, item_p item, hook_p lasthook)
 		bail:
 			/* Cleanup */
 			if (sa != NULL)
-				FREE(sa, M_SONAME);
+				kfree(sa, M_SONAME);
 			break;
 		    }
 
@@ -966,7 +959,7 @@ ng_ksocket_shutdown(node_p node)
 
 	/* Take down netgraph node */
 	bzero(priv, sizeof(*priv));
-	FREE(priv, M_NETGRAPH_KSOCKET);
+	kfree(priv, M_NETGRAPH);
 	NG_NODE_SET_PRIVATE(node, NULL);
 	NG_NODE_UNREF(node);		/* let the node escape */
 	return (0);
@@ -1106,7 +1099,7 @@ ng_ksocket_incoming2(node_p node, hook_p hook, void *arg1, int arg2)
 		/* See if we got anything */
 		if (m == NULL) {
 			if (sa != NULL)
-				FREE(sa, M_SONAME);
+				kfree(sa, M_SONAME);
 			break;
 		}
 
@@ -1131,11 +1124,11 @@ ng_ksocket_incoming2(node_p node, hook_p hook, void *arg1, int arg2)
 			    NG_KSOCKET_TAG_SOCKADDR, sizeof(ng_ID_t) +
 			    sa->sa_len, MB_DONTWAIT);
 			if (stag == NULL) {
-				FREE(sa, M_SONAME);
+				kfree(sa, M_SONAME);
 				goto sendit;
 			}
 			bcopy(sa, &stag->sa, sa->sa_len);
-			FREE(sa, M_SONAME);
+			kfree(sa, M_SONAME);
 			stag->id = NG_NODE_ID(node);
 			m_tag_prepend(m, &stag->tag);
 		}
@@ -1235,14 +1228,14 @@ ng_ksocket_finish_accept(priv_p priv)
 	/* Clone a ksocket node to wrap the new socket */
         error = ng_make_node_common(&ng_ksocket_typestruct, &node);
         if (error) {
-		FREE(resp, M_NETGRAPH);
+		kfree(resp, M_NETGRAPH);
 		soclose(so);
 		goto out;
 	}
 
 	if (ng_ksocket_constructor(node) != 0) {
 		NG_NODE_UNREF(node);
-		FREE(resp, M_NETGRAPH);
+		kfree(resp, M_NETGRAPH);
 		soclose(so);
 		goto out;
 	}
@@ -1277,7 +1270,7 @@ ng_ksocket_finish_accept(priv_p priv)
 
 out:
 	if (sa != NULL)
-		FREE(sa, M_SONAME);
+		kfree(sa, M_SONAME);
 }
 
 /*

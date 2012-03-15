@@ -638,7 +638,6 @@ printcpuinfo(void)
 #if defined(I486_CPU)
 	case CPUCLASS_486:
 		kprintf("486");
-		/* bzero_vector = i486_bzero; */
 		break;
 #endif
 #if defined(I586_CPU)
@@ -831,14 +830,14 @@ printcpuinfo(void)
 				"\017<b14>"
 				"\020LWP"	/* Lightweight Profiling */
 				"\021FMA4"	/* 4-operand FMA instructions */
-				"\022<b17>"
+				"\022TCE"       /* Translation Cache Extension */
 				"\023<b18>"
 				"\024NodeId"	/* NodeId MSR support */
 				"\025<b20>"
 				"\026TBM"	/* Trailing Bit Manipulation */
 				"\027Topology"	/* Topology Extensions */
-				"\030<b23>"
-				"\031<b24>"
+				"\030PCX_CORE"  /* Core Performance Counter */
+				"\031PCX_NB"    /* NB Performance Counter */
 				"\032<b25>"
 				"\033<b26>"
 				"\034<b27>"

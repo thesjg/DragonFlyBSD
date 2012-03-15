@@ -561,9 +561,7 @@ ENTRY(cpu_idle_restore)
 	/* JG push RBP? */
 	pushq	$0
 	andl	$~TDF_RUNNING,TD_FLAGS(%rbx)
-#if 0
-	orl	$TDF_RUNNING,TD_FLAGS(%rax)
-#endif
+	orl	$TDF_RUNNING,TD_FLAGS(%rax)	/* manual, no switch_return */
 #ifdef SMP
 	cmpl	$0,PCPU(cpuid)
 	je	1f
@@ -603,10 +601,6 @@ ENTRY(cpu_kthread_restore)
 	movq	%rbx,%rdi
 	call	lwkt_switch_return
 	popq	%rax
-#if 0
-	andl	$~TDF_RUNNING,TD_FLAGS(%rbx)
-	orl	$TDF_RUNNING,TD_FLAGS(%rax)
-#endif
 	decl	TD_CRITCOUNT(%rax)
 	movq	PCB_R12(%r13),%rdi	/* argument to RBX function */
 	movq	PCB_RBX(%r13),%rax	/* thread function */

@@ -98,7 +98,7 @@
 
 #define PMAP_KEEP_PDIRS
 #ifndef PMAP_SHPGPERPROC
-#define PMAP_SHPGPERPROC 200
+#define PMAP_SHPGPERPROC 1000
 #endif
 
 #if defined(DIAGNOSTIC)
@@ -898,16 +898,6 @@ pmap_init_proc(struct proc *p)
 {
 }
 
-/*
- * Dispose the UPAGES for a process that has exited.
- * This routine directly impacts the exit perf of a process.
- */
-void
-pmap_dispose_proc(struct proc *p)
-{
-	KASSERT(p->p_lock == 0, ("attempt to dispose referenced proc! %p", p));
-}
-
 /***************************************************
  * Page table page management routines.....
  ***************************************************/
@@ -1090,9 +1080,7 @@ pmap_pinit(struct pmap *pmap)
 				     VM_ALLOC_ZERO);
 		pmap->pm_pdirm = ptdpg;
 		vm_page_flag_clear(ptdpg, PG_MAPPED);
-		if (ptdpg->wire_count == 0)
-			atomic_add_int(&vmstats.v_wire_count, 1);
-		ptdpg->wire_count = 1;
+		vm_page_wire(ptdpg);
 		vm_page_wakeup(ptdpg);
 		pmap_kenter((vm_offset_t)pmap->pm_pml4, VM_PAGE_TO_PHYS(ptdpg));
 	}
@@ -1277,10 +1265,7 @@ _pmap_allocpte(pmap_t pmap, vm_pindex_t ptepindex)
 	 * the caller.
 	 */
 	m->hold_count++;
-
-	if (m->wire_count == 0)
-		atomic_add_int(&vmstats.v_wire_count, 1);
-	m->wire_count++;
+	vm_page_wire(m);
 
 	/*
 	 * Map the pagetable page into the process address space, if
@@ -2561,6 +2546,13 @@ pmap_object_init_pt_callback(vm_page_t p, void *data)
 		vmstats.v_free_count < vmstats.v_free_reserved) {
 		    return(-1);
 	}
+
+	/*
+	 * Ignore list markers and ignore pages we cannot instantly
+	 * busy (while holding the object token).
+	 */
+	if (p->flags & PG_MARKER)
+		return 0;
 	if (vm_page_busy_try(p, TRUE))
 		return 0;
 	if (((p->valid & VM_PAGE_BITS_ALL) == VM_PAGE_BITS_ALL) &&

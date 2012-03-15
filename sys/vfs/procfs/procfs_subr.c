@@ -37,7 +37,6 @@
  *	@(#)procfs_subr.c	8.6 (Berkeley) 5/14/95
  *
  * $FreeBSD: src/sys/miscfs/procfs/procfs_subr.c,v 1.26.2.3 2002/02/18 21:28:04 des Exp $
- * $DragonFly: src/sys/vfs/procfs/procfs_subr.c,v 1.18 2007/08/25 23:27:02 corecode Exp $
  */
 
 #include <sys/param.h>
@@ -95,8 +94,11 @@ loop:
 		if (pfs->pfs_pid == pid && pfs->pfs_type == pfs_type &&
 		    PFSTOV(pfs)->v_mount == mp) {
 			vp = PFSTOV(pfs);
-			if (vget(vp, LK_EXCLUSIVE))
+			vhold_interlocked(vp);
+			if (vget(vp, LK_EXCLUSIVE)) {
+				vdrop(vp);
 				goto loop;
+			}
 
 			/*
 			 * Make sure the vnode is still in the cache after
@@ -110,11 +112,13 @@ loop:
 					break;
 				}
 			}
+			vdrop(vp);
 			if (pfs == NULL || PFSTOV(pfs) != vp) {
 				vput(vp);
 				goto loop;
 
 			}
+			KKASSERT(vp->v_data == pfs);
 			*vpp = vp;
 			return (0);
 		}
@@ -139,7 +143,7 @@ loop:
 	 * XXX this may not matter anymore since getnewvnode now returns
 	 * a VX locked vnode.
 	 */
-	MALLOC(pfs, struct pfsnode *, sizeof(struct pfsnode), M_TEMP, M_WAITOK);
+	pfs = kmalloc(sizeof(struct pfsnode), M_TEMP, M_WAITOK);
 
 	error = getnewvnode(VT_PROCFS, mp, vpp, 0, 0);
 	if (error) {
@@ -252,6 +256,7 @@ procfs_freevp(struct vnode *vp)
 	KKASSERT(*pfspp);
 	*pfspp = pfs->pfs_next;
 	pfs->pfs_next = NULL;
+	pfs->pfs_vnode = NULL;
 	kfree(pfs, M_TEMP);
 	return (0);
 }
@@ -273,7 +278,29 @@ pfs_pfind(pid_t pfs_pid)
 		p = pfind(pfs_pid);
 	}
 
+	/*
+	 * Make sure the process is not in the middle of exiting (where
+	 * a lot of its structural members may wind up being NULL).  If it
+	 * is we give up on it.
+	 */
+	if (p) {
+		lwkt_gettoken(&p->p_token);
+		if (p->p_flags & P_WEXIT) {
+			lwkt_reltoken(&p->p_token);
+			PRELE(p);
+			p = NULL;
+		}
+	}
 	return p;
+}
+
+void
+pfs_pdone(struct proc *p)
+{
+	if (p) {
+		lwkt_reltoken(&p->p_token);
+		PRELE(p);
+	}
 }
 
 int
@@ -294,7 +321,6 @@ procfs_rw(struct vop_read_args *ap)
 		return (EINVAL);
 
 	lwkt_gettoken(&proc_token);
-
 	p = pfs_pfind(pfs->pfs_pid);
 	if (p == NULL) {
 		rtval = (EINVAL);
@@ -312,8 +338,6 @@ procfs_rw(struct vop_read_args *ap)
 		tsleep(&pfs->pfs_lockowner, 0, "pfslck", 0);
 	}
 	pfs->pfs_lockowner = curproc->p_pid;
-
-	lwkt_gettoken(&p->p_token);
 
 	switch (pfs->pfs_type) {
 	case Pnote:
@@ -365,18 +389,14 @@ procfs_rw(struct vop_read_args *ap)
 		rtval = EOPNOTSUPP;
 		break;
 	}
-	lwkt_reltoken(&p->p_token);
 	LWPRELE(lp);
 
 	pfs->pfs_lockowner = 0;
-	lwkt_reltoken(&proc_token);
 	wakeup(&pfs->pfs_lockowner);
 
 out:
-	if (LWKT_TOKEN_HELD(&proc_token))
-		lwkt_reltoken(&proc_token);
-	if (p)
-		PRELE(p);
+	pfs_pdone(p);
+	lwkt_reltoken(&proc_token);
 
 	return rtval;
 }

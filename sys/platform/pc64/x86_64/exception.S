@@ -183,6 +183,7 @@ alltraps_pushregs_no_rdi:
 	.globl	calltrap
 	.type	calltrap,@function
 calltrap:
+	cld
 	movq	%rsp, %rdi
 	call	trap
 	MEXITCOUNT
@@ -228,6 +229,7 @@ IDTVEC(dblfault)
 	jz	1f
 	swapgs
 1:	movq	%rsp, %rdi
+	cld
 	call	dblfault_handler
 2:	hlt
 	jmp	2b
@@ -296,6 +298,7 @@ IDTVEC(fast_syscall)
 	movq	%rcx,TF_RIP(%rsp)	/* %rcx original value is in %r10 */
 	movq	PCPU(scratch_rsp),%r11	/* %r11 already saved */
 	movq	%r11,TF_RSP(%rsp)	/* user stack pointer */
+	orl	$RQF_QUICKRET,PCPU(reqflags)
 	sti
 	movq	$KUDSEL,TF_SS(%rsp)
 	movq	$KUCSEL,TF_CS(%rsp)
@@ -318,6 +321,29 @@ IDTVEC(fast_syscall)
 	FAKE_MCOUNT(TF_RIP(%rsp))
 	movq	%rsp, %rdi
 	call	syscall2
+
+	/*
+	 * Fast return from system call
+	 */
+	cli
+	testl	$RQF_IPIQ|RQF_TIMER|RQF_INTPEND|RQF_AST_MASK,PCPU(reqflags)
+	jnz	1f
+	testl	$RQF_QUICKRET,PCPU(reqflags)
+	jz	1f
+	MEXITCOUNT
+	movq	TF_RDI(%rsp),%rdi
+	movq	TF_RSI(%rsp),%rsi
+	movq	TF_RDX(%rsp),%rdx
+	movq	TF_RAX(%rsp),%rax
+	movq	TF_RFLAGS(%rsp),%r11
+	movq	TF_RIP(%rsp),%rcx
+	movq	TF_RSP(%rsp),%rsp
+	swapgs
+	sysretq
+	/*
+	 * Normal slow / full iret
+	 */
+1:
 	MEXITCOUNT
 	jmp	doreti
 
@@ -385,6 +411,7 @@ nmi_needswapgs:
 /* Note: this label is also used by ddb and gdb: */
 nmi_calltrap:
 	FAKE_MCOUNT(TF_RIP(%rsp))
+	cld
 	movq	%rsp, %rdi
 	call	trap
 	MEXITCOUNT

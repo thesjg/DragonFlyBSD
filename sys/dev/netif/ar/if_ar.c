@@ -26,7 +26,6 @@
  * SUCH DAMAGE.
  *
  * $FreeBSD: src/sys/dev/ar/if_ar.c,v 1.66 2005/01/06 01:42:28 imp Exp $
- * $DragonFly: src/sys/dev/netif/ar/if_ar.c,v 1.23 2008/01/06 16:55:50 swildner Exp $
  */
 
 /*
@@ -374,7 +373,7 @@ ar_detach(device_t device)
 	 * deallocate any system resources we may have
 	 * allocated on behalf of this driver.
 	 */
-	FREE(hc->sc, M_DEVBUF);
+	kfree(hc->sc, M_DEVBUF);
 	hc->sc = NULL;
 	hc->mem_start = NULL;
 	error = ar_deallocate_resources(device);
@@ -1086,8 +1085,8 @@ arc_init(struct ar_hardc *hc)
 	u_char isr, mar;
 	u_long memst;
 
-	MALLOC(sc, struct ar_softc *, hc->numports * sizeof(struct ar_softc),
-		M_DEVBUF, M_WAITOK | M_ZERO);
+	sc = kmalloc(hc->numports * sizeof(struct ar_softc), M_DEVBUF,
+		     M_WAITOK | M_ZERO);
 	hc->sc = sc;
 
 	hc->txc_dtr[0] = AR_TXC_DTR_NOTRESET |
@@ -1385,8 +1384,8 @@ ar_init_rx_dmac(struct ar_softc *sc)
 
 		x++;
 		if(x < 6)
-		TRC(kprintf("Descrp %p, data pt %x, data %x, ",
-			rxd, rxda, rxbuf));
+			TRC(kprintf("Descrp %p, data pt %x, data %x, ",
+			    rxd, rxda, rxbuf));
 
 		rxd->bp = (u_short)(rxbuf & 0xfffful);
 		rxd->bpb = (u_char)((rxbuf >> 16) & 0xff);

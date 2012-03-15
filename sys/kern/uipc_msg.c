@@ -100,22 +100,16 @@ so_pru_abort_oncpu(struct socket *so)
 	sofree(msg.base.nm_so);
 }
 
-/*
- * WARNING!  Synchronous call from user context
- */
 int
-so_pru_accept_direct(struct socket *so, struct sockaddr **nam)
+so_pru_accept(struct socket *so, struct sockaddr **nam)
 {
 	struct netmsg_pru_accept msg;
-	netisr_fn_t func = so->so_proto->pr_usrreqs->pru_accept;
 
-	netmsg_init(&msg.base, so, &netisr_adone_rport, 0, func);
-	msg.base.lmsg.ms_flags &= ~(MSGF_REPLY | MSGF_DONE);
-	msg.base.lmsg.ms_flags |= MSGF_SYNC;
+	netmsg_init(&msg.base, so, &curthread->td_msgport,
+	    0, so->so_proto->pr_usrreqs->pru_accept);
 	msg.nm_nam = nam;
-	func((netmsg_t)&msg);
-	KKASSERT(msg.base.lmsg.ms_flags & MSGF_DONE);
-	return(msg.base.lmsg.ms_error);
+
+	return lwkt_domsg(so->so_port, &msg.base.lmsg, 0);
 }
 
 int
@@ -231,6 +225,19 @@ so_pru_detach(struct socket *so)
 	return (error);
 }
 
+void
+so_pru_detach_direct(struct socket *so)
+{
+	struct netmsg_pru_detach msg;
+	netisr_fn_t func = so->so_proto->pr_usrreqs->pru_detach;
+
+	netmsg_init(&msg.base, so, &netisr_adone_rport, 0, func);
+	msg.base.lmsg.ms_flags &= ~(MSGF_REPLY | MSGF_DONE);
+	msg.base.lmsg.ms_flags |= MSGF_SYNC;
+	func((netmsg_t)&msg);
+	KKASSERT(msg.base.lmsg.ms_flags & MSGF_DONE);
+}
+
 int
 so_pru_disconnect(struct socket *so)
 {
@@ -241,6 +248,19 @@ so_pru_disconnect(struct socket *so)
 		    0, so->so_proto->pr_usrreqs->pru_disconnect);
 	error = lwkt_domsg(so->so_port, &msg.base.lmsg, 0);
 	return (error);
+}
+
+void
+so_pru_disconnect_direct(struct socket *so)
+{
+	struct netmsg_pru_disconnect msg;
+	netisr_fn_t func = so->so_proto->pr_usrreqs->pru_disconnect;
+
+	netmsg_init(&msg.base, so, &netisr_adone_rport, 0, func);
+	msg.base.lmsg.ms_flags &= ~(MSGF_REPLY | MSGF_DONE);
+	msg.base.lmsg.ms_flags |= MSGF_SYNC;
+	func((netmsg_t)&msg);
+	KKASSERT(msg.base.lmsg.ms_flags & MSGF_DONE);
 }
 
 int
@@ -318,15 +338,36 @@ so_pru_send(struct socket *so, int flags, struct mbuf *m,
 }
 
 void
+so_pru_sync(struct socket *so)
+{
+	struct netmsg_base msg;
+
+	netmsg_init(&msg, so, &curthread->td_msgport, 0,
+	    netmsg_sync_handler);
+	lwkt_domsg(so->so_port, &msg.lmsg, 0);
+}
+
+void
 so_pru_send_async(struct socket *so, int flags, struct mbuf *m,
-	    struct sockaddr *addr, struct mbuf *control, struct thread *td)
+	    struct sockaddr *addr0, struct mbuf *control, struct thread *td)
 {
 	struct netmsg_pru_send *msg;
+	struct sockaddr *addr = NULL;
+
+	KASSERT(so->so_proto->pr_flags & PR_ASYNC_SEND,
+	    ("async pru_send is not supported\n"));
+
+	flags |= PRUS_NOREPLY;
+	if (addr0 != NULL) {
+		addr = kmalloc(addr0->sa_len, M_SONAME, M_WAITOK);
+		memcpy(addr, addr0, addr0->sa_len);
+		flags |= PRUS_FREEADDR;
+	}
 
 	msg = &m->m_hdr.mh_sndmsg;
 	netmsg_init(&msg->base, so, &netisr_apanic_rport,
 		    0, so->so_proto->pr_usrreqs->pru_send);
-	msg->nm_flags = flags | PRUS_NOREPLY;
+	msg->nm_flags = flags;
 	msg->nm_m = m;
 	msg->nm_addr = addr;
 	msg->nm_control = control;
@@ -430,6 +471,7 @@ so_pru_ctlinput(struct protosw *pr, int cmd, struct sockaddr *arg, void *extra)
 void
 netmsg_so_notify(netmsg_t msg)
 {
+	struct lwkt_token *tok;
 	struct signalsockbuf *ssb;
 
 	ssb = (msg->notify.nm_etype & NM_REVENT) ?
@@ -439,15 +481,20 @@ netmsg_so_notify(netmsg_t msg)
 	/*
 	 * Reply immediately if the event has occured, otherwise queue the
 	 * request.
+	 *
+	 * NOTE: Socket can change if this is an accept predicate so cache
+	 *	 the token.
 	 */
+	tok = lwkt_token_pool_lookup(msg->base.nm_so);
+	lwkt_gettoken(tok);
 	if (msg->notify.nm_predicate(&msg->notify)) {
+		lwkt_reltoken(tok);
 		lwkt_replymsg(&msg->base.lmsg,
 			      msg->base.lmsg.ms_error);
 	} else {
-		lwkt_gettoken(&kq_token);
 		TAILQ_INSERT_TAIL(&ssb->ssb_mlist, &msg->notify, nm_list);
 		atomic_set_int(&ssb->ssb_flags, SSB_MEVENT);
-		lwkt_reltoken(&kq_token);
+		lwkt_reltoken(tok);
 	}
 }
 
@@ -504,14 +551,16 @@ netmsg_so_notify_abort(netmsg_t msg)
 	 * The original notify message is not destroyed until after the
 	 * abort request is returned, so we can check its state.
 	 */
+	lwkt_getpooltoken(nmsg->base.nm_so);
 	if ((nmsg->base.lmsg.ms_flags & (MSGF_DONE | MSGF_REPLY)) == 0) {
 		ssb = (nmsg->nm_etype & NM_REVENT) ?
 				&nmsg->base.nm_so->so_rcv :
 				&nmsg->base.nm_so->so_snd;
-		lwkt_gettoken(&kq_token);
 		TAILQ_REMOVE(&ssb->ssb_mlist, nmsg, nm_list);
-		lwkt_reltoken(&kq_token);
+		lwkt_relpooltoken(nmsg->base.nm_so);
 		lwkt_replymsg(&nmsg->base.lmsg, EINTR);
+	} else {
+		lwkt_relpooltoken(nmsg->base.nm_so);
 	}
 
 	/*

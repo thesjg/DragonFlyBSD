@@ -37,7 +37,6 @@
  *
  *	@(#)kern_prot.c	8.6 (Berkeley) 1/21/94
  * $FreeBSD: src/sys/kern/kern_prot.c,v 1.53.2.9 2002/03/09 05:20:26 dd Exp $
- * $DragonFly: src/sys/kern/kern_prot.c,v 1.29 2008/02/16 15:53:39 matthias Exp $
  */
 
 /*
@@ -324,7 +323,7 @@ sys_setpgid(struct setpgid_args *uap)
 			error = EPERM;
 			goto done;
 		}
-		if (targp->p_flag & P_EXEC) {
+		if (targp->p_flags & P_EXEC) {
 			error = EACCES;
 			goto done;
 		}
@@ -873,7 +872,7 @@ sys_getresgid(struct getresgid_args *uap)
 int
 sys_issetugid(struct issetugid_args *uap)
 {
-	uap->sysmsg_result = (curproc->p_flag & P_SUGID) ? 1 : 0;
+	uap->sysmsg_result = (curproc->p_flags & P_SUGID) ? 1 : 0;
 	return (0);
 }
 
@@ -1060,7 +1059,7 @@ crfree(struct ucred *cr)
 			prison_free(cr->cr_prison);
 		cr->cr_prison = NULL;	/* safety */
 
-		FREE((caddr_t)cr, M_CRED);
+		kfree((caddr_t)cr, M_CRED);
 	}
 }
 
@@ -1210,9 +1209,11 @@ setsugid(void)
 	struct proc *p = curproc;
 
 	KKASSERT(p != NULL);
-	p->p_flag |= P_SUGID;
+	lwkt_gettoken(&p->p_token);
+	p->p_flags |= P_SUGID;
 	if (!(p->p_pfsflags & PF_ISUGID))
 		p->p_stops = 0;
+	lwkt_reltoken(&p->p_token);
 }
 
 /*

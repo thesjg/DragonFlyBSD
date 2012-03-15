@@ -2388,7 +2388,7 @@ sctp_sack_check(struct sctp_tcb *stcb, int ok_to_sack, int was_a_gap, int *abort
 		 */
 		struct sctp_tmit_chunk *chk;
 		sctp_handle_stream_reset_response(stcb, asoc->pending_reply);
-		FREE(asoc->pending_reply, M_PCB);
+		kfree(asoc->pending_reply, M_PCB);
 		asoc->pending_reply = NULL;
 		chk = TAILQ_FIRST(&asoc->pending_reply_queue);
 		while (chk) {
@@ -3821,7 +3821,7 @@ sctp_handle_sack(struct sctp_sack_chunk *ch, struct sctp_tcb *stcb,
 	/* always set this up to cum-ack */
 	asoc->this_sack_highest_gap = last_tsn;
 
-	if (((num_seg * sizeof (sizeof(struct sctp_gap_ack_block))) + sizeof(struct sctp_sack_chunk)) > sack_length) {
+	if (((num_seg * sizeof(struct sctp_gap_ack_block)) + sizeof(struct sctp_sack_chunk)) > sack_length) {
 		/* skip corrupt segments */
 		strike_enabled = 0;
 		goto skip_segments;

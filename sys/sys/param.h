@@ -81,10 +81,13 @@
  * 201200 - 2.12 release
  * 201300 - 2.13 master
  * 201301 - header rename: <vfs/gnu/ext2fs/...> -> <gnu/vfs/ext2fs/...>
- * 201302 - remove GET_TIME() macro from mroute headers
+ * 201302 - header <crypt.h> is gone
+ * 201303 - <netatalk/...> and <netproto/atalk/...> are gone
+ * 201304 - Added wcscasecmp, wcsncasecmp to libc
+ * 201305 - remove GET_TIME() macro from mroute headers
  */
 #undef __DragonFly_version
-#define __DragonFly_version 201301	/* propagated to newvers */
+#define __DragonFly_version 201304	/* propagated to newvers */
 
 #include <sys/_null.h>
 

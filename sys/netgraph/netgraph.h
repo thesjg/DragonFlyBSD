@@ -37,7 +37,6 @@
  * Author: Julian Elischer <julian@freebsd.org>
  *
  * $FreeBSD: src/sys/netgraph/netgraph.h,v 1.6.2.7 2002/04/14 23:31:08 julian Exp $
- * $DragonFly: src/sys/netgraph/netgraph.h,v 1.4 2006/05/21 03:43:47 dillon Exp $
  * $Whistle: netgraph.h,v 1.29 1999/11/01 07:56:13 julian Exp $
  */
 
@@ -256,7 +255,7 @@ struct ng_type {
 			if (retaddr) {					\
 				error = ng_queue_msg(here, resp, retaddr); \
 			} else {					\
-				FREE(resp, M_NETGRAPH);			\
+				kfree(resp, M_NETGRAPH);		\
 			}						\
 		}							\
 	} while (0)
@@ -264,7 +263,7 @@ struct ng_type {
 #define NG_FREE_MSG(msg)						\
 	do {								\
 		if ((msg)) {						\
-			FREE((msg), M_NETGRAPH);			\
+			kfree((msg), M_NETGRAPH);			\
 			(msg) = NULL;					\
 		}	 						\
 	} while (0)
@@ -272,7 +271,7 @@ struct ng_type {
 #define NG_FREE_META(a)							\
 	do {								\
 		if ((a)) {						\
-			FREE((a), M_NETGRAPH);				\
+			kfree((a), M_NETGRAPH);				\
 			(a) = NULL;					\
 		}							\
 	} while (0)
@@ -311,8 +310,10 @@ static moduledata_t ng_##typename##_mod = {				\
 	(typestructp)							\
 };									\
 DECLARE_MODULE(ng_##typename, ng_##typename##_mod, sub, order);		\
-MODULE_VERSION(ng_##typename, NG_ABI_VERSION)
-
+MODULE_VERSION(ng_##typename, NG_ABI_VERSION);				\
+MODULE_DEPEND(ng_##typename, netgraph,	NG_ABI_VERSION,			\
+					NG_ABI_VERSION,			\
+					NG_ABI_VERSION)
 #define NETGRAPH_INIT(tn, tp)						\
 	NETGRAPH_INIT_ORDERED(tn, tp, SI_SUB_PSEUDO, SI_ORDER_ANY)
 

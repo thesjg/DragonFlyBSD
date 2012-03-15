@@ -176,6 +176,8 @@ mi_proc0init(struct globaldata *gd, struct user *proc0paddr)
 	lwp0.lwp_proc = &proc0;
 	proc0.p_usched = usched_init();
 	lwp0.lwp_cpumask = (cpumask_t)-1;
+	lwkt_token_init(&lwp0.lwp_token, "lwp_token");
+	spin_init(&lwp0.lwp_spin);
 	varsymset_init(&proc0.p_varsymset, NULL);
 	thread0.td_flags |= TDF_RUNNING;
 	thread0.td_proc = &proc0;
@@ -390,7 +392,7 @@ proc0_init(void *dummy __unused)
 
 	p->p_sysent = &aout_sysvec;
 
-	p->p_flag = P_SYSTEM;
+	p->p_flags = P_SYSTEM;
 	p->p_stat = SACTIVE;
 	lp->lwp_stat = LSRUN;
 	p->p_nice = NZERO;
@@ -685,7 +687,7 @@ create_init(const void *udata __unused)
 	error = fork1(&lwp0, RFFDG | RFPROC, &initproc);
 	if (error)
 		panic("cannot fork init: %d", error);
-	initproc->p_flag |= P_SYSTEM;
+	initproc->p_flags |= P_SYSTEM;
 	lp = ONLY_LWP_IN_PROC(initproc);
 	cpu_set_fork_handler(lp, start_init, NULL);
 	crit_exit();

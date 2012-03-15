@@ -56,6 +56,7 @@
 #include <sys/namei.h>
 #include <sys/nlookup.h>
 #include <sys/mountctl.h>
+#include <sys/vfs_quota.h>
 
 #include <machine/limits.h>
 
@@ -291,10 +292,11 @@ vop_compat_nlookupdotdot(struct vop_nlookupdotdot_args *ap)
 	/*
 	 * vop_old_lookup() always returns vp locked.  dvp may or may not be
 	 * left locked depending on CNP_PDIRUNLOCK.
+	 *
+	 * (*vpp) will be returned locked if no error occured, which is the
+	 * state we want.
 	 */
 	error = vop_old_lookup(ap->a_head.a_ops, ap->a_dvp, ap->a_vpp, &cnp);
-	if (error == 0)
-		vn_unlock(*ap->a_vpp);
 	if (cnp.cn_flags & CNP_PDIRUNLOCK)
 		vrele(ap->a_dvp);
 	else
@@ -1456,10 +1458,61 @@ vfs_stdextattrctl(struct mount *mp, int cmd, struct vnode *vp,
 	return(EOPNOTSUPP);
 }
 
+#define ACCOUNTING_NB_FSTYPES 8
+
+static const char *accounting_fstypes[ACCOUNTING_NB_FSTYPES] = {
+	"ext2fs", "hammer", "hpfs", "mfs", "ntfs", "null", "tmpfs", "ufs" };
+
 int
-vfs_stdaccount(struct mount *mp, uid_t uid, gid_t gid, int64_t delta)
+vfs_stdac_init(struct mount *mp)
 {
-	return(0);
+	const char* fs_type;
+	int i, fstype_ok = 0;
+
+	/* if mounted fs is read-only, do not do anything */
+	if (mp->mnt_flag & MNT_RDONLY)
+		return (0);
+
+	/* is mounted fs type one we want to do some accounting for ? */
+	for (i=0; i<ACCOUNTING_NB_FSTYPES; i++) {
+		fs_type = accounting_fstypes[i];
+		if (strncmp(mp->mnt_stat.f_fstypename, fs_type,
+					sizeof(mp->mnt_stat)) == 0) {
+			fstype_ok = 1;
+			break;
+		}
+	}
+	if (fstype_ok == 0)
+		return (0);
+
+	vq_init(mp);
+	return (0);
+}
+
+int
+vfs_stdac_done(struct mount *mp)
+{
+	const char* fs_type;
+	int i, fstype_ok = 0;
+
+	/* if mounted fs is read-only, do not do anything */
+	if (mp->mnt_flag & MNT_RDONLY)
+		return (0);
+
+	/* is mounted fs type one we want to do some accounting for ? */
+	for (i=0; i<ACCOUNTING_NB_FSTYPES; i++) {
+		fs_type = accounting_fstypes[i];
+		if (strncmp(mp->mnt_stat.f_fstypename, fs_type,
+					sizeof(mp->mnt_stat)) == 0) {
+			fstype_ok = 1;
+			break;
+		}
+	}
+	if (fstype_ok == 0)
+		return (0);
+
+	vq_done(mp);
+	return (0);
 }
 
 /* end of vfs default ops */

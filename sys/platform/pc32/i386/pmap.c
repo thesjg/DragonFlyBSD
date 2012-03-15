@@ -83,6 +83,7 @@
 #include <sys/thread2.h>
 #include <sys/sysref2.h>
 #include <sys/spinlock2.h>
+#include <vm/vm_page2.h>
 
 #include <machine/cputypes.h>
 #include <machine/md_var.h>
@@ -1012,29 +1013,19 @@ pmap_init_proc(struct proc *p)
 {
 }
 
-/*
- * Dispose the UPAGES for a process that has exited.
- * This routine directly impacts the exit perf of a process.
- */
-void
-pmap_dispose_proc(struct proc *p)
-{
-	KASSERT(p->p_lock == 0, ("attempt to dispose referenced proc! %p", p));
-}
-
 /***************************************************
  * Page table page management routines.....
  ***************************************************/
 
 /*
- * This routine unholds page table pages, and if the hold count
- * drops to zero, then it decrements the wire count.
+ * This routine unwires page table pages, removing and freeing the page
+ * tale page when the wire count drops to 0.
  *
  * The caller must hold vm_token.
  * This function can block.
  */
 static int 
-_pmap_unwire_pte_hold(pmap_t pmap, vm_page_t m, pmap_inval_info_t info) 
+_pmap_unwire_pte(pmap_t pmap, vm_page_t m, pmap_inval_info_t info)
 {
 	/* 
 	 * Wait until we can busy the page ourselves.  We cannot have
@@ -1042,9 +1033,9 @@ _pmap_unwire_pte_hold(pmap_t pmap, vm_page_t m, pmap_inval_info_t info)
 	 */
 	vm_page_busy_wait(m, FALSE, "pmuwpt");
 	KASSERT(m->queue == PQ_NONE,
-		("_pmap_unwire_pte_hold: %p->queue != PQ_NONE", m));
+		("_pmap_unwire_pte: %p->queue != PQ_NONE", m));
 
-	if (m->hold_count == 1) {
+	if (m->wire_count == 1) {
 		/*
 		 * Unmap the page table page.
 		 *
@@ -1071,17 +1062,15 @@ _pmap_unwire_pte_hold(pmap_t pmap, vm_page_t m, pmap_inval_info_t info)
 		 * FUTURE NOTE: shared page directory page could result in
 		 * multiple wire counts.
 		 */
-		vm_page_unhold(m);
-		--m->wire_count;
-		KKASSERT(m->wire_count == 0);
-		atomic_add_int(&vmstats.v_wire_count, -1);
+		vm_page_unwire(m, 0);
 		vm_page_flag_clear(m, PG_MAPPED | PG_WRITEABLE);
 		vm_page_flash(m);
 		vm_page_free_zero(m);
 		return 1;
 	} else {
-		KKASSERT(m->hold_count > 1);
-		vm_page_unhold(m);
+		KKASSERT(m->wire_count > 1);
+		if (vm_page_unwire_quick(m))
+			panic("pmap_unwire_pte: Insufficient wire_count");
 		vm_page_wakeup(m);
 		return 0;
 	}
@@ -1092,14 +1081,15 @@ _pmap_unwire_pte_hold(pmap_t pmap, vm_page_t m, pmap_inval_info_t info)
  * This function can block.
  */
 static PMAP_INLINE int
-pmap_unwire_pte_hold(pmap_t pmap, vm_page_t m, pmap_inval_info_t info)
+pmap_unwire_pte(pmap_t pmap, vm_page_t m, pmap_inval_info_t info)
 {
-	KKASSERT(m->hold_count > 0);
-	if (m->hold_count > 1) {
-		vm_page_unhold(m);
+	KKASSERT(m->wire_count > 0);
+	if (m->wire_count > 1) {
+		if (vm_page_unwire_quick(m))
+			panic("pmap_unwire_pte: Insufficient wire_count");
 		return 0;
 	} else {
-		return _pmap_unwire_pte_hold(pmap, m, info);
+		return _pmap_unwire_pte(pmap, m, info);
 	}
 }
 
@@ -1133,7 +1123,7 @@ pmap_unuse_pt(pmap_t pmap, vm_offset_t va, vm_page_t mpte,
 		}
 	}
 
-	return pmap_unwire_pte_hold(pmap, mpte, info);
+	return pmap_unwire_pte(pmap, mpte, info);
 }
 
 /*
@@ -1241,8 +1231,7 @@ pmap_puninit(pmap_t pmap)
 		KKASSERT(pmap->pm_pdir != NULL);
 		pmap_kremove((vm_offset_t)pmap->pm_pdir);
 		vm_page_busy_wait(p, FALSE, "pgpun");
-		p->wire_count--;
-		atomic_add_int(&vmstats.v_wire_count, -1);
+		vm_page_unwire(p, 0);
 		vm_page_free_zero(p);
 		pmap->pm_pdirm = NULL;
 	}
@@ -1311,8 +1300,8 @@ pmap_release_free_page(struct pmap *pmap, vm_page_t p)
 	--pmap->pm_stats.resident_count;
 	pmap->pm_cached = 0;
 
-	if (p->hold_count)  {
-		panic("pmap_release: freeing held page table page");
+	if (p->wire_count != 1)  {
+		panic("pmap_release: freeing wired page table page");
 	}
 	if (pmap->pm_ptphint && (pmap->pm_ptphint->pindex == p->pindex))
 		pmap->pm_ptphint = NULL;
@@ -1331,8 +1320,9 @@ pmap_release_free_page(struct pmap *pmap, vm_page_t p)
 		vm_page_flag_set(p, PG_ZERO);
 		vm_page_wakeup(p);
 	} else {
-		p->wire_count--;
-		atomic_add_int(&vmstats.v_wire_count, -1);
+		panic("pmap_release: page should already be gone %p", p);
+		/*vm_page_flag_clear(p, PG_MAPPED); should already be clear */
+		vm_page_unwire(p, 0);
 		vm_page_free_zero(p);
 	}
 	return 1;
@@ -1360,26 +1350,21 @@ _pmap_allocpte(pmap_t pmap, unsigned ptepindex)
 		("_pmap_allocpte: %p->queue != PQ_NONE", m));
 
 	/*
-	 * Increment the hold count for the page we will be returning to
+	 * Increment the wire count for the page we will be returning to
 	 * the caller.
 	 */
-	m->hold_count++;
+	vm_page_wire(m);
 
 	/*
 	 * It is possible that someone else got in and mapped by the page
 	 * directory page while we were blocked, if so just unbusy and
-	 * return the held page.
+	 * return the wired page.
 	 */
 	if ((ptepa = pmap->pm_pdir[ptepindex]) != 0) {
 		KKASSERT((ptepa & PG_FRAME) == VM_PAGE_TO_PHYS(m));
 		vm_page_wakeup(m);
 		return(m);
 	}
-
-	if (m->wire_count == 0)
-		atomic_add_int(&vmstats.v_wire_count, 1);
-	m->wire_count++;
-
 
 	/*
 	 * Map the pagetable page into the process address space, if
@@ -1436,13 +1421,13 @@ pmap_allocpte(pmap_t pmap, vm_offset_t va)
 	if (ptepa & PG_PS) {
 		pmap->pm_pdir[ptepindex] = 0;
 		ptepa = 0;
-		cpu_invltlb();
 		smp_invltlb();
+		cpu_invltlb();
 	}
 
 	/*
 	 * If the page table page is mapped, we just increment the
-	 * hold count, and activate it.
+	 * wire count, and activate it.
 	 */
 	if (ptepa) {
 		/*
@@ -1457,7 +1442,7 @@ pmap_allocpte(pmap_t pmap, vm_offset_t va)
 			pmap->pm_ptphint = m;
 			vm_page_wakeup(m);
 		}
-		m->hold_count++;
+		vm_page_wire_quick(m);
 		return m;
 	}
 	/*
@@ -1819,7 +1804,7 @@ pmap_remove_pte(struct pmap *pmap, unsigned *ptq, vm_offset_t va,
 	if (oldpte & PG_W)
 		pmap->pm_stats.wired_count -= 1;
 	pmap_inval_deinterlock(info, pmap);
-	KKASSERT(oldpte);
+	KKASSERT(oldpte & PG_V);
 	/*
 	 * Machines that don't support invlpg, also don't support
 	 * PG_G.  XXX PG_G is disabled for SMP so don't worry about
@@ -1863,7 +1848,7 @@ pmap_remove_page(struct pmap *pmap, vm_offset_t va, pmap_inval_info_t info)
 	unsigned *ptq;
 
 	/*
-	 * if there is no pte for this address, just skip it!!!  Otherwise
+	 * If there is no pte for this address, just skip it!!!  Otherwise
 	 * get a local va for mappings for this pmap and remove the entry.
 	 */
 	if (*pmap_pde(pmap, va) != 0) {
@@ -2249,8 +2234,10 @@ pmap_enter(pmap_t pmap, vm_offset_t va, vm_page_t m, vm_prot_t prot,
 		 * wiring count above and may need to adjust the wiring
 		 * bits below.
 		 */
-		if (mpte)
-			mpte->hold_count--;
+		if (mpte) {
+			if (vm_page_unwire_quick(mpte))
+				panic("pmap_enter: Insufficient wire_count");
+		}
 
 		/*
 		 * We might be turning off write access to the page,
@@ -2410,7 +2397,7 @@ pmap_enter_quick(pmap_t pmap, vm_offset_t va, vm_page_t m)
 
 			/*
 			 * If the page table page is mapped, we just increment
-			 * the hold count, and activate it.
+			 * the wire count, and activate it.
 			 */
 			if (ptepa) {
 				if (ptepa & PG_PS)
@@ -2424,7 +2411,7 @@ pmap_enter_quick(pmap_t pmap, vm_offset_t va, vm_page_t m)
 					vm_page_wakeup(mpte);
 				}
 				if (mpte)
-					mpte->hold_count++;
+					vm_page_wire_quick(mpte);
 			} else {
 				mpte = _pmap_allocpte(pmap, ptepindex);
 			}
@@ -2442,7 +2429,7 @@ pmap_enter_quick(pmap_t pmap, vm_offset_t va, vm_page_t m)
 	pte = (unsigned *)vtopte(va);
 	if (*pte & PG_V) {
 		if (mpte)
-			pmap_unwire_pte_hold(pmap, mpte, &info);
+			pmap_unwire_pte(pmap, mpte, &info);
 		pa = VM_PAGE_TO_PHYS(m);
 		KKASSERT(((*pte ^ pa) & PG_FRAME) == 0);
 		pmap_inval_done(&info);
@@ -2582,6 +2569,13 @@ pmap_object_init_pt_callback(vm_page_t p, void *data)
 		vmstats.v_free_count < vmstats.v_free_reserved) {
 		    return(-1);
 	}
+
+	/*
+	 * Ignore list markers and ignore pages we cannot instantly
+	 * busy (while holding the object token).
+	 */
+	if (p->flags & PG_MARKER)
+		return 0;
 	if (vm_page_busy_try(p, TRUE))
 		return 0;
 	if (((p->valid & VM_PAGE_BITS_ALL) == VM_PAGE_BITS_ALL) &&
@@ -2697,13 +2691,7 @@ pmap_zero_page(vm_paddr_t phys)
 	*(int *)gd->gd_CMAP3 =
 		    PG_V | PG_RW | (phys & PG_FRAME) | PG_A | PG_M;
 	cpu_invlpg(gd->gd_CADDR3);
-
-#if defined(I686_CPU)
-	if (cpu_class == CPUCLASS_686)
-		i686_pagezero(gd->gd_CADDR3);
-	else
-#endif
-		bzero(gd->gd_CADDR3, PAGE_SIZE);
+	bzero(gd->gd_CADDR3, PAGE_SIZE);
 	*(int *) gd->gd_CMAP3 = 0;
 	crit_exit();
 }
@@ -2753,13 +2741,7 @@ pmap_zero_page_area(vm_paddr_t phys, int off, int size)
 		panic("pmap_zero_page: CMAP3 busy");
 	*(int *) gd->gd_CMAP3 = PG_V | PG_RW | (phys & PG_FRAME) | PG_A | PG_M;
 	cpu_invlpg(gd->gd_CADDR3);
-
-#if defined(I686_CPU)
-	if (cpu_class == CPUCLASS_686 && off == 0 && size == PAGE_SIZE)
-		i686_pagezero(gd->gd_CADDR3);
-	else
-#endif
-		bzero((char *)gd->gd_CADDR3 + off, size);
+	bzero((char *)gd->gd_CADDR3 + off, size);
 	*(int *) gd->gd_CMAP3 = 0;
 	crit_exit();
 }
@@ -3296,8 +3278,8 @@ pmap_mapdev(vm_paddr_t pa, vm_size_t size)
 		tmpva += PAGE_SIZE;
 		pa += PAGE_SIZE;
 	}
-	cpu_invltlb();
 	smp_invltlb();
+	cpu_invltlb();
 
 	return ((void *)(va + offset));
 }
@@ -3325,8 +3307,8 @@ pmap_mapdev_uncacheable(vm_paddr_t pa, vm_size_t size)
 		tmpva += PAGE_SIZE;
 		pa += PAGE_SIZE;
 	}
-	cpu_invltlb();
 	smp_invltlb();
+	cpu_invltlb();
 
 	return ((void *)(va + offset));
 }

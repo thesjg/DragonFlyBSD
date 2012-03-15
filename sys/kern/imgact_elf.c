@@ -188,7 +188,7 @@ __elfN(brand_inuse)(Elf_Brandinfo *entry)
 
 	info.rval = FALSE;
 	info.entry = entry;
-	allproc_scan(elf_brand_inuse_callback, entry);
+	allproc_scan(elf_brand_inuse_callback, &info);
 	return (info.rval);
 }
 
@@ -966,7 +966,6 @@ __elfN(coredump)(struct lwp *lp, int sig, struct vnode *vp, off_t limit)
 	fp->f_flag = O_CREAT|O_WRONLY|O_NOFOLLOW;
 	fp->f_ops = &vnode_fileops;
 	fp->f_data = vp;
-	vn_unlock(vp);
 	
 	error = generic_elf_coredump(lp, sig, fp, limit);
 

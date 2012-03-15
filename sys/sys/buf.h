@@ -377,7 +377,7 @@ struct cluster_save {
 extern int	nbuf;			/* The number of buffer headers */
 extern long	maxswzone;		/* Max KVA for swap structures */
 extern long	maxbcache;		/* Max KVA for buffer cache */
-extern int	hidirtybufspace;
+extern long	hidirtybufspace;
 extern int      buf_maxio;              /* nominal maximum I/O for buffer */
 extern struct buf *buf;			/* The buffer headers. */
 extern char	*buffers;		/* The buffer contents. */
@@ -403,8 +403,8 @@ void	uninitbufbio(struct buf *);
 void	reinitbufbio(struct buf *);
 void	clearbiocache(struct bio *);
 void	bremfree (struct buf *);
-int	bread (struct vnode *, off_t, int, struct buf **);
-int	breadn (struct vnode *, off_t, int, off_t *, int *, int,
+int	breadx (struct vnode *, off_t, int, struct buf **);
+int	breadnx (struct vnode *, off_t, int, off_t *, int *, int,
 		struct buf **);
 void	breadcb(struct vnode *, off_t, int,
 		void (*)(struct bio *), void *);
@@ -439,7 +439,7 @@ void	biodone (struct bio *);
 void	biodone_sync (struct bio *);
 
 void	cluster_append(struct bio *, struct buf *);
-int	cluster_read (struct vnode *, off_t, off_t, int,
+int	cluster_readx (struct vnode *, off_t, off_t, int,
 	    size_t, size_t, struct buf **);
 int	cluster_wbuild (struct vnode *, int, off_t, int);
 void	cluster_write (struct buf *, off_t, int, int);

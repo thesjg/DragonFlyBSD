@@ -193,6 +193,8 @@ sys_extexit(struct extexit_args *uap)
  *
  * If forexec is non-zero the current thread and process flags are
  * cleaned up so they can be reused.
+ *
+ * Caller must hold curproc->p_token
  */
 int
 killalllwps(int forexec)
@@ -204,14 +206,14 @@ killalllwps(int forexec)
 	 * Interlock against P_WEXIT.  Only one of the process's thread
 	 * is allowed to do the master exit.
 	 */
-	if (p->p_flag & P_WEXIT)
+	if (p->p_flags & P_WEXIT)
 		return (EALREADY);
-	p->p_flag |= P_WEXIT;
+	p->p_flags |= P_WEXIT;
 
 	/*
-	 * Interlock with LWP_WEXIT and kill any remaining LWPs
+	 * Interlock with LWP_MP_WEXIT and kill any remaining LWPs
 	 */
-	lp->lwp_flag |= LWP_WEXIT;
+	atomic_set_int(&lp->lwp_mpflags, LWP_MP_WEXIT);
 	if (p->p_nthreads > 1)
 		killlwps(lp);
 
@@ -221,8 +223,8 @@ killalllwps(int forexec)
 	 * have been killed.
 	 */
 	if (forexec) {
-		lp->lwp_flag &= ~LWP_WEXIT;
-		p->p_flag &= ~P_WEXIT;
+		atomic_clear_int(&lp->lwp_mpflags, LWP_MP_WEXIT);
+		p->p_flags &= ~P_WEXIT;
 	}
 	return(0);
 }
@@ -240,16 +242,18 @@ killlwps(struct lwp *lp)
 
 	/*
 	 * Kill the remaining LWPs.  We must send the signal before setting
-	 * LWP_WEXIT.  The setting of WEXIT is optional but helps reduce
+	 * LWP_MP_WEXIT.  The setting of WEXIT is optional but helps reduce
 	 * races.  tlp must be held across the call as it might block and
 	 * allow the target lwp to rip itself out from under our loop.
 	 */
 	FOREACH_LWP_IN_PROC(tlp, p) {
 		LWPHOLD(tlp);
-		if ((tlp->lwp_flag & LWP_WEXIT) == 0) {
+		lwkt_gettoken(&tlp->lwp_token);
+		if ((tlp->lwp_mpflags & LWP_MP_WEXIT) == 0) {
 			lwpsignal(p, tlp, SIGKILL);
-			tlp->lwp_flag |= LWP_WEXIT;
+			atomic_set_int(&tlp->lwp_mpflags, LWP_MP_WEXIT);
 		}
+		lwkt_reltoken(&tlp->lwp_token);
 		LWPRELE(tlp);
 	}
 
@@ -287,6 +291,7 @@ exit1(int rv)
 	}
 	varsymset_clean(&p->p_varsymset);
 	lockuninit(&p->p_varsymset.vx_lock);
+
 	/*
 	 * Kill all lwps associated with the current process, return an
 	 * error if we race another thread trying to do the same thing
@@ -340,17 +345,13 @@ exit1(int rv)
 	TAILQ_FOREACH(ep, &exit_list, next) 
 		(*ep->function)(td);
 
-	if (p->p_flag & P_PROFIL)
+	if (p->p_flags & P_PROFIL)
 		stopprofclock(p);
-	/*
-	 * If parent is waiting for us to exit or exec,
-	 * P_PPWAIT is set; we will wakeup the parent below.
-	 */
-	p->p_flag &= ~(P_TRACED | P_PPWAIT);
+
 	SIGEMPTYSET(p->p_siglist);
 	SIGEMPTYSET(lp->lwp_siglist);
 	if (timevalisset(&p->p_realtimer.it_value))
-		callout_stop(&p->p_ithandle);
+		callout_stop_sync(&p->p_ithandle);
 
 	/*
 	 * Reset any sigio structures pointing to us as a result of
@@ -475,6 +476,15 @@ exit1(int rv)
 		cache_drop(&p->p_textnch);
 
 	/*
+	 * We have to handle PPWAIT here or proc_move_allproc_zombie()
+	 * will block on the PHOLD() the parent is doing.
+	 */
+	if (p->p_flags & P_PPWAIT) {
+		p->p_flags &= ~P_PPWAIT;
+		wakeup(p->p_pptr);
+	}
+
+	/*
 	 * Move the process to the zombie list.  This will block
 	 * until the process p_lock count reaches 0.  The process will
 	 * not be reaped until TDF_EXITING is set by cpu_thread_exit(),
@@ -501,8 +511,8 @@ exit1(int rv)
 			 * Traced processes are killed
 			 * since their existence means someone is screwing up.
 			 */
-			if (q->p_flag & P_TRACED) {
-				q->p_flag &= ~P_TRACED;
+			if (q->p_flags & P_TRACED) {
+				q->p_flags &= ~P_TRACED;
 				ksignal(q, SIGKILL);
 			}
 			q = nq;
@@ -552,7 +562,10 @@ exit1(int rv)
 	} else {
 	        ksignal(q, SIGCHLD);
 	}
+
+	p->p_flags &= ~P_TRACED;
 	wakeup(p->p_pptr);
+
 	PRELE(q);
 	/* lwkt_reltoken(&proc_token); */
 	/* NOTE: p->p_pptr can get ripped out */
@@ -591,11 +604,11 @@ lwp_exit(int masterexit)
 	int dowake = 0;
 
 	/*
-	 * lwp_exit() may be called without setting LWP_WEXIT, so
+	 * lwp_exit() may be called without setting LWP_MP_WEXIT, so
 	 * make sure it is set here.
 	 */
 	ASSERT_LWKT_TOKEN_HELD(&p->p_token);
-	lp->lwp_flag |= LWP_WEXIT;
+	atomic_set_int(&lp->lwp_mpflags, LWP_MP_WEXIT);
 
 	/*
 	 * Clean up any virtualization
@@ -648,6 +661,9 @@ lwp_exit(int masterexit)
 	 * synchronously, which is much faster.
 	 *
 	 * Wakeup anyone waiting on p_nthreads to drop to 1 or 0.
+	 *
+	 * The process is left held until the reaper calls lwp_dispose() on
+	 * the lp (after calling lwp_wait()).
 	 */
 	if (masterexit == 0) {
 		lwp_rb_tree_RB_REMOVE(&p->p_lwp_tree, lp);
@@ -677,15 +693,15 @@ lwp_exit(int masterexit)
 }
 
 /*
- * Wait until a lwp is completely dead.
+ * Wait until a lwp is completely dead.  The final interlock in this drama
+ * is when TDF_EXITING is set in cpu_thread_exit() just before the final
+ * switchout.
  *
- * If the thread is still executing, which can't be waited upon,
- * return failure.  The caller is responsible of waiting a little
- * bit and checking again.
+ * At the point TDF_EXITING is set a complete exit is accomplished when
+ * TDF_RUNNING and TDF_PREEMPT_LOCK are both clear.
  *
- * Suggested use:
- * while (!lwp_wait(lp))
- *	tsleep(lp, 0, "lwpwait", 1);
+ * Returns non-zero on success, and zero if the caller needs to retry
+ * the lwp_wait().
  */
 static int
 lwp_wait(struct lwp *lp)
@@ -694,10 +710,24 @@ lwp_wait(struct lwp *lp)
 
 	KKASSERT(lwkt_preempted_proc() != lp);
 
-	while (lp->lwp_lock > 0)
+	/*
+	 * Wait until the lp has entered its low level exit and wait
+	 * until other cores with refs on the lp (e.g. for ps or signaling)
+	 * release them.
+	 */
+	if (lp->lwp_lock > 0) {
 		tsleep(lp, 0, "lwpwait1", 1);
+		return(0);
+	}
 
-	lwkt_wait_free(td);
+	/*
+	 * Wait until the thread is no longer references and no longer
+	 * runnable or preempted (i.e. finishes its low level exit).
+	 */
+	if (td->td_refs) {
+		tsleep(td, 0, "lwpwait2", 1);
+		return(0);
+	}
 
 	/*
 	 * The lwp's thread may still be in the middle
@@ -712,12 +742,15 @@ lwp_wait(struct lwp *lp)
 	 * and let the caller deal with sleeping and calling
 	 * us again.
 	 */
-	if ((td->td_flags & (TDF_RUNNING|TDF_PREEMPT_LOCK|
-			     TDF_EXITING|TDF_RUNQ)) != TDF_EXITING) {
+	if ((td->td_flags & (TDF_RUNNING |
+			     TDF_PREEMPT_LOCK |
+			     TDF_EXITING)) != TDF_EXITING) {
+		tsleep(lp, 0, "lwpwait2", 1);
 		return (0);
 	}
-	KASSERT((td->td_flags & TDF_TSLEEPQ) == 0,
-		("lwp_wait: td %p (%s) still on sleep queue", td, td->td_comm));
+	KASSERT((td->td_flags & (TDF_RUNQ|TDF_TSLEEPQ)) == 0,
+		("lwp_wait: td %p (%s) still on run or sleep queue",
+		td, td->td_comm));
 	return (1);
 }
 
@@ -732,8 +765,9 @@ lwp_dispose(struct lwp *lp)
 
 	KKASSERT(lwkt_preempted_proc() != lp);
 	KKASSERT(td->td_refs == 0);
-	KKASSERT((td->td_flags & (TDF_RUNNING|TDF_PREEMPT_LOCK|TDF_EXITING)) ==
-		 TDF_EXITING);
+	KKASSERT((td->td_flags & (TDF_RUNNING |
+				  TDF_PREEMPT_LOCK |
+				  TDF_EXITING)) == TDF_EXITING);
 
 	PRELE(lp->lwp_proc);
 	lp->lwp_proc = NULL;
@@ -865,7 +899,6 @@ loop:
 				reaplwp(lp);
 			}
 			KKASSERT(p->p_nthreads == 0);
-			lwkt_reltoken(&p->p_token);
 
 			/*
 			 * Don't do anything really bad until all references
@@ -878,8 +911,7 @@ loop:
 			 * put a hold on the process for short periods of
 			 * time.
 			 */
-			while (p->p_lock)
-				tsleep(p, 0, "reap3", hz);
+			PSTALL(p, "reap3", 0);
 
 			/* Take care of our return values. */
 			*res = p->p_pid;
@@ -900,6 +932,7 @@ loop:
 				wakeup((caddr_t)t);
 				error = 0;
 				PRELE(t);
+				lwkt_reltoken(&p->p_token);
 				goto done;
 			}
 
@@ -910,6 +943,7 @@ loop:
 			 * the zombie list.
 			 */
 			proc_remove_zombie(p);
+			lwkt_reltoken(&p->p_token);
 			leavepgrp(p);
 
 			p->p_xstat = 0;
@@ -943,26 +977,27 @@ loop:
 				ps = NULL;
 			}
 
-			vm_waitproc(p);
-
 			/*
-			 * Temporary refs may still have been acquired while
-			 * we removed the process, make sure they are all
-			 * gone before kfree()ing.  Now that the process has
-			 * been removed from all lists and all references to
-			 * it have gone away, no new refs can occur.
+			 * Our exitingcount was incremented when the process
+			 * became a zombie, now that the process has been
+			 * removed from (almost) all lists we should be able
+			 * to safely destroy its vmspace.  Wait for any current
+			 * holders to go away (so the vmspace remains stable),
+			 * then scrap it.
 			 */
-			while (p->p_lock)
-				tsleep(p, 0, "reap4", hz);
+			PSTALL(p, "reap4", 0);
+			vmspace_exitfree(p);
+			PSTALL(p, "reap5", 0);
+
 			kfree(p, M_PROC);
 			atomic_add_int(&nprocs, -1);
 			error = 0;
 			goto done;
 		}
-		if (p->p_stat == SSTOP && (p->p_flag & P_WAITED) == 0 &&
-		    ((p->p_flag & P_TRACED) || (options & WUNTRACED))) {
+		if (p->p_stat == SSTOP && (p->p_flags & P_WAITED) == 0 &&
+		    ((p->p_flags & P_TRACED) || (options & WUNTRACED))) {
 			lwkt_gettoken(&p->p_token);
-			p->p_flag |= P_WAITED;
+			p->p_flags |= P_WAITED;
 
 			*res = p->p_pid;
 			p->p_usched->heuristic_exiting(td->td_lwp, p);
@@ -975,11 +1010,11 @@ loop:
 			lwkt_reltoken(&p->p_token);
 			goto done;
 		}
-		if ((options & WCONTINUED) && (p->p_flag & P_CONTINUED)) {
+		if ((options & WCONTINUED) && (p->p_flags & P_CONTINUED)) {
 			lwkt_gettoken(&p->p_token);
 			*res = p->p_pid;
 			p->p_usched->heuristic_exiting(td->td_lwp, p);
-			p->p_flag &= ~P_CONTINUED;
+			p->p_flags &= ~P_CONTINUED;
 
 			if (status)
 				*status = SIGCONT;
@@ -1108,11 +1143,8 @@ reaplwps(void *context, int dummy)
 static void
 reaplwp(struct lwp *lp)
 {
-	if (lwp_wait(lp) == 0) {
-		tsleep_interlock(lp, 0);
-		while (lwp_wait(lp) == 0)
-			tsleep(lp, PINTERLOCKED, "lwpreap", 1);
-	}
+	while (lwp_wait(lp) == 0)
+		;
 	lwp_dispose(lp);
 }
 
@@ -1123,7 +1155,8 @@ deadlwp_init(void)
 
 	for (cpu = 0; cpu < ncpus; cpu++) {
 		LIST_INIT(&deadlwp_list[cpu]);
-		deadlwp_task[cpu] = kmalloc(sizeof(*deadlwp_task[cpu]), M_DEVBUF, M_WAITOK);
+		deadlwp_task[cpu] = kmalloc(sizeof(*deadlwp_task[cpu]),
+					    M_DEVBUF, M_WAITOK);
 		TASK_INIT(deadlwp_task[cpu], 0, reaplwps, &deadlwp_list[cpu]);
 	}
 }

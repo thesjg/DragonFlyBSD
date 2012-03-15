@@ -324,7 +324,7 @@ bail:
 				kfree(crie.cri_key, M_XDATA);
 			}
 			if (cria.cri_key) {
-				bzero(crie.cri_key, crie.cri_klen / 8);
+				bzero(cria.cri_key, cria.cri_klen / 8);
 				kfree(cria.cri_key, M_XDATA);
 			}
 		}
@@ -765,8 +765,6 @@ csecreate(struct fcrypt *fcr, u_int64_t sid, caddr_t key, u_int64_t keylen,
 	struct csession *cse;
 
 	cse = kmalloc(sizeof(struct csession), M_XDATA, M_WAITOK | M_ZERO);
-	if (cse == NULL)
-		return NULL;
 	lockinit(&cse->lock, "cryptodev", 0, LK_CANRECURSE);
 	cse->key = key;
 	cse->keylen = keylen/8;

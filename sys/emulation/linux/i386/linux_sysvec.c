@@ -174,7 +174,7 @@ static int _bsd_to_linux_trapcode[] = {
 	15			/* 30 T_RESERVED */
 };
 #define bsd_to_linux_trapcode(code) \
-    ((code)<sizeof(_bsd_to_linux_trapcode)/sizeof(*_bsd_to_linux_trapcode)? \
+    ((code)<NELEM(_bsd_to_linux_trapcode)? \
      _bsd_to_linux_trapcode[(code)]: \
      LINUX_T_UNKNOWN)
 
@@ -269,7 +269,7 @@ linux_rt_sendsig(sig_t catcher, int sig, sigset_t *mask, u_long code)
 	/*
 	 * Allocate space for the signal handler context.
 	 */
-	if ((lp->lwp_flag & LWP_ALTSTACK) && !oonstack &&
+	if ((lp->lwp_flags & LWP_ALTSTACK) && !oonstack &&
 	    SIGISMEMBER(p->p_sigacts->ps_sigonstack, sig)) {
 		fp = (struct l_rt_sigframe *)(lp->lwp_sigstk.ss_sp +
 		    lp->lwp_sigstk.ss_size - sizeof(struct l_rt_sigframe));
@@ -327,7 +327,7 @@ linux_rt_sendsig(sig_t catcher, int sig, sigset_t *mask, u_long code)
 
 	frame.sf_sc.uc_stack.ss_sp = lp->lwp_sigstk.ss_sp;
 	frame.sf_sc.uc_stack.ss_size = lp->lwp_sigstk.ss_size;
-	frame.sf_sc.uc_stack.ss_flags = (lp->lwp_flag & LWP_ALTSTACK)
+	frame.sf_sc.uc_stack.ss_flags = (lp->lwp_flags & LWP_ALTSTACK)
 	    ? ((oonstack) ? LINUX_SS_ONSTACK : 0) : LINUX_SS_DISABLE;
 
 	bsd_to_linux_sigset(mask, &frame.sf_sc.uc_sigmask);
@@ -390,6 +390,7 @@ linux_rt_sendsig(sig_t catcher, int sig, sigset_t *mask, u_long code)
 	regs->tf_gs = _udatasel;
 	*/
 	regs->tf_ss = _udatasel;
+	clear_quickret();
 }
 
 
@@ -432,7 +433,7 @@ linux_sendsig(sig_t catcher, int sig, sigset_t *mask, u_long code)
 	/*
 	 * Allocate space for the signal handler context.
 	 */
-	if ((lp->lwp_flag & LWP_ALTSTACK) && !oonstack &&
+	if ((lp->lwp_flags & LWP_ALTSTACK) && !oonstack &&
 	    SIGISMEMBER(p->p_sigacts->ps_sigonstack, sig)) {
 		fp = (struct l_sigframe *)(lp->lwp_sigstk.ss_sp +
 		    lp->lwp_sigstk.ss_size - sizeof(struct l_sigframe));
@@ -530,6 +531,7 @@ linux_sendsig(sig_t catcher, int sig, sigset_t *mask, u_long code)
 	regs->tf_gs = _udatasel;
 	*/
 	regs->tf_ss = _udatasel;
+	clear_quickret();
 }
 
 /*
@@ -623,6 +625,7 @@ sys_linux_sigreturn(struct linux_sigreturn_args *args)
 	regs->tf_eflags = eflags;
 	regs->tf_esp    = frame.sf_sc.sc_esp_at_signal;
 	regs->tf_ss     = frame.sf_sc.sc_ss;
+	clear_quickret();
 
 	return (EJUSTRETURN);
 }
@@ -734,6 +737,7 @@ sys_linux_rt_sigreturn(struct linux_rt_sigreturn_args *args)
 		    ss.ss_flags, ss.ss_sp, ss.ss_size, context->sc_mask);
 #endif
 	kern_sigaltstack(&ss, NULL);
+	clear_quickret();
 
 	return (EJUSTRETURN);
 }

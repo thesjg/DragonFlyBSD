@@ -90,9 +90,6 @@ options 	DFLDSIZ="(256*1024*1024)"
 #
 options 	BLKDEV_IOSIZE=8192
 
-# Options for the VM subsystem.
-options 	PQ_CACHESIZE=512	# color for 512k/16k cache
-
 # This allows you to actually store this configuration file into
 # the kernel binary itself, where it may be later read by saying:
 #    strings -n 3 /kernel | sed -n 's/^___//p' > MYKERNEL
@@ -107,7 +104,6 @@ options 	INCLUDE_CONFIG_FILE     # Include this file in kernel
 #
 options 	ROOTDEVNAME=\"ufs:da0s2e\"
 
-
 #####################################################################
 # SMP OPTIONS:
 #
@@ -123,7 +119,6 @@ options 	ROOTDEVNAME=\"ufs:da0s2e\"
 #
 #options 	SMP			# Symmetric MultiProcessor Kernel
 
-
 #####################################################################
 # CPU OPTIONS
 
@@ -149,7 +144,7 @@ cpu		HAMMER_CPU
 options		CPU_AMD64X2_INTR_SPAM
 #options 	CPU_DISABLE_SSE
 options		CPU_ENABLE_EST
-
+
 #####################################################################
 # COMPATIBILITY OPTIONS
 
@@ -197,7 +192,6 @@ options 	MSGSEG=2049	# max number of message segments in the system
 options 	MSGSSZ=16	# size of a message segment MUST be power of 2
 options 	MSGTQL=41	# max amount of messages in the system
 
-
 #####################################################################
 # DEBUGGING OPTIONS
 
@@ -268,7 +262,6 @@ options 	COMPILING_LINT
 # Allow ordinary users to take the console - this is useful for X.
 options 	UCONSOLE
 
-
 #####################################################################
 # NETWORKING OPTIONS
 
@@ -313,8 +306,6 @@ options 	IPTUNNEL		#IP in IPX encapsulation (not available)
 options 	NCP			#NetWare Core protocol
 
 options 	MPLS			#Multi-Protocol Label Switching
-
-options 	NETATALK		#Appletalk communications protocols
 
 #
 # SMB/CIFS requester
@@ -563,7 +554,6 @@ options         DEVICE_POLLING
 # IFPOLL_ENABLE adds hardware queues' based polling
 options		IFPOLL_ENABLE
 
-
 #####################################################################
 # FILESYSTEM OPTIONS
 
@@ -638,7 +628,7 @@ options 	NSWAPDEV=5
 options 	QUOTA			#enable disk quotas
 
 # If you are running a machine just as a fileserver for PC and MAC
-# users, using SAMBA or Netatalk, you may consider setting this option
+# users, e.g. using SAMBA, you may consider setting this option
 # and keeping all those users' directories on a filesystem that is
 # mounted with the suiddir option. This gives new files the same
 # ownership as the directory (similar to group). It's a security hole
@@ -680,7 +670,6 @@ options 	CD9660_ICONV
 options 	MSDOSFS_ICONV
 options 	NTFS_ICONV
 
-
 #####################################################################
 # POSIX P1003.1B
 
@@ -693,7 +682,6 @@ options 	P1003_1B
 options 	_KPOSIX_PRIORITY_SCHEDULING
 options 	_KPOSIX_VERSION=199309L
 
-
 #####################################################################
 # CLOCK OPTIONS
 
@@ -720,7 +708,6 @@ options 	HZ=100
 #options 	CLK_USE_I8254_CALIBRATION
 #options 	CLK_USE_TSC_CALIBRATION
 
-
 #####################################################################
 # SCSI DEVICES
 
@@ -852,7 +839,6 @@ options 	SCSI_PT_DEFAULT_TIMEOUT="60"
 # are in....
 options 	SES_ENABLE_PASSTHROUGH
 
-
 #####################################################################
 # MISCELLANEOUS DEVICES AND OPTIONS
 
@@ -887,7 +873,6 @@ options 	LIBICONV
 # Size of the kernel message buffer.  Should be N * pagesize.
 options 	MSGBUF_SIZE=40960
 
-
 #####################################################################
 # HARDWARE DEVICE CONFIGURATION
 
@@ -1352,6 +1337,7 @@ device		"snd_uaudio"
 # Miscellaneous hardware:
 #
 # bktr: Brooktree bt848/848a/849a/878/879 video capture and TV Tuner board
+# ecc: ECC memory controller
 # joy: joystick
 # rp: Comtrol Rocketport(ISA) - single card
 # si: Specialix SI/XIO 4-32 port terminal multiplexor
@@ -1390,7 +1376,7 @@ device		"snd_uaudio"
 #  The Rev 2 host cards use a 32K chunk, on a 32K boundary.
 #  The cards can use an IRQ of 11, 12 or 15.
 
-# for the SoundBlaster 16 multicd - up to 4 devices
+device		ecc
 device		joy0	at isa? port IO_GAME
 device		nrp
 #device		rp0	at isa? port 0x280
@@ -2513,7 +2499,6 @@ options 	KEY
 options 	LOCKF_DEBUG
 #options	MAXFILES=xxx
 options		MBUF_DEBUG
-options 	NETATALKDEBUG
 options 	PANIC_DEBUG
 options 	PMAP_DEBUG
 options 	PSM_DEBUG=4

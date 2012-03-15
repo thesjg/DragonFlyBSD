@@ -37,7 +37,6 @@
  *
  *	@(#)sys_generic.c	8.5 (Berkeley) 1/21/94
  * $FreeBSD: src/sys/kern/sys_generic.c,v 1.55.2.10 2001/03/17 10:39:32 peter Exp $
- * $DragonFly: src/sys/kern/sys_generic.c,v 1.49 2008/05/05 22:09:44 dillon Exp $
  */
 
 #include "opt_ktrace.h"
@@ -298,7 +297,7 @@ dofileread(int fd, struct file *fp, struct uio *auio, int flags, size_t *res)
 	if (KTRPOINT(td, KTR_GENIO))  {
 		int iovlen = auio->uio_iovcnt * sizeof(struct iovec);
 
-		MALLOC(ktriov, struct iovec *, iovlen, M_TEMP, M_WAITOK);
+		ktriov = kmalloc(iovlen, M_TEMP, M_WAITOK);
 		bcopy((caddr_t)auio->uio_iov, (caddr_t)ktriov, iovlen);
 		ktruio = *auio;
 	}
@@ -319,7 +318,7 @@ dofileread(int fd, struct file *fp, struct uio *auio, int flags, size_t *res)
 			ktrgenio(td->td_lwp, fd, UIO_READ, &ktruio, error);
 			rel_mplock();
 		}
-		FREE(ktriov, M_TEMP);
+		kfree(ktriov, M_TEMP);
 	}
 #endif
 	if (error == 0)
@@ -508,7 +507,7 @@ dofilewrite(int fd, struct file *fp, struct uio *auio, int flags, size_t *res)
 	if (KTRPOINT(td, KTR_GENIO))  {
 		int iovlen = auio->uio_iovcnt * sizeof(struct iovec);
 
-		MALLOC(ktriov, struct iovec *, iovlen, M_TEMP, M_WAITOK);
+		ktriov = kmalloc(iovlen, M_TEMP, M_WAITOK);
 		bcopy((caddr_t)auio->uio_iov, (caddr_t)ktriov, iovlen);
 		ktruio = *auio;
 	}
@@ -532,7 +531,7 @@ dofilewrite(int fd, struct file *fp, struct uio *auio, int flags, size_t *res)
 			ktrgenio(lp, fd, UIO_WRITE, &ktruio, error);
 			rel_mplock();
 		}
-		FREE(ktriov, M_TEMP);
+		kfree(ktriov, M_TEMP);
 	}
 #endif
 	if (error == 0)
@@ -894,7 +893,7 @@ sys_pselect(struct pselect_args *uap)
 			 * us.  So make a note to restore it after executing
 			 * the handler.
 			 */
-			lp->lwp_flag |= LWP_OLDMASK;
+			lp->lwp_flags |= LWP_OLDMASK;
 		} else {
 			/*
 			 * No handler to run. Restore previous mask immediately.
@@ -1122,6 +1121,12 @@ putbits(int bytes, kfd_set *in_set, fd_set *out_set)
 	return (error);
 }
 
+static int
+dotimeout_only(struct timespec *ts)
+{
+	return(nanosleep1(ts, NULL));
+}
+
 /*
  * Common code for sys_select() and sys_pselect().
  *
@@ -1143,6 +1148,9 @@ doselect(int nd, fd_set *read, fd_set *write, fd_set *except,
 	*res = 0;
 	if (nd < 0)
 		return (EINVAL);
+	if (nd == 0 && ts)
+		return (dotimeout_only(ts));
+
 	if (nd > p->p_fd->fd_nfiles)		/* limit kmalloc */
 		nd = p->p_fd->fd_nfiles;
 
@@ -1463,6 +1471,9 @@ dopoll(int nfds, struct pollfd *fds, struct timespec *ts, int *res)
         *res = 0;
         if (nfds < 0)
                 return (EINVAL);
+
+	if (nfds == 0 && ts)
+		return (dotimeout_only(ts));
 
 	/*
 	 * This is a bit arbitrary but we need to limit internal kmallocs.

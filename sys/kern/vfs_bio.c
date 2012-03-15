@@ -119,22 +119,22 @@ vm_page_t bogus_page;
  * These are all static, but make the ones we export globals so we do
  * not need to use compiler magic.
  */
-int bufspace;			/* locked by buffer_map */
-int maxbufspace;
-static int bufmallocspace;	/* atomic ops */
-int maxbufmallocspace, lobufspace, hibufspace;
+long bufspace;			/* locked by buffer_map */
+long maxbufspace;
+static long bufmallocspace;	/* atomic ops */
+long maxbufmallocspace, lobufspace, hibufspace;
 static int bufreusecnt, bufdefragcnt, buffreekvacnt;
-static int lorunningspace;
-static int hirunningspace;
+static long lorunningspace;
+static long hirunningspace;
 static int runningbufreq;		/* locked by bufcspin */
-static int dirtybufspace;		/* locked by bufcspin */
+static long dirtybufspace;		/* locked by bufcspin */
 static int dirtybufcount;		/* locked by bufcspin */
-static int dirtybufspacehw;		/* locked by bufcspin */
+static long dirtybufspacehw;		/* locked by bufcspin */
 static int dirtybufcounthw;		/* locked by bufcspin */
-static int runningbufspace;		/* locked by bufcspin */
+static long runningbufspace;		/* locked by bufcspin */
 static int runningbufcount;		/* locked by bufcspin */
-int lodirtybufspace;
-int hidirtybufspace;
+long lodirtybufspace;
+long hidirtybufspace;
 static int getnewbufcalls;
 static int getnewbufrestarts;
 static int recoverbufcalls;
@@ -154,13 +154,13 @@ static u_int lowmempgfails;
 /*
  * Sysctls for operational control of the buffer cache.
  */
-SYSCTL_INT(_vfs, OID_AUTO, lodirtybufspace, CTLFLAG_RW, &lodirtybufspace, 0,
+SYSCTL_LONG(_vfs, OID_AUTO, lodirtybufspace, CTLFLAG_RW, &lodirtybufspace, 0,
 	"Number of dirty buffers to flush before bufdaemon becomes inactive");
-SYSCTL_INT(_vfs, OID_AUTO, hidirtybufspace, CTLFLAG_RW, &hidirtybufspace, 0,
+SYSCTL_LONG(_vfs, OID_AUTO, hidirtybufspace, CTLFLAG_RW, &hidirtybufspace, 0,
 	"High watermark used to trigger explicit flushing of dirty buffers");
-SYSCTL_INT(_vfs, OID_AUTO, lorunningspace, CTLFLAG_RW, &lorunningspace, 0,
+SYSCTL_LONG(_vfs, OID_AUTO, lorunningspace, CTLFLAG_RW, &lorunningspace, 0,
 	"Minimum amount of buffer space required for active I/O");
-SYSCTL_INT(_vfs, OID_AUTO, hirunningspace, CTLFLAG_RW, &hirunningspace, 0,
+SYSCTL_LONG(_vfs, OID_AUTO, hirunningspace, CTLFLAG_RW, &hirunningspace, 0,
 	"Maximum amount of buffer space to usable for active I/O");
 SYSCTL_UINT(_vfs, OID_AUTO, lowmempgallocs, CTLFLAG_RW, &lowmempgallocs, 0,
 	"Page allocations done during periods of very low free memory");
@@ -173,29 +173,29 @@ SYSCTL_UINT(_vfs, OID_AUTO, vm_cycle_point, CTLFLAG_RW, &vm_cycle_point, 0,
  */
 SYSCTL_INT(_vfs, OID_AUTO, nbuf, CTLFLAG_RD, &nbuf, 0,
 	"Total number of buffers in buffer cache");
-SYSCTL_INT(_vfs, OID_AUTO, dirtybufspace, CTLFLAG_RD, &dirtybufspace, 0,
+SYSCTL_LONG(_vfs, OID_AUTO, dirtybufspace, CTLFLAG_RD, &dirtybufspace, 0,
 	"Pending bytes of dirty buffers (all)");
-SYSCTL_INT(_vfs, OID_AUTO, dirtybufspacehw, CTLFLAG_RD, &dirtybufspacehw, 0,
+SYSCTL_LONG(_vfs, OID_AUTO, dirtybufspacehw, CTLFLAG_RD, &dirtybufspacehw, 0,
 	"Pending bytes of dirty buffers (heavy weight)");
 SYSCTL_INT(_vfs, OID_AUTO, dirtybufcount, CTLFLAG_RD, &dirtybufcount, 0,
 	"Pending number of dirty buffers");
 SYSCTL_INT(_vfs, OID_AUTO, dirtybufcounthw, CTLFLAG_RD, &dirtybufcounthw, 0,
 	"Pending number of dirty buffers (heavy weight)");
-SYSCTL_INT(_vfs, OID_AUTO, runningbufspace, CTLFLAG_RD, &runningbufspace, 0,
+SYSCTL_LONG(_vfs, OID_AUTO, runningbufspace, CTLFLAG_RD, &runningbufspace, 0,
 	"I/O bytes currently in progress due to asynchronous writes");
 SYSCTL_INT(_vfs, OID_AUTO, runningbufcount, CTLFLAG_RD, &runningbufcount, 0,
 	"I/O buffers currently in progress due to asynchronous writes");
-SYSCTL_INT(_vfs, OID_AUTO, maxbufspace, CTLFLAG_RD, &maxbufspace, 0,
+SYSCTL_LONG(_vfs, OID_AUTO, maxbufspace, CTLFLAG_RD, &maxbufspace, 0,
 	"Hard limit on maximum amount of memory usable for buffer space");
-SYSCTL_INT(_vfs, OID_AUTO, hibufspace, CTLFLAG_RD, &hibufspace, 0,
+SYSCTL_LONG(_vfs, OID_AUTO, hibufspace, CTLFLAG_RD, &hibufspace, 0,
 	"Soft limit on maximum amount of memory usable for buffer space");
-SYSCTL_INT(_vfs, OID_AUTO, lobufspace, CTLFLAG_RD, &lobufspace, 0,
+SYSCTL_LONG(_vfs, OID_AUTO, lobufspace, CTLFLAG_RD, &lobufspace, 0,
 	"Minimum amount of memory to reserve for system buffer space");
-SYSCTL_INT(_vfs, OID_AUTO, bufspace, CTLFLAG_RD, &bufspace, 0,
+SYSCTL_LONG(_vfs, OID_AUTO, bufspace, CTLFLAG_RD, &bufspace, 0,
 	"Amount of memory available for buffers");
-SYSCTL_INT(_vfs, OID_AUTO, maxmallocbufspace, CTLFLAG_RD, &maxbufmallocspace,
+SYSCTL_LONG(_vfs, OID_AUTO, maxmallocbufspace, CTLFLAG_RD, &maxbufmallocspace,
 	0, "Maximum amount of memory reserved for buffers using malloc");
-SYSCTL_INT(_vfs, OID_AUTO, bufmallocspace, CTLFLAG_RD, &bufmallocspace, 0,
+SYSCTL_LONG(_vfs, OID_AUTO, bufmallocspace, CTLFLAG_RD, &bufmallocspace, 0,
 	"Amount of memory left for buffers using malloc-scheme");
 SYSCTL_INT(_vfs, OID_AUTO, getnewbufcalls, CTLFLAG_RD, &getnewbufcalls, 0,
 	"New buffer header acquisition requests");
@@ -255,8 +255,8 @@ bufspacewakeup(void)
 static __inline void
 runningbufwakeup(struct buf *bp)
 {
-	int totalspace;
-	int limit;
+	long totalspace;
+	long limit;
 
 	if ((totalspace = bp->b_runningbufspace) != 0) {
 		spin_lock(&bufcspin);
@@ -267,7 +267,7 @@ runningbufwakeup(struct buf *bp)
 		/*
 		 * see waitrunningbufspace() for limit test.
 		 */
-		limit = hirunningspace * 4 / 6;
+		limit = hirunningspace * 3 / 6;
 		if (runningbufreq && runningbufspace <= limit) {
 			runningbufreq = 0;
 			spin_unlock(&bufcspin);
@@ -305,37 +305,26 @@ bufcountwakeup(void)
 /*
  * waitrunningbufspace()
  *
- * Wait for the amount of running I/O to drop to hirunningspace * 4 / 6.
- * This is the point where write bursting stops so we don't want to wait
- * for the running amount to drop below it (at least if we still want bioq
- * to burst writes).
+ * If runningbufspace exceeds 4/6 hirunningspace we block until
+ * runningbufspace drops to 3/6 hirunningspace.  We also block if another
+ * thread blocked here in order to be fair, even if runningbufspace
+ * is now lower than the limit.
  *
  * The caller may be using this function to block in a tight loop, we
- * must block while runningbufspace is greater then or equal to
- * hirunningspace * 4 / 6.
- *
- * And even with that it may not be enough, due to the presence of
- * B_LOCKED dirty buffers, so also wait for at least one running buffer
- * to complete.
+ * must block while runningbufspace is greater than at least
+ * hirunningspace * 3 / 6.
  */
 void
 waitrunningbufspace(void)
 {
-	int limit = hirunningspace * 4 / 6;
-	int dummy;
+	long limit = hirunningspace * 4 / 6;
 
-	spin_lock(&bufcspin);
-	if (runningbufspace > limit) {
-		while (runningbufspace > limit) {
-			++runningbufreq;
+	if (runningbufspace > limit || runningbufreq) {
+		spin_lock(&bufcspin);
+		while (runningbufspace > limit || runningbufreq) {
+			runningbufreq = 1;
 			ssleep(&runningbufreq, &bufcspin, 0, "wdrn1", 0);
 		}
-		spin_unlock(&bufcspin);
-	} else if (runningbufspace > limit / 2) {
-		++runningbufreq;
-		spin_unlock(&bufcspin);
-		tsleep(&dummy, 0, "wdrn2", 1);
-	} else {
 		spin_unlock(&bufcspin);
 	}
 }
@@ -433,9 +422,9 @@ bd_speedup(void)
 int
 bd_heatup(void)
 {
-	int mid1;
-	int mid2;
-	int totalspace;
+	long mid1;
+	long mid2;
+	long totalspace;
 
 	mid1 = lodirtybufspace + (hidirtybufspace - lodirtybufspace) / 2;
 
@@ -656,7 +645,7 @@ bufinit(void)
 	 * this may result in KVM fragmentation which is not handled optimally
 	 * by the system.
 	 */
-	maxbufspace = nbuf * BKVASIZE;
+	maxbufspace = (long)nbuf * BKVASIZE;
 	hibufspace = imax(3 * maxbufspace / 4, maxbufspace - MAXBSIZE * 10);
 	lobufspace = hibufspace - MAXBSIZE;
 
@@ -872,21 +861,6 @@ bremfree_locked(struct buf *bp)
 }
 
 /*
- * bread:
- *
- *	Get a buffer with the specified data.  Look in the cache first.  We
- *	must clear B_ERROR and B_INVAL prior to initiating I/O.  If B_CACHE
- *	is set, the buffer is valid and we do not have to do anything ( see
- *	getblk() ).
- *
- */
-int
-bread(struct vnode *vp, off_t loffset, int size, struct buf **bpp)
-{
-	return (breadn(vp, loffset, size, NULL, NULL, 0, bpp));
-}
-
-/*
  * This version of bread issues any required I/O asyncnronously and
  * makes a callback on completion.
  *
@@ -926,23 +900,26 @@ breadcb(struct vnode *vp, off_t loffset, int size,
 }
 
 /*
- * breadn:
+ * breadnx() - Terminal function for bread() and breadn().
  *
- *	Operates like bread, but also starts asynchronous I/O on
- *	read-ahead blocks.  We must clear B_ERROR and B_INVAL prior
- *	to initiating I/O . If B_CACHE is set, the buffer is valid 
- *	and we do not have to do anything.
+ * This function will start asynchronous I/O on read-ahead blocks as well
+ * as satisfy the primary request.
  *
+ * We must clear B_ERROR and B_INVAL prior to initiating I/O.  If B_CACHE is
+ * set, the buffer is valid and we do not have to do anything.
  */
 int
-breadn(struct vnode *vp, off_t loffset, int size, off_t *raoffset,
+breadnx(struct vnode *vp, off_t loffset, int size, off_t *raoffset,
 	int *rabsize, int cnt, struct buf **bpp)
 {
 	struct buf *bp, *rabp;
 	int i;
 	int rv = 0, readwait = 0;
 
-	*bpp = bp = getblk(vp, loffset, size, 0, 0);
+	if (*bpp)
+		bp = *bpp;
+	else
+		*bpp = bp = getblk(vp, loffset, size, 0, 0);
 
 	/* if not found in cache, do some I/O */
 	if ((bp->b_flags & B_CACHE) == 0) {
@@ -2525,7 +2502,7 @@ SYSINIT(bufdaemon_hw, SI_SUB_KTHREAD_BUF, SI_ORDER_FIRST,
 static void
 buf_daemon(void)
 {
-	int limit;
+	long limit;
 
 	/*
 	 * This process needs to be suspended prior to shutdown sync.
@@ -2584,7 +2561,7 @@ buf_daemon(void)
 static void
 buf_daemon_hw(void)
 {
-	int limit;
+	long limit;
 
 	/*
 	 * This process needs to be suspended prior to shutdown sync.
@@ -2830,7 +2807,7 @@ findblk(struct vnode *vp, off_t loffset, int flags)
 		 * Lookup.  Ref the buf while holding v_token to prevent
 		 * reuse (but does not prevent diassociation).
 		 */
-		lwkt_gettoken(&vp->v_token);
+		lwkt_gettoken_shared(&vp->v_token);
 		bp = buf_rb_hash_RB_LOOKUP(&vp->v_rbhash_tree, loffset);
 		if (bp == NULL) {
 			lwkt_reltoken(&vp->v_token);
@@ -3317,7 +3294,7 @@ allocbuf(struct buf *bp, int size)
 				} else {
 					kfree(bp->b_data, M_BIOBUF);
 					if (bp->b_bufsize) {
-						atomic_subtract_int(&bufmallocspace, bp->b_bufsize);
+						atomic_subtract_long(&bufmallocspace, bp->b_bufsize);
 						bufspacewakeup();
 						bp->b_bufsize = 0;
 					}
@@ -3345,7 +3322,7 @@ allocbuf(struct buf *bp, int size)
 				bp->b_bufsize = mbsize;
 				bp->b_bcount = size;
 				bp->b_flags |= B_MALLOC;
-				atomic_add_int(&bufmallocspace, mbsize);
+				atomic_add_long(&bufmallocspace, mbsize);
 				return 1;
 			}
 			origbuf = NULL;
@@ -3360,8 +3337,8 @@ allocbuf(struct buf *bp, int size)
 				origbufsize = bp->b_bufsize;
 				bp->b_data = bp->b_kvabase;
 				if (bp->b_bufsize) {
-					atomic_subtract_int(&bufmallocspace,
-							    bp->b_bufsize);
+					atomic_subtract_long(&bufmallocspace,
+							     bp->b_bufsize);
 					bufspacewakeup();
 					bp->b_bufsize = 0;
 				}
@@ -4590,7 +4567,8 @@ vm_hold_load_pages(struct buf *bp, vm_offset_t from, vm_offset_t to)
  * If the buffer cache's vm_page_alloc() fails a vm_wait() can deadlock
  * against the pageout daemon if pages are not freed from other sources.
  *
- * MPSAFE
+ * If NULL is returned the caller is expected to retry (typically check if
+ * the page already exists on retry before trying to allocate one).
  */
 static
 vm_page_t
@@ -4603,7 +4581,8 @@ bio_page_alloc(vm_object_t obj, vm_pindex_t pg, int deficit)
 	/*
 	 * Try a normal allocation, allow use of system reserve.
 	 */
-	p = vm_page_alloc(obj, pg, VM_ALLOC_NORMAL | VM_ALLOC_SYSTEM);
+	p = vm_page_alloc(obj, pg, VM_ALLOC_NORMAL | VM_ALLOC_SYSTEM |
+				   VM_ALLOC_NULL_OK);
 	if (p)
 		return(p);
 
@@ -4640,13 +4619,13 @@ bio_page_alloc(vm_object_t obj, vm_pindex_t pg, int deficit)
 	 * won't deadlock.
 	 */
 	p = vm_page_alloc(obj, pg, VM_ALLOC_NORMAL | VM_ALLOC_SYSTEM |
-				   VM_ALLOC_INTERRUPT);
+				   VM_ALLOC_INTERRUPT | VM_ALLOC_NULL_OK);
 	if (p) {
 		if (vm_page_count_severe()) {
 			++lowmempgallocs;
 			vm_wait(hz / 20 + 1);
 		}
-	} else {
+	} else if (vm_page_lookup(obj, pg) == NULL) {
 		kprintf("bio_page_alloc: Memory exhausted during bufcache "
 			"page allocation\n");
 		++lowmempgfails;
