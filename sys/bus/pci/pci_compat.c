@@ -24,11 +24,7 @@
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *
  * $FreeBSD: src/sys/pci/pci_compat.c,v 1.35.2.1 2001/10/14 21:14:14 luigi Exp $
- * $DragonFly: src/sys/bus/pci/pci_compat.c,v 1.14 2007/05/13 18:33:56 swildner Exp $
- *
  */
-
-#include "opt_bus.h"
 
 /* for compatibility to FreeBSD-2.2 and 3.x versions of PCI code */
 
@@ -144,7 +140,8 @@ pci_map_int_right(pcici_t cfg, pci_inthand_t *handler, void *arg, u_int intflags
 		 */
 
 		error = BUS_SETUP_INTR(device_get_parent(cfg->dev), cfg->dev,
-				       res, flags, handler, arg, &ih, NULL);
+				       res, flags, handler, arg, &ih,
+				       NULL, NULL);
 		if (error != 0)
 			return 0;
 

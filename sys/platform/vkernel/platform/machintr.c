@@ -56,7 +56,7 @@ static void dummy_intr_disable(int);
 static void dummy_intr_enable(int);
 static void dummy_intr_setup(int, int);
 static void dummy_intr_teardown(int);
-static int dummy_intr_cpuid(int);
+static int dummy_legacy_intr_cpuid(int);
 static void dummy_finalize(void);
 static void dummy_intrcleanup(void);
 static void dummy_stabilize(void);
@@ -67,7 +67,7 @@ struct machintr_abi MachIntrABI = {
 	.intr_enable =	dummy_intr_enable,
 	.intr_setup =	dummy_intr_setup,
 	.intr_teardown = dummy_intr_teardown,
-	.intr_cpuid = dummy_intr_cpuid,
+	.legacy_intr_cpuid = dummy_legacy_intr_cpuid,
 
 	.finalize =	dummy_finalize,
 	.cleanup =	dummy_intrcleanup,
@@ -110,7 +110,7 @@ dummy_stabilize(void)
 }
 
 static int
-dummy_intr_cpuid(int irq __unused)
+dummy_legacy_intr_cpuid(int irq __unused)
 {
 	return 0;
 }
@@ -144,7 +144,7 @@ splz(void)
 			while ((irq = ffs(gd->gd_fpending)) != 0) {
 				--irq;
 				atomic_clear_int(&gd->gd_fpending, 1 << irq);
-				sched_ithd_hard(irq);
+				sched_ithd_hard_virtual(irq);
 			}
 		}
 		crit_exit_noyield(td);
@@ -154,8 +154,8 @@ splz(void)
 /*
  * Allows an unprotected signal handler or mailbox to signal an interrupt
  *
- * For sched_ithd_hard() to properly preempt via lwkt_schedule() we cannot
- * enter a critical section here.  We use td_nest_count instead.
+ * For sched_ithd_hard_virtaul() to properly preempt via lwkt_schedule() we
+ * cannot enter a critical section here.  We use td_nest_count instead.
  */
 void
 signalintr(int intr)
@@ -169,7 +169,7 @@ signalintr(int intr)
 	} else {
 		++td->td_nest_count;
 		atomic_clear_int(&gd->gd_fpending, 1 << intr);
-		sched_ithd_hard(intr);
+		sched_ithd_hard_virtual(intr);
 		--td->td_nest_count;
 	}
 }

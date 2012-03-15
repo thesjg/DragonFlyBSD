@@ -172,7 +172,6 @@ void	set_vkernel_fp(struct trapframe *);
 int	kvm_access_check(vm_offset_t, vm_offset_t, int);
 
 vm_paddr_t kvtop(void *addr);
-int	is_physical_memory (vm_offset_t addr);
 
 extern uint32_t crc32_tab[];
 uint32_t crc32(const void *buf, size_t size);
@@ -246,6 +245,7 @@ int	fubyte (const void *base);
 int	subyte (void *base, int byte);
 long	fuword (const void *base);
 int	suword (void *base, long word);
+int	suword32 (void *base, int word);
 int	fusword (void *base);
 int	susword (void *base, int word);
 u_long	casuword(volatile u_long *p, u_long oldval, u_long newval);

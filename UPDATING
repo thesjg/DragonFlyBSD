@@ -9,6 +9,18 @@
 # mailing list with the details.
 
 +-----------------------------------------------------------------------+
++         UPGRADING DRAGONFLY FROM 3.0 to later versions                +
++-----------------------------------------------------------------------+
+
+APIC_IO OPTION REMOVED
+----------------------
+
+The APIC_IO kernel option is no longer accepted after having been without
+effect for a while. The hw.ioapic_enable tunable now serves its purpose.
+If you have 'options APIC_IO' in your kernel config, you'll have to
+remove it.
+
++-----------------------------------------------------------------------+
 +         UPGRADING DRAGONFLY FROM 2.10 to later versions               +
 +-----------------------------------------------------------------------+
 
@@ -47,6 +59,22 @@ BINUTILS 2.20
 -------------
 Binutils 2.20 has been removed in favor of Binutils 2.22.  The accepted
 values of BINUTILSVERS are now binutils221 and binutils222 (default).
+
+BUILDWORLD/-KERNEL PARALLELIZATION WORK
+---------------------------------------
+Due to changes in the way we build with more than one make job, you
+will have to update install(1) and mkdir(1) prior to buildworld if you
+want to build with 'make -j':
+
+cd /usr/src/usr.bin/xinstall; make; make install; make clean
+cd /usr/src/bin/mkdir; make; make install; make clean
+
+DMA(8) UPGRADE
+--------------
+dma(8) has been upgraded to v0.7 which no longer supports the
+/etc/dma/virtusertable. Some of its functionality has been replaced
+with the MASQUERADE keyword and the EMAIL environment variable (see
+the dma(8) manual page).
 
 +-----------------------------------------------------------------------+
 +         UPGRADING DRAGONFLY FROM 2.8 to later versions                +

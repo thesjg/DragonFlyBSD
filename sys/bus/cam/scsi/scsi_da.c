@@ -29,7 +29,6 @@
  */
 
 #include <sys/param.h>
-#include <sys/bootmaj.h>
 
 #ifdef _KERNEL
 
@@ -414,7 +413,7 @@ static struct periph_driver dadriver =
 PERIPHDRIVER_DECLARE(da, dadriver);
 
 static struct dev_ops da_ops = {
-	{ "da", DA_CDEV_MAJOR, D_DISK | D_MPSAFE },
+	{ "da", 0, D_DISK | D_MPSAFE },
 	.d_open =	daopen,
 	.d_close =	daclose,
 	.d_read =	physread,
@@ -1331,7 +1330,7 @@ dastart(struct cam_periph *periph, union ccb *start_ccb)
 
 		/* Run the trim command if not already running */
 		if (!softc->trim_running &&
-		   (bio = bioq_first(&softc->bio_queue_trim)) != 0) {
+		   (bio = bioq_first(&softc->bio_queue_trim)) != NULL) {
 			struct trim_request *req = &softc->trim_req;
 			struct bio *bio1;
 			int bps = 0, ranges = 0;

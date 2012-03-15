@@ -143,14 +143,6 @@
             ..
             ipfw
             ..
-            isdn
-                contrib
-                ..
-                i4brunppp
-                ..
-                v21
-                ..
-            ..
             kld
                 cdev
                     module
@@ -198,6 +190,10 @@
             pppd
             ..
             printing
+            ..
+            puffs
+                pnullfs
+                ..
             ..
             rconfig
             ..
@@ -363,8 +359,6 @@
             ..
         ..
         installer
-        ..
-        isdn
         ..
         libg++
         ..

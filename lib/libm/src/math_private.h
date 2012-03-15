@@ -11,8 +11,7 @@
 
 /*
  * from: @(#)fdlibm.h 5.1 93/09/24
- * $NetBSD: math_private.h,v 1.11 2001/02/21 18:09:26 bjh21 Exp $
- * $DragonFly: src/lib/libm/src/math_private.h,v 1.1 2005/07/26 21:15:20 joerg Exp $
+ * $NetBSD: math_private.h,v 1.16 2010/09/16 20:39:50 drochner Exp $
  */
 
 #ifndef _MATH_PRIVATE_H_
@@ -39,7 +38,7 @@
  * big endian.
  */
 
-#if (BYTE_ORDER == BIG_ENDIAN) || (defined(__arm__) && !defined(__VFP_FP__))
+#if BYTE_ORDER == BIG_ENDIAN
 
 typedef union
 {
@@ -49,12 +48,15 @@ typedef union
     u_int32_t msw;
     u_int32_t lsw;
   } parts;
+  struct
+  {
+    u_int64_t w;
+  } xparts;
 } ieee_double_shape_type;
 
 #endif
 
-#if (BYTE_ORDER == LITTLE_ENDIAN) && \
-    !(defined(__arm__) && !defined(__VFP_FP__))
+#if BYTE_ORDER == LITTLE_ENDIAN
 
 typedef union
 {
@@ -64,6 +66,10 @@ typedef union
     u_int32_t lsw;
     u_int32_t msw;
   } parts;
+  struct
+  {
+    u_int64_t w;
+  } xparts;
 } ieee_double_shape_type;
 
 #endif
@@ -76,6 +82,17 @@ do {								\
   ew_u.value = (d);						\
   (ix0) = ew_u.parts.msw;					\
   (ix1) = ew_u.parts.lsw;					\
+} while (/*CONSTCOND*/0)
+
+/*
+ * Get a 64-bit int from a double.
+ * Origin: FreeBSD msun/src/math_private.h
+ */
+#define EXTRACT_WORD64(ix,d)					\
+do {								\
+  ieee_double_shape_type ew_u;					\
+  ew_u.value = (d);						\
+  (ix) = ew_u.xparts.w;						\
 } while (0)
 
 /* Get the more significant 32 bit int from a double.  */
@@ -85,7 +102,7 @@ do {								\
   ieee_double_shape_type gh_u;					\
   gh_u.value = (d);						\
   (i) = gh_u.parts.msw;						\
-} while (0)
+} while (/*CONSTCOND*/0)
 
 /* Get the less significant 32 bit int from a double.  */
 
@@ -94,7 +111,7 @@ do {								\
   ieee_double_shape_type gl_u;					\
   gl_u.value = (d);						\
   (i) = gl_u.parts.lsw;						\
-} while (0)
+} while (/*CONSTCOND*/0)
 
 /* Set a double from two 32 bit ints.  */
 
@@ -103,6 +120,17 @@ do {								\
   ieee_double_shape_type iw_u;					\
   iw_u.parts.msw = (ix0);					\
   iw_u.parts.lsw = (ix1);					\
+  (d) = iw_u.value;						\
+} while (/*CONSTCOND*/0)
+
+/*
+ * Set a double from a 64-bit int.
+ * Origin: FreeBSD msun/src/math_private.h
+ */
+#define INSERT_WORD64(d,ix)					\
+do {								\
+  ieee_double_shape_type iw_u;					\
+  iw_u.xparts.w = (ix);						\
   (d) = iw_u.value;						\
 } while (0)
 
@@ -114,7 +142,7 @@ do {								\
   sh_u.value = (d);						\
   sh_u.parts.msw = (v);						\
   (d) = sh_u.value;						\
-} while (0)
+} while (/*CONSTCOND*/0)
 
 /* Set the less significant 32 bits of a double from an int.  */
 
@@ -124,7 +152,7 @@ do {								\
   sl_u.value = (d);						\
   sl_u.parts.lsw = (v);						\
   (d) = sl_u.value;						\
-} while (0)
+} while (/*CONSTCOND*/0)
 
 /* A union which permits us to convert between a float and a 32 bit
    int.  */
@@ -142,7 +170,7 @@ do {								\
   ieee_float_shape_type gf_u;					\
   gf_u.value = (d);						\
   (i) = gf_u.word;						\
-} while (0)
+} while (/*CONSTCOND*/0)
 
 /* Set a float from a 32 bit int.  */
 
@@ -151,29 +179,78 @@ do {								\
   ieee_float_shape_type sf_u;					\
   sf_u.word = (i);						\
   (d) = sf_u.value;						\
-} while (0)
-
-#ifdef _COMPLEX_H
+} while (/*CONSTCOND*/0)
 
 /*
- * C99 specifies that complex numbers have the same representation as
- * an array of two elements, where the first element is the real part
- * and the second element is the imaginary part.
+ * Get expsign as a 16 bit int from a long double.
+ * Origin: FreeBSD msun/src/math_private.h
+ */
+
+#define	GET_LDBL_EXPSIGN(i,d)					\
+do {								\
+  union IEEEl2bits ge_u;					\
+  ge_u.e = (d);							\
+  (i) = ge_u.xbits.expsign;					\
+} while (/*CONSTCOND*/0)
+
+/*
+ * Set expsign of a long double from a 16 bit int.
+ */
+
+#define	SET_LDBL_EXPSIGN(d,v)					\
+do {								\
+  union IEEEl2bits se_u;					\
+  se_u.e = (d);							\
+  se_u.xbits.expsign = (v);					\
+  (d) = se_u.e;							\
+} while (/*CONSTCOND*/0)
+
+/*
+ * Attempt to get strict C99 semantics for assignment with non-C99 compilers.
+ */
+#if FLT_EVAL_METHOD == 0 || __GNUC__ == 0
+#define	STRICT_ASSIGN(type, lval, rval)	((lval) = (rval))
+#else
+#define	STRICT_ASSIGN(type, lval, rval) do {	\
+	volatile type __lval;			\
+						\
+	if (sizeof(type) >= sizeof(double))	\
+		(lval) = (rval);		\
+	else {					\
+		__lval = (rval);		\
+		(lval) = __lval;		\
+	}					\
+} while (/*CONSTCOND*/0)
+#endif
+
+#ifdef	_COMPLEX_H
+
+/*
+ * Quoting from ISO/IEC 9899:TC2:
+ *
+ * 6.2.5.13 Types
+ * Each complex type has the same representation and alignment requirements as
+ * an array type containing exactly two elements of the corresponding real type;
+ * the first element is equal to the real part, and the second element to the
+ * imaginary part, of the complex number.
  */
 typedef union {
-	float complex f;
-	float a[2];
+	float complex z;
+	float parts[2];
 } float_complex;
+
 typedef union {
-	double complex f;
-	double a[2];
+	double complex z;
+	double parts[2];
 } double_complex;
+
 typedef union {
-	long double complex f;
-	long double a[2];
+	long double complex z;
+	long double parts[2];
 } long_double_complex;
-#define REALPART(z)     ((z).a[0])
-#define IMAGPART(z)     ((z).a[1])
+
+#define	REAL_PART(z)	((z).parts[0])
+#define	IMAG_PART(z)	((z).parts[1])
 
 /*
  * Inline functions that can be used to construct complex values.
@@ -188,56 +265,57 @@ typedef union {
 static __inline float complex
 cpackf(float x, float y)
 {
-	float_complex z;
+	float_complex fc;
 
-	REALPART(z) = x;
-	IMAGPART(z) = y;
-	return (z.f);
+	REAL_PART(fc) = x;
+	IMAG_PART(fc) = y;
+	return (fc.z);
 }
 
 static __inline double complex
 cpack(double x, double y)
 {
-	double_complex z;
+	double_complex dc;
 
-	REALPART(z) = x;
-	IMAGPART(z) = y;
-	return (z.f);
+	REAL_PART(dc) = x;
+	IMAG_PART(dc) = y;
+	return (dc.z);
 }
 
 static __inline long double complex
 cpackl(long double x, long double y)
 {
-	long_double_complex z;
+	long_double_complex ldc;
 
-	REALPART(z) = x;
-	IMAGPART(z) = y;
-	return (z.f);
+	REAL_PART(ldc) = x;
+	IMAG_PART(ldc) = y;
+	return (ldc.z);
 }
 
-#endif /* _COMPLEX_H */
+#endif	/* _COMPLEX_H */
 
 __BEGIN_DECLS
 #pragma GCC visibility push(hidden)
 
-/* ieee style elementary functions */
-int	__libm_rem_pio2(double, double*);
-
 /* fdlibm kernel function */
+int	__kernel_rem_pio2(double*,double*,int,int,int);
+
+/* double precision kernel functions */
+int	__libm_rem_pio2(double, double*);
 double	__kernel_sin(double, double, int);
 double	__kernel_cos(double, double);
 double	__kernel_tan(double, double, int);
-int	__kernel_rem_pio2(double*, double*, int, int, int, const int*);
 
+/* float precision kernel functions */
+int	__libm_rem_pio2f(float,double*);
+float	__kernel_sindf(double);
+float	__kernel_cosdf(double);
+float	__kernel_tandf(double, int);
 
-/* ieee style elementary float functions */
-int	__libm_rem_pio2f(float,float*);
-
-/* float versions of fdlibm kernel functions */
-float	__kernel_sinf(float, float, int);
-float	__kernel_cosf(float, float);
-float	__kernel_tanf(float, float, int);
-int	__kernel_rem_pio2f(float*, float*, int, int, int, const int*);
+/* long double precision kernel functions */
+long double __kernel_sinl(long double, long double, int);
+long double __kernel_cosl(long double, long double);
+long double __kernel_tanl(long double, long double, int);
 
 #pragma GCC visibility pop
 __END_DECLS

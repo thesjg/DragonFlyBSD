@@ -86,6 +86,7 @@ SUBDIR= 802_11 \
 	prefix \
 	procctl \
 	pstat \
+	puffs \
 	pw \
 	pwd_mkdb \
 	quot \
@@ -174,10 +175,6 @@ SUBDIR+=apm \
 
 .if ${MACHINE_ARCH} == "i386"
 SUBDIR+=stallion
-
-.if !defined(NO_I4B)
-SUBDIR+=i4b
-.endif
 .endif
 
 .ifdef BOOT0CFG_SUPPORT

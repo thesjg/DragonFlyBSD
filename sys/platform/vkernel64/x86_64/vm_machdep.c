@@ -40,7 +40,6 @@
  *	from: @(#)vm_machdep.c	7.3 (Berkeley) 5/13/91
  *	Utah $Hdr: vm_machdep.c 1.16.1.1 89/06/23$
  * $FreeBSD: src/sys/i386/i386/vm_machdep.c,v 1.132.2.9 2003/01/25 19:02:23 dillon Exp $
- * $DragonFly: src/sys/platform/pc64/amd64/vm_machdep.c,v 1.3 2008/08/29 17:07:10 dillon Exp $
  */
 
 #include <sys/param.h>
@@ -254,7 +253,7 @@ cpu_lwp_exit(void)
 {
 	struct thread *td = curthread;
 	struct pcb *pcb;
-	npxexit();
+
 	pcb = td->td_pcb;
 
 	/* Some i386 functionality was dropped */
@@ -289,6 +288,7 @@ cpu_lwp_exit(void)
 void
 cpu_thread_exit(void)
 {
+	npxexit();
 	curthread->td_switch = cpu_exit_switch;
 	curthread->td_flags |= TDF_EXITING;
 	lwkt_switch();
@@ -305,19 +305,6 @@ grow_stack(struct proc *p, u_long sp)
 		return (0);
 
 	return (1);
-}
-
-/*
- * Tell whether this address is in some physical memory region.
- * Currently used by the kernel coredump code in order to avoid
- * dumping the ``ISA memory hole'' which could cause indefinite hangs,
- * or other unpredictable behaviour.
- */
-
-int
-is_physical_memory(vm_offset_t addr)
-{
-	return 1;
 }
 
 /*

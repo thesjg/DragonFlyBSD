@@ -91,15 +91,12 @@ struct pcicfg_msi {
 
 /* Interesting values for PCI MSI-X */
 struct msix_vector {
+    TAILQ_ENTRY(msix_vector) mv_link;
     uint64_t	mv_address;	/* Contents of address register. */
     uint32_t	mv_data;	/* Contents of data register. */
-    int		mv_irq;
+    int		mv_rid;
 };
-
-struct msix_table_entry {
-    u_int	mte_vector;	/* 1-based index into msix_vectors array. */
-    u_int	mte_handlers;
-};
+TAILQ_HEAD(msix_vectorlist, msix_vector);
 
 struct pcicfg_msix {
     uint16_t	msix_ctrl;	/* Message Control */
@@ -110,15 +107,14 @@ struct pcicfg_msix {
     uint32_t	msix_table_offset;
     uint32_t	msix_pba_offset;
     int		msix_alloc;	/* Number of allocated vectors. */
-    int		msix_table_len;	/* Length of virtual table. */
-    struct msix_table_entry *msix_table; /* Virtual table. */
-    struct msix_vector *msix_vectors;	/* Array of allocated vectors. */
     struct resource *msix_table_res;	/* Resource containing vector table. */
     struct resource *msix_pba_res;	/* Resource containing PBA. */
+    struct msix_vectorlist msix_vectors;
 };
 
 /* Interesting values for HyperTransport */
 struct pcicfg_ht {
+    uint8_t	ht_slave;	/* Non-zero if device is an HT slave. */
     uint8_t	ht_msimap;	/* Offset of MSI mapping cap registers. */
     uint16_t	ht_msictrl;	/* MSI mapping control */
     uint64_t	ht_msiaddr;	/* MSI mapping base address */
@@ -464,27 +460,28 @@ pci_is_pcix(device_t dev)
 }
 
 static __inline int
-pci_alloc_msi(device_t dev, int *count)
+pci_alloc_msi(device_t dev, int *rid, int count, int cpuid)
 {
-    return (PCI_ALLOC_MSI(device_get_parent(dev), dev, count));
-}
-
-static __inline int
-pci_alloc_msix(device_t dev, int *count)
-{
-    return (PCI_ALLOC_MSIX(device_get_parent(dev), dev, count));
-}
-
-static __inline int
-pci_remap_msix(device_t dev, int count, const u_int *vectors)
-{
-    return (PCI_REMAP_MSIX(device_get_parent(dev), dev, count, vectors));
+    return (PCI_ALLOC_MSI(device_get_parent(dev), dev, rid, count, cpuid));
 }
 
 static __inline int
 pci_release_msi(device_t dev)
 {
     return (PCI_RELEASE_MSI(device_get_parent(dev), dev));
+}
+
+static __inline int
+pci_alloc_msix_vector(device_t dev, u_int vector, int *rid, int cpuid)
+{
+    return (PCI_ALLOC_MSIX_VECTOR(device_get_parent(dev), dev, vector, rid,
+        cpuid));
+}
+
+static __inline int
+pci_release_msix_vector(device_t dev, int rid)
+{
+	return PCI_RELEASE_MSIX_VECTOR(device_get_parent(dev), dev, rid);
 }
 
 static __inline int
@@ -503,18 +500,23 @@ device_t pci_find_bsf(uint8_t, uint8_t, uint8_t);
 device_t pci_find_dbsf(uint32_t, uint8_t, uint8_t, uint8_t);
 device_t pci_find_device(uint16_t, uint16_t);
 
-/*
- * Can be used by MD code to request the PCI bus to re-map an MSI or
- * MSI-X message.
- */
-int	pci_remap_msi_irq(device_t dev, u_int irq);
-
 /* Can be used by drivers to manage the MSI-X table. */
-int	pci_pending_msix(device_t dev, u_int index);
+int	pci_pending_msix_vector(device_t dev, u_int index);
+int	pci_setup_msix(device_t dev);
+void	pci_teardown_msix(device_t dev);
+void	pci_enable_msix(device_t dev);
+void	pci_disable_msix(device_t dev);
 
 int	pci_msi_device_blacklisted(device_t dev);
 
 void	pci_ht_map_msi(device_t dev, uint64_t addr);
+
+/* Returns PCI_INTR_TYPE_ */
+int	pci_alloc_1intr(device_t dev, int msi_enable, int *rid, u_int *flags);
+
+#define PCI_INTR_TYPE_LEGACY	0
+#define PCI_INTR_TYPE_MSI	1
+#define PCI_INTR_TYPE_MSIX	2	/* not yet */
 
 #endif	/* _SYS_BUS_H_ */
 

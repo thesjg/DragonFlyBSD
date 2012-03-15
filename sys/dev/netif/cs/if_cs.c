@@ -427,7 +427,7 @@ cs_cs89x0_probe(device_t dev)
 
 					if (!error) {
 						bus_set_resource(dev, SYS_RES_IRQ, 0,
-						    irq, 1, machintr_intr_cpuid(irq));
+						    irq, 1, machintr_legacy_intr_cpuid(irq));
 					}
 				}
 			}
@@ -686,7 +686,7 @@ cs_attach(device_t dev)
 		goto bad;
 	}
 
-	ifp->if_cpuid = ithread_cpuid(rman_get_start(sc->irq_res));
+	ifp->if_cpuid = rman_get_cpuid(sc->irq_res);
 	KKASSERT(ifp->if_cpuid >= 0 && ifp->if_cpuid < ncpus);
 
 	return 0;

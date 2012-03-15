@@ -44,7 +44,7 @@ LHDRS=	aio.h errno.h fcntl.h linker_set.h poll.h sched.h \
 # Other directories, like 'bus' and 'netproto', are created using mtree.
 #
 # XXX allow these directories to not contain header files.
-LDIRS=	net netbt netgraph netinet netinet6 sys vm
+LDIRS=	net netbt netgraph netgraph7 netinet netinet6 sys vm
 
 # Subdirectories containing header files to copy.  In symlink mode 
 # the subdirectory will be symlinked.  Care must be taken to adjust
@@ -67,22 +67,30 @@ LSUBDIRS=	bus/cam bus/cam/scsi \
 	netgraph/mppc netgraph/one2many netgraph/ppp \
 	netgraph/pppoe netgraph/pptpgre netgraph/rfc1490 netgraph/socket \
 	netgraph/tee netgraph/tty netgraph/vjc \
+	netgraph7/UI netgraph7/async netgraph7/atmllc netgraph7/bpf \
+	netgraph7/bridge netgraph7/cisco netgraph7/deflate netgraph7/echo \
+	netgraph7/etf netgraph7/ether netgraph7/frame_relay netgraph7/hole \
+	netgraph7/hub \
+	netgraph7/iface netgraph7/ksocket netgraph7/l2tp netgraph7/lmi \
+	netgraph7/mppc netgraph7/one2many netgraph7/ppp netgraph7/pppoe \
+	netgraph7/pptpgre netgraph7/rfc1490 netgraph7/socket \
+	netgraph7/tcpmss netgraph7/tee netgraph7/vjc \
 	bus/cam bus/usb bus/pccard bus/pci bus/isa bus/ppbus bus/smbus \
 	netproto/atm netproto/ipsec netproto/ipx \
 	netproto/key netproto/natm netproto/ncp netproto/smb \
 	netproto/atm/ipatm netproto/atm/sigpvc netproto/atm/spans \
 	netproto/atm/uni netproto/802_11 netproto/mpls \
-	vfs/isofs/cd9660 net/i4b/include \
+	vfs/isofs/cd9660 vfs/puffs \
 	dev/disk/mpt/mpilib \
 	dev/disk/dm \
-	dev/misc/lpt dev/misc/ppi \
+	dev/misc/lpt dev/misc/ppi dev/misc/putter \
 	dev/netif/wi \
 	dev/raid/ciss dev/raid/mfi \
 	dev/video/bktr dev/video/meteor libprop
 
 # For SHARED=symlinks, bus/cam and netproto/atm are symlinks, so cam/scsi
 # and netproto/atm/* are taken care of
-LSYMSUBDIRS=	${LSUBDIRS:Nbus/cam/scsi:Nnetproto/atm/*:Nnet/*:Nnetgraph/*}
+LSYMSUBDIRS=	${LSUBDIRS:Nbus/cam/scsi:Nnetproto/atm/*:Nnet/*:Nnetgraph/*:Nnetgraph7/*}
 
 # For obsolete headers which need to be removed
 RMHEADERS=	machine/ansi.h sys/inttypes.h
@@ -188,11 +196,6 @@ copies:		mtree_setup
 		${DESTDIR}/usr/include/machine/pc
 .endif
 .endif
-.if exists(${.CURDIR}/../sys/net/i4b/include/${MACHINE_ARCH})
-	cd ${.CURDIR}/../sys/net/i4b/include/${MACHINE_ARCH}; \
-		${INSTALL} -C -o ${BINOWN} -g ${BINGRP} -m 444 *.h \
-		${DESTDIR}/usr/include/i4b_machine
-.endif
 .for i in ${SHDRS}
 	${LN} -sf ../sys/$i ${DESTDIR}/usr/include/machine/$i
 .endfor
@@ -219,8 +222,6 @@ symlinks:	mtree_setup
 		${DESTDIR}/usr/include/machine
 	cpdup -o ${.CURDIR}/../sys/platform/${MACHINE_PLATFORM}/include \
 		${DESTDIR}/usr/include/machine
-	rm -rf ${DESTDIR}/usr/include/i4b_machine
-	${LN} -s ../../sys/net/i4b/include/${MACHINE_ARCH} ${DESTDIR}/usr/include/i4b_machine
 
 .include <bsd.prog.mk>
 

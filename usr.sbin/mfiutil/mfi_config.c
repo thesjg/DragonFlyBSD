@@ -26,7 +26,7 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $FreeBSD: src/usr.sbin/mfiutil/mfi_config.c,v 1.6 2011/06/20 21:28:50 bz Exp $
+ * $FreeBSD: src/usr.sbin/mfiutil/mfi_config.c,v 1.8 2011/11/29 08:16:14 delphij Exp $
  */
 
 #include <sys/param.h>
@@ -52,34 +52,6 @@ static void	dump_config(int fd, struct mfi_config_data *config);
 static int	add_spare(int ac, char **av);
 static int	remove_spare(int ac, char **av);
 
-static long
-dehumanize(const char *value)
-{
-        char    *vtp;
-        long    iv;
-
-        if (value == NULL)
-                return (0);
-        iv = strtoq(value, &vtp, 0);
-        if (vtp == value || (vtp[0] != '\0' && vtp[1] != '\0')) {
-                return (0);
-        }
-        switch (vtp[0]) {
-        case 't': case 'T':
-                iv *= 1024;
-        case 'g': case 'G':
-                iv *= 1024;
-        case 'm': case 'M':
-                iv *= 1024;
-        case 'k': case 'K':
-                iv *= 1024;
-        case '\0':
-                break;
-        default:
-                return (0);
-        }
-        return (iv);
-}
 int
 mfi_config_read(int fd, struct mfi_config_data **configp)
 {
@@ -348,6 +320,7 @@ parse_array(int fd, int raid_type, char *array_str, struct array_info *info)
 		error = mfi_lookup_drive(fd, cp, &device_id);
 		if (error) {
 			free(info->drives);
+			info->drives = NULL;
 			return (error);
 		}
 
@@ -355,12 +328,14 @@ parse_array(int fd, int raid_type, char *array_str, struct array_info *info)
 			error = errno;
 			warn("Failed to fetch drive info for drive %s", cp);
 			free(info->drives);
+			info->drives = NULL;
 			return (error);
 		}
 
 		if (pinfo->fw_state != MFI_PD_STATE_UNCONFIGURED_GOOD) {
 			warnx("Drive %u is not available", device_id);
 			free(info->drives);
+			info->drives = NULL;
 			return (EINVAL);
 		}
 	}
@@ -541,7 +516,7 @@ create_volume(int ac, char **av)
 	int error, fd, i, raid_type;
 	int narrays, nvolumes, arrays_per_volume;
 	struct array_info *arrays;
-	long stripe_size;
+	int64_t stripe_size;
 #ifdef DEBUG
 	int dump;
 #endif
@@ -617,9 +592,15 @@ create_volume(int ac, char **av)
 			break;
 #endif
 		case 's':
-			stripe_size = dehumanize(optarg);
-			if ((stripe_size < 512) || (!powerof2(stripe_size)))
+			error = dehumanize_number(optarg, &stripe_size);
+			if (error != 0) {
+				warnx("Illegal stripe size");
+				goto error;
+			}
+			if ((stripe_size < 512) || (!powerof2(stripe_size))) {
+				warnx("Illegal stripe size, using 64K");
 				stripe_size = 64 * 1024;
+			}
 			break;
 		case 'v':
 			verbose = 1;
@@ -817,9 +798,11 @@ error:
 	free(config);
 	free(state.volumes);
 	free(state.arrays);
-	for (i = 0; i < narrays; i++)
-		free(arrays[i].drives);
-	free(arrays);
+	if (arrays != NULL) {
+		for (i = 0; i < narrays; i++)
+			free(arrays[i].drives);
+		free(arrays);
+	}
 	close(fd);
 
 	return (error);
@@ -1237,7 +1220,7 @@ dump(int ac, char **av)
 	}
 
 	/* Get the stashed copy of the last dcmd from the driver. */
-	snprintf(buf, sizeof(buf), "dev.mfi.%d.debug_command", mfi_unit);
+	snprintf(buf, sizeof(buf), "hw.mfi%d.debug_command", mfi_unit);
 	if (sysctlbyname(buf, NULL, &len, NULL, 0) < 0) {
 		error = errno;
 		warn("Failed to read debug command");

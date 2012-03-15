@@ -605,7 +605,7 @@ generate_histogram(int fd, const char *filesystem,
 	}
 
 	/*
-	 * Reduce to SplitupOpt (default 100MB) chunks.  This code may
+	 * Reduce to SplitupOpt (default 4GB) chunks.  This code may
 	 * use up to two additional elements.  Do the array in-place.
 	 *
 	 * Inefficient degenerate cases can occur if we do not accumulate
@@ -1010,7 +1010,7 @@ hammer_cmd_mirror_copy(char **av, int ac, int streaming)
 	pid_t pid1;
 	pid_t pid2;
 	int fds[2];
-	const char *xav[16];
+	const char *xav[32];
 	char tbuf[16];
 	char *ptr;
 	int xac;
@@ -1070,6 +1070,10 @@ again:
 				snprintf(tbuf, sizeof(tbuf), "%d", TimeoutOpt);
 				xav[xac++] = "-t";
 				xav[xac++] = tbuf;
+			}
+			if (SplitupOptStr) {
+				xav[xac++] = "-S";
+				xav[xac++] = SplitupOptStr;
 			}
 			if (streaming)
 				xav[xac++] = "mirror-read-stream";

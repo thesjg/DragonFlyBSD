@@ -249,12 +249,12 @@ mdstrategy_malloc(struct dev_strategy_args *ap)
 					secp = *secpp;
 					secval = 0;
 				} else {
-					secp = 0;
+					secp = NULL;
 					secval = (u_int)(uintptr_t)*secpp;
 				}
 			} else {
-				secpp = 0;
-				secp = 0;
+				secpp = NULL;
+				secp = NULL;
 				secval = 0;
 			}
 			if (md_debug > 2)
@@ -265,7 +265,7 @@ mdstrategy_malloc(struct dev_strategy_args *ap)
 				if (secpp) {
 					if (secp)
 						kfree(secp, M_MDSECT);
-					*secpp = 0;
+					*secpp = NULL;
 				}
 				break;
 			case BUF_CMD_READ:
@@ -359,9 +359,7 @@ mdstrategy_preload(struct dev_strategy_args *ap)
 	sc->busy++;
 	
 	while (1) {
-		bio = bioq_first(&sc->bio_queue);
-		if (bio)
-			bioq_remove(&sc->bio_queue, bio);
+		bio = bioq_takefirst(&sc->bio_queue);
 		crit_exit();
 		if (bio == NULL)
 			break;

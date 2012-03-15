@@ -173,8 +173,8 @@ MALLOC_DEFINE(M_SYSMSG, "sysmsg", "sysmsg structure");
 extern int max_sysmsg;
 
 /*
- * Passively intercepts the thread switch function to increase the thread
- * priority from a user priority to a kernel priority, reducing
+ * Passively intercepts the thread switch function to increase
+ * the thread priority from a user priority to a kernel priority, reducing
  * syscall and trap overhead for the case where no switch occurs.
  *
  * Synchronizes td_ucred with p_ucred.  This is used by system calls,
@@ -343,16 +343,17 @@ userexit(struct lwp *lp)
 #define	KTR_KERNENTRY	KTR_ALL
 #endif
 KTR_INFO_MASTER(kernentry);
-KTR_INFO(KTR_KERNENTRY, kernentry, trap, 0, "pid=%d, tid=%d, trapno=%d, eva=%p",
-	 sizeof(int) + sizeof(int) + sizeof(int) + sizeof(vm_offset_t));
-KTR_INFO(KTR_KERNENTRY, kernentry, trap_ret, 0, "pid=%d, tid=%d",
-	 sizeof(int) + sizeof(int));
-KTR_INFO(KTR_KERNENTRY, kernentry, syscall, 0, "pid=%d, tid=%d, call=%d",
-	 sizeof(int) + sizeof(int) + sizeof(int));
-KTR_INFO(KTR_KERNENTRY, kernentry, syscall_ret, 0, "pid=%d, tid=%d, err=%d",
-	 sizeof(int) + sizeof(int) + sizeof(int));
-KTR_INFO(KTR_KERNENTRY, kernentry, fork_ret, 0, "pid=%d, tid=%d",
-	 sizeof(int) + sizeof(int));
+KTR_INFO(KTR_KERNENTRY, kernentry, trap, 0,
+	 "TRAP(pid %hd, tid %hd, trapno %ld, eva %lu)",
+	 pid_t pid, lwpid_t tid,  register_t trapno, vm_offset_t eva);
+KTR_INFO(KTR_KERNENTRY, kernentry, trap_ret, 0, "TRAP_RET(pid %hd, tid %hd)",
+	 pid_t pid, lwpid_t tid);
+KTR_INFO(KTR_KERNENTRY, kernentry, syscall, 0, "SYSC(pid %hd, tid %hd, nr %ld)",
+	 pid_t pid, lwpid_t tid,  register_t trapno);
+KTR_INFO(KTR_KERNENTRY, kernentry, syscall_ret, 0, "SYSRET(pid %hd, tid %hd, err %d)",
+	 pid_t pid, lwpid_t tid,  int err);
+KTR_INFO(KTR_KERNENTRY, kernentry, fork_ret, 0, "FORKRET(pid %hd, tid %hd)",
+	 pid_t pid, lwpid_t tid);
 
 /*
  * Exception, fault, and trap interface to the kernel.
@@ -435,14 +436,15 @@ user_trap(struct trapframe *frame)
 
 	switch (type) {
 	case T_PRIVINFLT:	/* privileged instruction fault */
-		ucode = type;
 		i = SIGILL;
+		ucode = ILL_PRVOPC;
 		break;
 
 	case T_BPTFLT:		/* bpt instruction fault */
 	case T_TRCTRAP:		/* trace trap */
 		frame->tf_rflags &= ~PSL_T;
 		i = SIGTRAP;
+		ucode = (type == T_TRCTRAP ? TRAP_TRACE : TRAP_BRKPT);
 		break;
 
 	case T_ARITHTRAP:	/* arithmetic trap */
@@ -479,8 +481,8 @@ user_trap(struct trapframe *frame)
 	case T_TSSFLT:		/* invalid TSS fault */
 	case T_DOUBLEFLT:	/* double fault */
 	default:
-		ucode = code + BUS_SEGM_FAULT ;
 		i = SIGBUS;
+		ucode = code + BUS_SEGM_FAULT ;
 		break;
 
 	case T_PAGEFLT:		/* page fault */
@@ -489,7 +491,13 @@ user_trap(struct trapframe *frame)
 		if (i == -1 || i == 0)
 			goto out;
 
-		ucode = T_PAGEFLT;
+
+		if (i == SIGSEGV)
+			ucode = SEGV_MAPERR;
+		else {
+			i = SIGSEGV;
+			ucode = SEGV_ACCERR;
+		}
 		break;
 
 	case T_DIVIDE:		/* integer divide fault */
@@ -509,7 +517,7 @@ user_trap(struct trapframe *frame)
 			 */
 			if (ddb_on_nmi) {
 				kprintf ("NMI ... going to debugger\n");
-				kdb_trap (type, 0, frame);
+				kdb_trap(type, 0, frame);
 			}
 #endif /* DDB */
 			goto out2;
@@ -546,6 +554,7 @@ user_trap(struct trapframe *frame)
 			npxdna(frame);
 			break;
 		}
+
 		/*
 		 * The kernel may have switched out the FP unit's
 		 * state, causing the user process to take a fault
@@ -903,8 +912,8 @@ trap_pfault(struct trapframe *frame, int usermode, vm_offset_t eva)
 			fault_flags |= VM_FAULT_DIRTY;
 		else
 			fault_flags |= VM_FAULT_NORMAL;
-
 		rv = vm_fault(map, va, ftype, fault_flags);
+
 		PRELE(lp->lwp_proc);
 	} else {
 		/*
@@ -1143,7 +1152,7 @@ syscall2(struct trapframe *frame)
 	mycpu->gd_cnt.v_syscall++;
 
 	KTR_LOG(kernentry_syscall, lp->lwp_proc->p_pid, lp->lwp_tid,
-		frame->tf_eax);
+		frame->tf_rax);
 
 	userenter(td, p);	/* lazy raise our priority */
 

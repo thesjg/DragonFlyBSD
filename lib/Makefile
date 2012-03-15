@@ -1,6 +1,5 @@
 #	@(#)Makefile	8.1 (Berkeley) 6/4/93
 # $FreeBSD: src/lib/Makefile,v 1.107.2.16 2002/10/10 19:24:35 kbyanc Exp $
-# $DragonFly: src/lib/Makefile,v 1.35 2008/09/30 12:20:29 hasso Exp $
 
 # To satisfy shared library or ELF linkage when only the libraries being
 # built are visible:
@@ -46,6 +45,7 @@ SUBDIR=	${SUBDIR_ORDERED} \
 	libdevattr \
 	libdevinfo \
 	libdevstat \
+	libdl \
 	libdm \
 	libedit \
 	libevtr \
@@ -66,12 +66,14 @@ SUBDIR=	${SUBDIR_ORDERED} \
 	libmagic \
 	${_libmilter} \
 	libncp \
-	libnetgraph \
+	${_libnetgraph} \
 	libopie \
 	libpam \
 	libpcap \
 	libposix1e \
 	libprop \
+	libpuffs \
+	librefuse \
 	librpcsvc \
 	librt \
 	libsctp \
@@ -105,6 +107,12 @@ _libmilter=	libmilter
 _libsm=		libsm
 _libsmdb=	libsmdb
 _libsmutil=	libsmutil
+.endif
+
+.if defined(WANT_NETGRAPH7) 
+_libnetgraph=	libnetgraph7
+.else
+_libnetgraph=	libnetgraph
 .endif
 
 .include <bsd.subdir.mk>

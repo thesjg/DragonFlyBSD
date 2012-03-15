@@ -575,6 +575,30 @@ sched_ithd_hard(int intr)
 	sched_ithd_intern(&intr_info_ary[mycpuid][intr]);
 }
 
+#ifdef _KERNEL_VIRTUAL
+
+void
+sched_ithd_hard_virtual(int intr)
+{
+	KKASSERT(intr >= 0 && intr < MAX_HARDINTS);
+	sched_ithd_intern(&intr_info_ary[0][intr]);
+}
+
+void *
+register_int_virtual(int intr, inthand2_t *handler, void *arg, const char *name,
+    struct lwkt_serialize *serializer, int intr_flags)
+{
+	return register_int(intr, handler, arg, name, serializer, intr_flags, 0);
+}
+
+void
+unregister_int_virtual(void *id)
+{
+	unregister_int(id, 0);
+}
+
+#endif	/* _KERN_VIRTUAL */
+
 static void
 report_stray_interrupt(struct intr_info *info, const char *func)
 {
@@ -1007,12 +1031,6 @@ emergency_intr_timer_callback(systimer_t info, int in_ipi __unused,
 {
     if (emergency_intr_enable)
 	lwkt_schedule(info->data);
-}
-
-int
-ithread_cpuid(int intr)
-{
-	return machintr_intr_cpuid(intr);
 }
 
 /* 

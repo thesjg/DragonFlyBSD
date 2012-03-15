@@ -33,7 +33,6 @@
  * @(#) Copyright (c) 1980, 1986, 1991, 1993 The Regents of the University of California.  All rights reserved.
  * @(#)vmstat.c	8.1 (Berkeley) 6/6/93
  * $FreeBSD: src/usr.bin/vmstat/vmstat.c,v 1.38.2.4 2001/07/31 19:52:41 tmm Exp $
- * $DragonFly: src/usr.bin/vmstat/vmstat.c,v 1.23 2008/02/19 18:19:15 thomas Exp $
  */
 
 #include <sys/user.h>
@@ -229,7 +228,7 @@ main(int argc, char **argv)
 		setgid(getgid());
 
 	kd = kvm_openfiles(nlistf, memf, NULL, O_RDONLY, errbuf);
-	if (kd == 0) 
+	if (kd == NULL)
 		errx(1, "kvm_openfiles: %s", errbuf);
 
 	if ((c = kvm_nlist(kd, namelist)) != 0) {
@@ -763,11 +762,19 @@ dointr(void)
 		if ((named = strncmp(intrname[i], "irq", 3)) != 0 ||
 		    intrcnt[i] > 0) {
 			infop = intrname[i];
-			if (verbose && named) {
-				snprintf(irqinfo, sizeof(irqinfo),
-					 "irq%-3zd %3zd: %s",
-					 i % MAX_INTS, i / MAX_INTS,
-					 intrname[i]);
+			if (verbose) {
+				ssize_t irq, cpu;
+
+				irq = i % MAX_INTS;
+				cpu = i / MAX_INTS;
+				if (named) {
+					snprintf(irqinfo, sizeof(irqinfo),
+						 "irq%-3zd %3zd: %s",
+						 irq, cpu, intrname[i]);
+				} else {
+					snprintf(irqinfo, sizeof(irqinfo),
+						 "irq%-3zd %3zd: ", irq, cpu);
+				}
 				infop = irqinfo;
 			}
 			printf("%-*.*s %11lu %10lu\n", 
@@ -827,7 +834,7 @@ domem(void)
 	for (i = 0, ks = &kmemstats[0]; i < nkms; i++, ks++) {
 		if (ks->ks_calls == 0)
 			continue;
-		printf("%19s%7ld%7ldK%7ldK%11zdK%10jd%5u%6u",
+		printf("%19s%7ld%7ldK%7ldK%11zuK%10jd%5u%6u",
 		    ks->ks_shortdesc,
 		    cpuagg(ks->ks_inuse), (cpuagg(ks->ks_memuse) + 1023) / 1024,
 		    (ks->ks_maxused + 1023) / 1024,

@@ -44,7 +44,6 @@
 #include <sys/disk.h>
 #include <sys/disklabel.h>
 #include <sys/dtype.h>
-#include <sys/ioccom.h>
 #include <sys/malloc.h>
 #include <sys/module.h>
 #include <sys/sysctl.h>
@@ -617,7 +616,7 @@ dmsetdiskinfo(struct disk *disk, dm_table_head_t *head)
 	/* this is set by disk_setdiskinfo */
 	info.d_media_size = dmp_size * DEV_BSIZE;
 #endif
-	info.d_dsflags = DSO_MBRQUIET | DSO_DEVICEMAPPER;
+	info.d_dsflags = DSO_MBRQUIET | DSO_DEVICEMAPPER | DSO_RAWPSIZE;
 
 	info.d_secpertrack = 32;
 	info.d_nheads = 64;

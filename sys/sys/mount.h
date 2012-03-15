@@ -32,7 +32,6 @@
  *
  *	@(#)mount.h	8.21 (Berkeley) 5/20/95
  * $FreeBSD: src/sys/sys/mount.h,v 1.89.2.7 2003/04/04 20:35:57 tegge Exp $
- * $DragonFly: src/sys/sys/mount.h,v 1.47 2008/09/17 21:44:19 dillon Exp $
  */
 
 #ifndef _SYS_MOUNT_H_
@@ -209,6 +208,7 @@ struct mount {
 	struct vfsconf	*mnt_vfc;		/* configuration info */
 	long		mnt_namecache_gen;	/* ++ to clear negative hits */
 	struct vnode	*mnt_syncer;		/* syncer vnode */
+	struct syncer_ctx *mnt_syncer_ctx;	/* syncer process context */
 	struct vnodelst	mnt_nvnodelist;		/* list of vnodes this mount */
 	struct lock	mnt_lock;		/* mount structure lock */
 	int		mnt_flag;		/* flags shared with user */
@@ -342,9 +342,12 @@ struct mount {
 #define MNTK_FSMID	0x08000000	/* getattr supports FSMIDs */
 #define MNTK_NOSTKMNT	0x10000000	/* no stacked mount point allowed */
 #define MNTK_NOMSYNC	0x20000000	/* used by tmpfs */
+#define MNTK_THR_SYNC	0x40000000	/* fs sync thread requested */
+#define MNTK_ST_MPSAFE	0x80000000	/* (mfs) vfs_start is MPSAFE */
 
 #define MNTK_ALL_MPSAFE	(MNTK_MPSAFE | MNTK_RD_MPSAFE | MNTK_WR_MPSAFE | \
-			 MNTK_GA_MPSAFE | MNTK_IN_MPSAFE | MNTK_SG_MPSAFE)
+			 MNTK_GA_MPSAFE | MNTK_IN_MPSAFE | MNTK_SG_MPSAFE | \
+			 MNTK_ST_MPSAFE)
 
 /*
  * mountlist_*() defines
@@ -511,11 +514,9 @@ TAILQ_HEAD(mntlist, mount);	/* struct mntlist */
 /*
  * Operations supported on mounted file system.
  */
-#ifdef __STDC__
 struct nlookupdata;
 struct nlookupdata;
 struct mbuf;
-#endif
 
 typedef int vfs_mount_t(struct mount *mp, char *path, caddr_t data,
 				    struct ucred *cred);
@@ -545,6 +546,8 @@ typedef int vfs_acinit_t(struct mount *mp);
 typedef int vfs_acdone_t(struct mount *mp);
 typedef void vfs_account_t(struct mount *mp,
 			uid_t uid, gid_t gid, int64_t delta);
+typedef void vfs_ncpgen_set_t(struct mount *mp, struct namecache *ncp);
+typedef int vfs_ncpgen_test_t(struct mount *mp, struct namecache *ncp);
 
 int vfs_mount(struct mount *mp, char *path, caddr_t data, struct ucred *cred);
 int vfs_start(struct mount *mp, int flags);
@@ -588,6 +591,8 @@ struct vfsops {
 	vfs_acinit_t	*vfs_acinit;
 	vfs_acdone_t	*vfs_acdone;
 	vfs_account_t	*vfs_account;
+	vfs_ncpgen_set_t	*vfs_ncpgen_set;
+	vfs_ncpgen_test_t	*vfs_ncpgen_test;
 };
 
 #define VFS_MOUNT(MP, PATH, DATA, CRED)		\
@@ -619,6 +624,10 @@ struct vfsops {
 #define VFS_ACCOUNT(MP, U, G, D) \
 	if (MP->mnt_op->vfs_account != NULL) \
 		MP->mnt_op->vfs_account(MP, U, G, D);
+#define VFS_NCPGEN_SET(MP, NCP) \
+	MP->mnt_op->vfs_ncpgen_set(MP, NCP)
+#define VFS_NCPGEN_TEST(MP, NCP) \
+	MP->mnt_op->vfs_ncpgen_test(MP, NCP)
 
 #endif
 
@@ -727,6 +736,8 @@ vfs_acinit_t	vfs_stdac_init;
 vfs_acdone_t	vfs_stdac_done;
 vfs_account_t	vfs_stdaccount;
 vfs_account_t	vfs_noaccount;
+vfs_ncpgen_set_t	vfs_stdncpgen_set;
+vfs_ncpgen_test_t	vfs_stdncpgen_test;
 
 struct vop_access_args;
 int vop_helper_access(struct vop_access_args *ap, uid_t ino_uid, gid_t ino_gid,
@@ -751,6 +762,7 @@ void	mountlist_insert(struct mount *, int);
 int	mountlist_interlock(int (*callback)(struct mount *), struct mount *);
 struct mount *mountlist_boot_getfirst(void);
 void	mountlist_remove(struct mount *mp);
+int	mountlist_exists(struct mount *mp);
 int	mountlist_scan(int (*callback)(struct mount *, void *), void *, int);
 struct mount *mount_get_by_nc(struct namecache *ncp);
 #else /* !_KERNEL */

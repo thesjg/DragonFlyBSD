@@ -108,7 +108,7 @@ isa_alloc_resource(device_t bus, device_t child, int type, int *rid,
 			case SYS_RES_IRQ:
 				if (*rid >= ISA_NIRQ)
 					return 0;
-				cpuid = machintr_intr_cpuid(start);
+				cpuid = machintr_legacy_intr_cpuid(start);
 				break;
 			case SYS_RES_DRQ:
 				if (*rid >= ISA_NDRQ)
@@ -156,7 +156,7 @@ isa_setup_intr(device_t bus, device_t child, struct resource *r, int flags,
 	       void **cookiep, lwkt_serialize_t serializer)
 {
 	return (BUS_SETUP_INTR(device_get_parent(bus), child, r, flags,
-			       ihand, arg, cookiep, serializer));
+			       ihand, arg, cookiep, serializer, NULL));
 }
 
 int

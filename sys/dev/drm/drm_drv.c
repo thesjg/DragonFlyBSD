@@ -119,7 +119,7 @@ static drm_ioctl_desc_t		  drm_ioctls[256] = {
 };
 
 static struct dev_ops drm_cdevsw = {
-	{ "drm", 145, D_TRACKCLOSE },
+	{ "drm", 0, D_TRACKCLOSE },
 	.d_open =       drm_open,
 	.d_close =	drm_close,
 	.d_read =       drm_read,
@@ -503,7 +503,7 @@ static void drm_unload(struct drm_device *dev)
 	drm_ctxbitmap_cleanup(dev);
 
 	if (dev->agp && dev->agp->mtrr) {
-		int __unused retcode;
+		int retcode;
 
 		retcode = drm_mtrr_del(0, dev->agp->info.ai_aperture_base,
 		    dev->agp->info.ai_aperture_size, DRM_MTRR_WC);

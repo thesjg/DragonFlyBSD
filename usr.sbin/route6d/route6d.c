@@ -1,5 +1,4 @@
 /*	$FreeBSD: src/usr.sbin/route6d/route6d.c,v 1.2.2.5 2001/07/03 11:02:09 ume Exp $	*/
-/*	$DragonFly: src/usr.sbin/route6d/route6d.c,v 1.8 2005/12/05 02:40:28 swildner Exp $	*/
 /*	$KAME: route6d.c,v 1.64 2001/05/08 04:36:37 itojun Exp $	*/
 
 /*
@@ -42,11 +41,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
-#ifdef __STDC__
 #include <stdarg.h>
-#else
-#include <varargs.h>
-#endif
 #include <syslog.h>
 #include <stddef.h>
 #include <errno.h>
@@ -165,7 +160,7 @@ struct	riprt {
 	int	rrt_index;		/* ifindex from which this route got */
 };
 
-struct	riprt *riprt = 0;
+struct	riprt *riprt = NULL;
 
 int	dflag = 0;	/* debug flag */
 int	qflag = 0;	/* quiet flag */
@@ -539,7 +534,7 @@ ripalarm(void)
 	time_t	t_lifetime, t_holddown;
 
 	/* age the RIP routes */
-	rrt_prev = 0;
+	rrt_prev = NULL;
 	t_lifetime = time(NULL) - RIP_LIFETIME;
 	t_holddown = t_lifetime - RIP_HOLDDOWN;
 	for (rrt = riprt; rrt; rrt = rrt_next) {
@@ -1381,8 +1376,8 @@ ifconfig(void)
 			ifc = ifcp;
 			nifc++;
 			ifcp->ifc_name = allocopy(ifa->ifa_name);
-			ifcp->ifc_addr = 0;
-			ifcp->ifc_filter = 0;
+			ifcp->ifc_addr = NULL;
+			ifcp->ifc_filter = NULL;
 			ifcp->ifc_flags = ifa->ifa_flags;
 			trace(1, "newif %s <%s>\n", ifcp->ifc_name,
 				ifflags(ifcp->ifc_flags));
@@ -2445,7 +2440,7 @@ rt_entry(struct rt_msghdr *rtm, int again)
 	struct	netinfo6 *np;
 	int	s;
 
-	sin6_dst = sin6_gw = sin6_mask = sin6_genmask = sin6_ifp = 0;
+	sin6_dst = sin6_gw = sin6_mask = sin6_genmask = sin6_ifp = NULL;
 	if ((rtm->rtm_flags & RTF_UP) == 0 || rtm->rtm_flags &
 		(RTF_CLONING|RTF_XRESOLVE|RTF_LLINFO|RTF_BLACKHOLE)) {
 		return;		/* not interested in the link route */
@@ -3202,7 +3197,7 @@ hms(void)
 	struct	tm *tm;
 
 	t = time(NULL);
-	if ((tm = localtime(&t)) == 0) {
+	if ((tm = localtime(&t)) == NULL) {
 		fatal("localtime");
 		/*NOTREACHED*/
 	}
@@ -3241,11 +3236,7 @@ fatal(const char *fmt, ...)
 	va_list ap;
 	char buf[1024];
 
-#ifdef __STDC__
 	va_start(ap, fmt);
-#else
-	va_start(ap);
-#endif
 	vsnprintf(buf, sizeof(buf), fmt, ap);
 	perror(buf);
 	syslog(LOG_ERR, "%s: %s", buf, strerror(errno));
@@ -3258,11 +3249,7 @@ tracet(int level, const char *fmt, ...)
 {
 	va_list ap;
 
-#ifdef __STDC__
 	va_start(ap, fmt);
-#else
-	va_start(ap);
-#endif
 	if (level <= dflag) {
 		fprintf(stderr, "%s: ", hms());
 		vfprintf(stderr, fmt, ap);
@@ -3281,11 +3268,7 @@ trace(int level, const char *fmt, ...)
 {
 	va_list ap;
 
-#ifdef __STDC__
 	va_start(ap, fmt);
-#else
-	va_start(ap);
-#endif
 	if (level <= dflag)
 		vfprintf(stderr, fmt, ap);
 	if (dflag) {

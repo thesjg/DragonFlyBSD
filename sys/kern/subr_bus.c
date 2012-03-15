@@ -2207,7 +2207,7 @@ resource_list_alloc(struct resource_list *rl,
 		    u_long start, u_long end,
 		    u_long count, u_int flags, int cpuid)
 {
-	struct resource_list_entry *rle = 0;
+	struct resource_list_entry *rle = NULL;
 	int passthrough = (device_get_parent(child) != bus);
 	int isdefault = (start == 0UL && end == ~0UL);
 
@@ -2253,7 +2253,7 @@ resource_list_release(struct resource_list *rl,
 		      device_t bus, device_t child,
 		      int type, int rid, struct resource *res)
 {
-	struct resource_list_entry *rle = 0;
+	struct resource_list_entry *rle = NULL;
 	int passthrough = (device_get_parent(child) != bus);
 	int error;
 
@@ -2535,16 +2535,17 @@ bus_generic_driver_added(device_t dev, driver_t *driver)
 }
 
 int
-bus_generic_setup_intr(device_t dev, device_t child, struct resource *irq, 
-		       int flags, driver_intr_t *intr, void *arg,
-		       void **cookiep, lwkt_serialize_t serializer)
+bus_generic_setup_intr(device_t dev, device_t child, struct resource *irq,
+    int flags, driver_intr_t *intr, void *arg, void **cookiep,
+    lwkt_serialize_t serializer, const char *desc)
 {
 	/* Propagate up the bus hierarchy until someone handles it. */
-	if (dev->parent)
-		return(BUS_SETUP_INTR(dev->parent, child, irq, flags,
-				      intr, arg, cookiep, serializer));
-	else
-		return(EINVAL);
+	if (dev->parent) {
+		return BUS_SETUP_INTR(dev->parent, child, irq, flags,
+		    intr, arg, cookiep, serializer, desc);
+	} else {
+		return EINVAL;
+	}
 }
 
 int
@@ -2807,7 +2808,7 @@ bus_alloc_legacy_irq_resource(device_t dev, int *rid, u_long irq, u_int flags)
 	if (dev->parent == 0)
 		return(0);
 	return BUS_ALLOC_RESOURCE(dev->parent, dev, SYS_RES_IRQ, rid,
-	    irq, irq, 1, flags, machintr_intr_cpuid(irq));
+	    irq, irq, 1, flags, machintr_legacy_intr_cpuid(irq));
 }
 
 int
@@ -2835,14 +2836,23 @@ bus_release_resource(device_t dev, int type, int rid, struct resource *r)
 }
 
 int
-bus_setup_intr(device_t dev, struct resource *r, int flags,
-	       driver_intr_t handler, void *arg,
-	       void **cookiep, lwkt_serialize_t serializer)
+bus_setup_intr_descr(device_t dev, struct resource *r, int flags,
+    driver_intr_t handler, void *arg, void **cookiep,
+    lwkt_serialize_t serializer, const char *desc)
 {
 	if (dev->parent == 0)
-		return(EINVAL);
-	return(BUS_SETUP_INTR(dev->parent, dev, r, flags, handler, arg,
-			      cookiep, serializer));
+		return EINVAL;
+	return BUS_SETUP_INTR(dev->parent, dev, r, flags, handler, arg,
+	    cookiep, serializer, desc);
+}
+
+int
+bus_setup_intr(device_t dev, struct resource *r, int flags,
+    driver_intr_t handler, void *arg, void **cookiep,
+    lwkt_serialize_t serializer)
+{
+	return bus_setup_intr_descr(dev, r, flags, handler, arg, cookiep,
+	    serializer, NULL);
 }
 
 int
@@ -2957,7 +2967,7 @@ root_print_child(device_t dev, device_t child)
 
 static int
 root_setup_intr(device_t dev, device_t child, driver_intr_t *intr, void *arg,
-		void **cookiep, lwkt_serialize_t serializer)
+		void **cookiep, lwkt_serialize_t serializer, const char *desc)
 {
 	/*
 	 * If an interrupt mapping gets to here something bad has happened.

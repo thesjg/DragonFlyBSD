@@ -32,11 +32,11 @@
  *
  *	@(#)raw_ip.c	8.7 (Berkeley) 5/15/95
  * $FreeBSD: src/sys/netinet/raw_ip.c,v 1.64.2.16 2003/08/24 08:24:38 hsu Exp $
- * $DragonFly: src/sys/netinet/raw_ip.c,v 1.33 2008/10/28 03:07:28 sephe Exp $
  */
 
 #include "opt_inet6.h"
 #include "opt_ipsec.h"
+#include "opt_carp.h"
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -58,6 +58,9 @@
 #include <machine/stdarg.h>
 
 #include <net/if.h>
+#ifdef CARP
+#include <net/if_types.h>
+#endif
 #include <net/route.h>
 
 #define _IP_VHL
@@ -210,7 +213,7 @@ rip_input(struct mbuf **mp, int *offp, int proto)
 					sorwakeup(last->inp_socket);
 				}
 				lwkt_reltoken(&last->inp_socket->so_rcv.ssb_token);
-				opts = 0;
+				opts = NULL;
 			}
 		}
 		last = inp;
@@ -524,6 +527,16 @@ rip_ctlinput(netmsg_t msg)
 		flags = RTF_UP;
 		ifp = ia->ia_ifa.ifa_ifp;
 
+#ifdef CARP
+		/*
+		 * Don't add prefix routes for CARP interfaces.
+		 * Prefix routes creation is handled by CARP
+		 * interfaces themselves.
+		 */
+		if (ifp->if_type == IFT_CARP)
+			goto done;
+#endif
+
 		if ((ifp->if_flags & IFF_LOOPBACK) ||
 		    (ifp->if_flags & IFF_POINTOPOINT))
 			flags |= RTF_HOST;
@@ -586,7 +599,7 @@ rip_detach(netmsg_t msg)
 	struct inpcb *inp;
 
 	inp = so->so_pcb;
-	if (inp == 0)
+	if (inp == NULL)
 		panic("rip_detach");
 	if (so == ip_mrouter && ip_mrouter_done)
 		ip_mrouter_done();

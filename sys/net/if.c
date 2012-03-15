@@ -175,32 +175,32 @@ struct ifnet		**ifindex2ifnet = NULL;
 static struct thread	ifnet_threads[MAXCPU];
 
 #define IFQ_KTR_STRING		"ifq=%p"
-#define IFQ_KTR_ARG_SIZE	(sizeof(void *))
+#define IFQ_KTR_ARGS	struct ifaltq *ifq
 #ifndef KTR_IFQ
 #define KTR_IFQ			KTR_ALL
 #endif
 KTR_INFO_MASTER(ifq);
-KTR_INFO(KTR_IFQ, ifq, enqueue, 0, IFQ_KTR_STRING, IFQ_KTR_ARG_SIZE);
-KTR_INFO(KTR_IFQ, ifq, dequeue, 1, IFQ_KTR_STRING, IFQ_KTR_ARG_SIZE);
+KTR_INFO(KTR_IFQ, ifq, enqueue, 0, IFQ_KTR_STRING, IFQ_KTR_ARGS);
+KTR_INFO(KTR_IFQ, ifq, dequeue, 1, IFQ_KTR_STRING, IFQ_KTR_ARGS);
 #define logifq(name, arg)	KTR_LOG(ifq_ ## name, arg)
 
 #define IF_START_KTR_STRING	"ifp=%p"
-#define IF_START_KTR_ARG_SIZE	(sizeof(void *))
+#define IF_START_KTR_ARGS	struct ifnet *ifp
 #ifndef KTR_IF_START
 #define KTR_IF_START		KTR_ALL
 #endif
 KTR_INFO_MASTER(if_start);
 KTR_INFO(KTR_IF_START, if_start, run, 0,
-	 IF_START_KTR_STRING, IF_START_KTR_ARG_SIZE);
+	 IF_START_KTR_STRING, IF_START_KTR_ARGS);
 KTR_INFO(KTR_IF_START, if_start, sched, 1,
-	 IF_START_KTR_STRING, IF_START_KTR_ARG_SIZE);
+	 IF_START_KTR_STRING, IF_START_KTR_ARGS);
 KTR_INFO(KTR_IF_START, if_start, avoid, 2,
-	 IF_START_KTR_STRING, IF_START_KTR_ARG_SIZE);
+	 IF_START_KTR_STRING, IF_START_KTR_ARGS);
 KTR_INFO(KTR_IF_START, if_start, contend_sched, 3,
-	 IF_START_KTR_STRING, IF_START_KTR_ARG_SIZE);
+	 IF_START_KTR_STRING, IF_START_KTR_ARGS);
 #ifdef SMP
 KTR_INFO(KTR_IF_START, if_start, chase_sched, 4,
-	 IF_START_KTR_STRING, IF_START_KTR_ARG_SIZE);
+	 IF_START_KTR_STRING, IF_START_KTR_ARGS);
 #endif
 #define logifstart(name, arg)	KTR_LOG(if_start_ ## name, arg)
 
@@ -1196,7 +1196,7 @@ next:				continue;
 				 * before continuing to search
 				 * for an even better one.
 				 */
-				if (ifa_maybe == 0 ||
+				if (ifa_maybe == NULL ||
 				    rn_refines((char *)ifa->ifa_netmask,
 					       (char *)ifa_maybe->ifa_netmask))
 					ifa_maybe = ifa;
@@ -1216,7 +1216,7 @@ ifaof_ifpforaddr(struct sockaddr *addr, struct ifnet *ifp)
 	struct ifaddr_container *ifac;
 	char *cp, *cp2, *cp3;
 	char *cplim;
-	struct ifaddr *ifa_maybe = 0;
+	struct ifaddr *ifa_maybe = NULL;
 	u_int af = addr->sa_family;
 
 	if (af >= AF_MAX)
@@ -1226,7 +1226,7 @@ ifaof_ifpforaddr(struct sockaddr *addr, struct ifnet *ifp)
 
 		if (ifa->ifa_addr->sa_family != af)
 			continue;
-		if (ifa_maybe == 0)
+		if (ifa_maybe == NULL)
 			ifa_maybe = ifa;
 		if (ifa->ifa_netmask == NULL) {
 			if (sa_equal(addr, ifa->ifa_addr) ||
@@ -2094,7 +2094,7 @@ if_addmulti(
 		if (error) 
 			return error;
 	} else {
-		llsa = 0;
+		llsa = NULL;
 	}
 
 	ifma = kmalloc(sizeof *ifma, M_IFMADDR, M_WAITOK);
@@ -2118,7 +2118,7 @@ if_addmulti(
 	if (retifma)
 		*retifma = ifma;
 
-	if (llsa != 0) {
+	if (llsa != NULL) {
 		TAILQ_FOREACH(ifma, &ifp->if_multiaddrs, ifma_link) {
 			if (sa_equal(ifma->ifma_addr, llsa))
 				break;
@@ -2163,7 +2163,7 @@ if_delmulti(struct ifnet *ifp, struct sockaddr *sa)
 	TAILQ_FOREACH(ifma, &ifp->if_multiaddrs, ifma_link)
 		if (sa_equal(sa, ifma->ifma_addr))
 			break;
-	if (ifma == 0)
+	if (ifma == NULL)
 		return ENOENT;
 
 	if (ifma->ifma_refcount > 1) {
@@ -2179,7 +2179,7 @@ if_delmulti(struct ifnet *ifp, struct sockaddr *sa)
 	 * Make sure the interface driver is notified
 	 * in the case of a link layer mcast group being left.
 	 */
-	if (ifma->ifma_addr->sa_family == AF_LINK && sa == 0) {
+	if (ifma->ifma_addr->sa_family == AF_LINK && sa == NULL) {
 		ifnet_serialize_all(ifp);
 		ifp->if_ioctl(ifp, SIOCDELMULTI, 0, NULL);
 		ifnet_deserialize_all(ifp);
@@ -2187,7 +2187,7 @@ if_delmulti(struct ifnet *ifp, struct sockaddr *sa)
 	crit_exit();
 	kfree(ifma->ifma_addr, M_IFMADDR);
 	kfree(ifma, M_IFMADDR);
-	if (sa == 0)
+	if (sa == NULL)
 		return 0;
 
 	/*
@@ -2204,7 +2204,7 @@ if_delmulti(struct ifnet *ifp, struct sockaddr *sa)
 	TAILQ_FOREACH(ifma, &ifp->if_multiaddrs, ifma_link)
 		if (sa_equal(sa, ifma->ifma_addr))
 			break;
-	if (ifma == 0)
+	if (ifma == NULL)
 		return 0;
 
 	if (ifma->ifma_refcount > 1) {
@@ -2298,7 +2298,7 @@ if_setlladdr(struct ifnet *ifp, const u_char *lladdr, int len)
 
 			if (ifa->ifa_addr != NULL &&
 			    ifa->ifa_addr->sa_family == AF_INET)
-				arp_ifinit(ifp, ifa);
+				arp_gratuitous(ifp, ifa);
 		}
 #endif
 	}

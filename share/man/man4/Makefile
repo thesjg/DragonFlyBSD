@@ -33,8 +33,7 @@ MAN=	aac.4 \
 	aps.4 \
 	arcmsr.4 \
 	arp.4 \
-	ata.4 \
-	atapicam.4 \
+	asr.4 \
 	ath.4 \
 	ath_hal.4 \
 	atkbd.4 \
@@ -43,7 +42,6 @@ MAN=	aac.4 \
 	axe.4 \
 	bce.4 \
 	bfe.4 \
-	bfq.4 \
 	bge.4 \
 	bktr.4 \
 	blackhole.4 \
@@ -73,9 +71,12 @@ MAN=	aac.4 \
 	disc.4 \
 	divert.4 \
 	dm.4 \
+	dm_target_striped.4 \
+	dm_target_crypt.4 \
 	dpt.4 \
 	drm.4 \
 	dsched.4 \
+	dsched_bfq.4 \
 	dummynet.4 \
 	ecc.4 \
 	ed.4 \
@@ -166,6 +167,7 @@ MAN=	aac.4 \
 	mxge.4 \
 	my.4 \
 	nata.4 \
+	natapicam.4 \
 	nataraid.4 \
 	natm.4 \
 	ncr.4 \
@@ -227,8 +229,10 @@ MAN=	aac.4 \
 	pt.4 \
 	pty.4 \
 	puc.4 \
+	puffs.4 \
 	ral.4 \
 	random.4 \
+	rdrand.4 \
 	re.4 \
 	rl.4 \
 	rndtest.4 \
@@ -383,6 +387,7 @@ MLINKS=	acpi_thermal.4 acpi_tz.4
 MLINKS+=agp.4 agpgart.4
 MLINKS+=bktr.4 brooktree.4
 MLINKS+=crypto.4 cryptodev.4
+MLINKS+=dm.4 dm_target_linear.4
 MLINKS+=drm.4 i915drm.4 \
 	drm.4 mach64drm.4 \
 	drm.4 mgadrm.4 \

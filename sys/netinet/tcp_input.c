@@ -67,7 +67,6 @@
  * $FreeBSD: src/sys/netinet/tcp_input.c,v 1.107.2.38 2003/05/21 04:46:41 cjc Exp $
  */
 
-#include "opt_ipfw.h"		/* for ipfw_fwd		*/
 #include "opt_inet.h"
 #include "opt_inet6.h"
 #include "opt_ipsec.h"
@@ -537,7 +536,7 @@ tcp_input(struct mbuf **mp, int *offp, int proto)
 	int drop_hdrlen;
 	struct tcpcb *tp = NULL;
 	int thflags;
-	struct socket *so = 0;
+	struct socket *so = NULL;
 	int todrop, acked;
 	boolean_t ourfinisacked, needoutput = FALSE;
 	u_long tiwin;
@@ -2773,7 +2772,7 @@ tcp_pulloutofband(struct socket *so, struct tcphdr *th, struct mbuf *m, int off)
 		}
 		cnt -= m->m_len;
 		m = m->m_next;
-		if (m == 0)
+		if (m == NULL)
 			break;
 	}
 	panic("tcp_pulloutofband");

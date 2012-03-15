@@ -109,7 +109,7 @@ gnode_insert(struct mount *mp, gid_t gid)
 	return gnp;
 }
 
-static int vfs_accounting_enabled = 0;	/* global vfs accounting enable */
+int vfs_accounting_enabled = 0;	/* global vfs accounting enable */
 TUNABLE_INT("vfs.accounting_enabled", &vfs_accounting_enabled);
 SYSCTL_INT(_vfs, OID_AUTO, accounting_enabled, CTLFLAG_RD,
                  &vfs_accounting_enabled, 0, "Enable VFS accounting");
@@ -237,6 +237,7 @@ cmd_set_usage_all(struct mount *mp, prop_array_t args)
 	iter = prop_array_iterator(args);
 	if (iter == NULL) {
 		kprintf("cmd_set_usage_all(): failed to create iterator\n");
+		spin_unlock(&mp->mnt_acct.ac_spin);
 		return 1;
 	}
 	while ((item = prop_object_iterator_next(iter)) != NULL) {

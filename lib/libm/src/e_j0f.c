@@ -12,10 +12,10 @@
  * is preserved.
  * ====================================================
  *
- * $NetBSD: e_j0f.c,v 1.9 2006/03/19 20:42:44 christos Exp $
- * $DragonFly: src/lib/libm/src/e_j0f.c,v 1.3 2007/06/17 00:53:52 pavalos Exp $
+ * $NetBSD: e_j0f.c,v 1.10 2007/08/20 16:01:38 drochner Exp $
  */
 
+#include <sys/_null.h>
 #include <math.h>
 #include "math_private.h"
 
@@ -237,7 +237,7 @@ pzerof(float x)
 	float z,r,s;
 	int32_t ix;
 
-	p = q = 0;
+	p = q = NULL;
 	GET_FLOAT_WORD(ix,x);
 	ix &= 0x7fffffff;
 	if(ix>=0x41000000)     {p = pR8; q= pS8;}
@@ -335,7 +335,7 @@ qzerof(float x)
 	float s,r,z;
 	int32_t ix;
 
-	p = q = 0;
+	p = q = NULL;
 	GET_FLOAT_WORD(ix,x);
 	ix &= 0x7fffffff;
 	if(ix>=0x41000000)     {p = qR8; q= qS8;}

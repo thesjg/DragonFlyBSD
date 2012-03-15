@@ -120,7 +120,8 @@ static void	pccard_child_detached(device_t parent, device_t dev);
 static void	pccard_intr(void *arg);
 static int	pccard_setup_intr(device_t dev, device_t child,
 		    struct resource *irq, int flags, driver_intr_t *intr,
-		    void *arg, void **cookiep, lwkt_serialize_t serializer);
+		    void *arg, void **cookiep, lwkt_serialize_t serializer,
+		    const char *desc);
 static int	pccard_teardown_intr(device_t dev, device_t child,
 		    struct resource *r, void *cookie);
 
@@ -410,7 +411,7 @@ pccard_function_init(struct pccard_function *pf)
 	struct pccard_ivar *devi = PCCARD_IVAR(pf->dev);
 	struct resource_list *rl = &devi->resources;
 	struct resource_list_entry *rle;
-	struct resource *r = 0;
+	struct resource *r = NULL;
 	device_t bus;
 	u_long start, end, len;
 	int i, rid, spaces;
@@ -1106,7 +1107,7 @@ pccard_alloc_resource(device_t dev, device_t child, int type, int *rid,
     u_long start, u_long end, u_long count, u_int flags, int cpuid)
 {
 	struct pccard_ivar *dinfo;
-	struct resource_list_entry *rle = 0;
+	struct resource_list_entry *rle = NULL;
 	int passthrough = (device_get_parent(child) != dev);
 	int isdefault = (start == 0 && end == ~0UL && count == 1);
 	struct resource *r = NULL;
@@ -1157,7 +1158,7 @@ pccard_release_resource(device_t dev, device_t child, int type, int rid,
 {
 	struct pccard_ivar *dinfo;
 	int passthrough = (device_get_parent(child) != dev);
-	struct resource_list_entry *rle = 0;
+	struct resource_list_entry *rle = NULL;
 
 	if (passthrough)
 		return BUS_RELEASE_RESOURCE(device_get_parent(dev), child,
@@ -1233,7 +1234,7 @@ pccard_intr(void *arg)
 static int
 pccard_setup_intr(device_t dev, device_t child, struct resource *irq,
     int flags, driver_intr_t *intr, void *arg,
-    void **cookiep, lwkt_serialize_t serializer)
+    void **cookiep, lwkt_serialize_t serializer, const char *desc)
 {
 	struct pccard_softc *sc = PCCARD_SOFTC(dev);
 	struct pccard_ivar *ivar = PCCARD_IVAR(child);
@@ -1243,7 +1244,7 @@ pccard_setup_intr(device_t dev, device_t child, struct resource *irq,
 	if (pf->intr_handler != NULL)
 		panic("Only one interrupt handler per function allowed");
 	err = bus_generic_setup_intr(dev, child, irq, flags, pccard_intr,
-				     pf, cookiep, serializer);
+				     pf, cookiep, serializer, desc);
 	if (err != 0)
 		return (err);
 	pf->intr_handler = intr;

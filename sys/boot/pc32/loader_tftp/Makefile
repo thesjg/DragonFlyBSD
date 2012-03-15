@@ -1,7 +1,5 @@
 # Works like the normal loader except the kernel, modules, and other loader
 # files are loaded via TFTP instead of NFS.
-#
-# $DragonFly: src/sys/boot/pc32/loader_tftp/Makefile,v 1.2 2005/09/04 12:20:46 swildner Exp $
 
 PROG=		loader_tftp
 STRIP=
@@ -15,13 +13,11 @@ INSTALLFLAGS=	-b
 # MEM_BTX_USR_ARG is not used in the boot2->loader stage, only in the
 # boot1->boot2 stage (XXX what about the use in cdboot and pxeboot?)
 #
-ORG= 0x0
 
 .PATH:		${.CURDIR}/../loader
 # architecture-specific loader code
 SRCS=		main.c conf.c
 
-CFLAGS+=	-ffreestanding
 CFLAGS+=	-DLOADER_TFTP_SUPPORT
 #CFLAGS+=	-DLOADER_NFS_SUPPORT
 
@@ -52,8 +48,9 @@ CFLAGS+=	-I${.CURDIR}/../../.. -I.
 
 CLEANFILES+=	vers.c vers.o ${PROG}.list ${PROG}.bin ${PROG}.sym ${PROG}.help
 
-CFLAGS+=	-Wall
-LDFLAGS=	-nostdlib -static -Ttext ${ORG}
+CFLAGS+=		-Wall
+COMPILER_LDFLAGS=	-nostdlib -static
+COMPILER_LDFLAGS+=	-Wl,--script,${.CURDIR}/../loader/loader.ldscript
 
 # i386 standalone support library
 LIBI386=	${.OBJDIR}/../libi386/libi386.a
@@ -81,12 +78,8 @@ BTXKERN=	${BTXDIR}/btx/btx
 BTXCRT=		${BTXDIR}/lib/crt0.o
 CFLAGS+=	-I${.CURDIR}/../btx/lib
 
-# BTX is expecting ELF components
-CFLAGS+=	-elf
-
 # Debug me!
 #CFLAGS+=	-g
-#LDFLAGS+=	-g
 
 vers.o:	${.CURDIR}/../../common/newvers.sh ${.CURDIR}/version
 	sh ${.CURDIR}/../../common/newvers.sh ${.CURDIR}/version ${NEWVERSWHAT}
@@ -95,12 +88,10 @@ vers.o:	${.CURDIR}/../../common/newvers.sh ${.CURDIR}/version
 ${PROG}: ${PROG}.bin ${BTXLDR} ${BTXKERN} ${BTXCRT}
 	btxld -v -f aout -e ${LOADER_ADDRESS} -o ${.TARGET} -l ${BTXLDR} \
 		-b ${BTXKERN} ${PROG}.bin
-#	/usr/bin/kzip ${.TARGET}
-#	mv ${.TARGET}.kz ${.TARGET}
 
 ${PROG}.bin: ${PROG}.sym
 	cp ${.ALLSRC} ${.TARGET}
-	strip -R .comment -R .note ${.TARGET}
+	strip -R .comment -R .note -R .note.gnu.gold-version ${.TARGET}
 
 ${PROG}.help: help.common help.i386
 	cat ${.ALLSRC} | awk -f ${.CURDIR}/../../common/merge_help.awk > ${.TARGET}
@@ -120,7 +111,7 @@ FILES+=	${.CURDIR}/../loader/dloader.rc
 .include <bsd.prog.mk>
 
 ${PROG}.sym: ${OBJS} ${LIBI386} ${LIBSTAND} ${LIBDLOADER} vers.o
-	${CC} ${LDFLAGS} -o ${.TARGET} ${BTXCRT} ${OBJS} vers.o \
+	${CC} ${COMPILER_LDFLAGS} -o ${.TARGET} ${BTXCRT} ${OBJS} vers.o \
 		${LIBDLOADER} ${LIBI386} ${LIBSTAND}
 
 # If it's not there, don't consider it a target

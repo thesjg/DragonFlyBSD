@@ -84,10 +84,16 @@
  * 201302 - header <crypt.h> is gone
  * 201303 - <netatalk/...> and <netproto/atalk/...> are gone
  * 201304 - Added wcscasecmp, wcsncasecmp to libc
- * 201305 - remove GET_TIME() macro from mroute headers
+ * 201305 - Sync libm with NetBSD-current libm (new functions added)
+ * 201306 - Sync libm with FreeBSD-current libm (~50 new functions)
+ * 300000 - 3.0 release
+ * 300100 - 3.1 master
+ * 300101 - i4b (ISDN) removal
+ * 300102 - <sys/ata.h> is now just a link of <sys/nata.h>
+ * 300103 - remove GET_TIME() macro from mroute headers
  */
 #undef __DragonFly_version
-#define __DragonFly_version 201304	/* propagated to newvers */
+#define __DragonFly_version 300103	/* propagated to newvers */
 
 #include <sys/_null.h>
 

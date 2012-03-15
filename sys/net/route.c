@@ -134,6 +134,9 @@ int route_assert_owner_access = 0;
 SYSCTL_INT(_net_route, OID_AUTO, assert_owner_access, CTLFLAG_RW,
            &route_assert_owner_access, 0, "");
 
+u_long route_kmalloc_limit = 0;
+TUNABLE_ULONG("net.route.kmalloc_limit", &route_kmalloc_limit);
+
 /*
  * Initialize the route table(s) for protocol domains and
  * create a helper thread which will be responsible for updating
@@ -155,6 +158,9 @@ route_init(void)
 			    0, cpu, "rtable_cpu %d", cpu);
 		rt_ports[cpu] = &rtd->td_msgport;
 	}
+
+	if (route_kmalloc_limit)
+		kmalloc_raise_limit(M_RTABLE, route_kmalloc_limit);
 }
 
 static void
@@ -807,7 +813,7 @@ rtrequest1_msghandler(netmsg_t msg)
 	if (error && rmsg->req != RTM_DELETE) {
 		if (mycpuid != 0) {
 			panic("rtrequest1_msghandler: rtrequest table "
-			      "error was not on cpu #0");
+			      "error was cpu%d, err %d\n", mycpuid, error);
 		}
 		lwkt_replymsg(&rmsg->base.lmsg, error);
 	} else if (nextcpu < ncpus) {
@@ -939,8 +945,13 @@ rtrequest1(int req, struct rt_addrinfo *rtinfo, struct rtentry **ret_nrt)
 		ifa = rtinfo->rti_ifa;
 makeroute:
 		R_Malloc(rt, struct rtentry *, sizeof(struct rtentry));
-		if (rt == NULL)
+		if (rt == NULL) {
+			if (req == RTM_ADD) {
+				kprintf("rtrequest1: alloc rtentry failed on "
+				    "cpu%d\n", mycpuid);
+			}
 			gotoerr(ENOBUFS);
+		}
 		bzero(rt, sizeof(struct rtentry));
 		rt->rt_flags = RTF_UP | rtinfo->rti_flags;
 		rt->rt_cpuid = mycpuid;

@@ -330,7 +330,7 @@ ata_pci_alloc_resource(device_t dev, device_t child, int type, int *rid,
 	if (controller->legacy) {
 	    int irq = (unit == 0 ? 14 : 15);
 
-	    cpuid = machintr_intr_cpuid(irq);
+	    cpuid = machintr_legacy_intr_cpuid(irq);
 	    res = BUS_ALLOC_RESOURCE(device_get_parent(dev), child,
 				     SYS_RES_IRQ, rid, irq, irq, 1, flags,
 				     cpuid);
@@ -388,7 +388,7 @@ ata_pci_setup_intr(device_t dev, device_t child, struct resource *irq,
 
     if (controller->legacy) {
 	return BUS_SETUP_INTR(device_get_parent(dev), child, irq,
-			      flags, function, argument, cookiep, NULL);
+			      flags, function, argument, cookiep, NULL, NULL);
     }
     else {
 	struct ata_pci_controller *controller = device_get_softc(dev);

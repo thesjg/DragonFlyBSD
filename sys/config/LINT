@@ -136,15 +136,6 @@ cpu		I686_CPU		# aka Pentium Pro(tm)
 #
 # Options for CPU features.
 #
-# CPU_AMD64X2_INTR_SPAM tries to route HyperTransport EXTINT and NMI
-# messages to LINT0 on the local APIC when the BIOS has forgotten to
-# do that.  If this is not done on a multi-core cpu, EXTINT and NMI
-# get routed to the INTR/NMI pins on *BOTH* cores simultaneously, causing
-# two INTA ack cycles one of which will almost certainly result in a
-# spurious interrupt vector being presented.  This is often visible as
-# an unmaskable IRQ 7 which occurs for every normal interrupt that occurs
-# on a system.
-#
 # CPU_ATHLON_SSE_HACK tries to enable SSE instructions when the BIOS has
 # forgotten to enable them.
 #
@@ -185,6 +176,10 @@ cpu		I686_CPU		# aka Pentium Pro(tm)
 # systems where other mechanisms such as apm(4) or acpi(4) don't work.
 #
 # CPU_FASTER_5X86_FPU enables faster FPU exception handler.
+#
+# CPU_HAS_SSE2 will enable the lfence and mfence instructions in
+# cpu_lfence() and cpu_mfence().  If the CPU does not support them,
+# it will cause a panic.
 #
 # CPU_I486_ON_386 enables CPU cache on i486 based CPU upgrade products
 # for i386 machines.
@@ -243,7 +238,6 @@ cpu		I686_CPU		# aka Pentium Pro(tm)
 # NOTE 3: This option may cause failures for software that requires
 # locked cycles in order to operate correctly.
 #
-options		CPU_AMD64X2_INTR_SPAM
 options 	CPU_ATHLON_SSE_HACK
 options 	CPU_BLUELIGHTNING_FPU_OP_CACHE
 options 	CPU_BLUELIGHTNING_3X
@@ -258,6 +252,7 @@ options 	CPU_ENABLE_LONGRUN
 options		CPU_ENABLE_TCC
 options 	CPU_FASTER_5X86_FPU
 options		CPU_GEODE
+options		CPU_HAS_SSE2
 options 	CPU_I486_ON_386
 options 	CPU_IORT
 options 	CPU_L2_LATENCY=5
@@ -302,10 +297,6 @@ device		ndis
 #
 # System V shared memory and tunable parameters
 options 	SYSVSHM		# include support for shared memory
-options 	SHMMAXPGS=1025	# max amount of shared memory pages (4k on i386)
-options 	SHMALL=1025	# max amount of shared memory (bytes)
-options 	SHMMAX="(SHMMAXPGS*PAGE_SIZE+1)"
-				# max shared memory segment size (bytes)
 options 	SHMMIN=2	# min shared memory segment size (bytes)
 options 	SHMMNI=33	# max number of shared memory identifiers
 options 	SHMSEG=9	# max shared memory segments per process
@@ -598,7 +589,6 @@ options 	PIM			# Protocol Independent Multicast
 options 	IPFIREWALL		#firewall
 options		IPFIREWALL_DEBUG	#debug prints
 options 	IPFIREWALL_VERBOSE	#enable logging to syslogd(8)
-options 	IPFIREWALL_FORWARD	#enable transparent proxy support
 options 	IPFIREWALL_VERBOSE_LIMIT=100	#limit verbosity
 options 	IPFIREWALL_DEFAULT_TO_ACCEPT	#allow everything by default
 options 	IPV6FIREWALL		#firewall for IPv6
@@ -728,6 +718,7 @@ options 	NULLFS			#NULL filesystem
 options 	NWFS			#NetWare filesystem
 options 	PORTAL			#Portal filesystem
 options 	PROCFS			#Process filesystem
+options		PUFFS			#Userspace file systems (e.g. ntfs-3g & sshfs)
 options 	SMBFS			#SMB/CIFS filesystem
 options 	TMPFS			#Temporary filesystem
 options		UDF			#UDF filesystem
@@ -991,6 +982,7 @@ pseudo-device	pty		#Pseudo ttys
 pseudo-device	gzip		#Exec gzipped a.out's
 pseudo-device	vn		#Vnode driver (turns a file into a device)
 pseudo-device	md		#Memory/malloc disk
+pseudo-device	putter		#for puffs and pud
 pseudo-device	snp		#Snoop device - to look at pty/vty/etc..
 pseudo-device	ccd	4	#Concatenated disk driver
 
@@ -1263,17 +1255,6 @@ device		pst
 #
 device	ips
 
-#
-# The 'ATA' driver supports all ATA and ATAPI devices.
-# You only need one "device ata" for it to find all
-# PCI ATA/ATAPI devices on modern machines.
-#device		ata
-#device		atadisk		# ATA disk drives
-#device		atapicd		# ATAPI CDROM drives
-#device		atapifd		# ATAPI floppy drives
-#device		atapist		# ATAPI tape drives
-#device		atapicam	# emulate ATAPI devices as SCSI ditto via CAM
-				# needs CAM to be present (scbus & pass)
 # AHCI driver, this will override NATA for AHCI devices,
 # both drivers may be included.
 #
@@ -1283,9 +1264,10 @@ device		ahci
 #
 device		sili
 
-# The 'NATA' set of drivers are set to replace the previous ATA drivers,
-# and this set of drivers is mutually exclusive with the old ones. This means,
-# you can't have both at the same time!
+# The 'NATA' driver supports all ATA and ATAPI devices.
+# You only need one "device nata" for it to find all
+# PCI ATA/ATAPI devices on modern machines.
+#
 device		nata
 device		natadisk	# ATA disk drives
 device		natapicd	# ATAPI CD/DVD drives
@@ -1295,16 +1277,16 @@ device		natapicam	# ATAPI CAM layer emulation
 device		nataraid	# support for ATA software RAID controllers
 device		natausb		# ATA-over-USB support
 
-#The following options are valid on the ATA & NATA drivers:
+# The following options are valid for the NATA driver:
 #
 # ATA_STATIC_ID:	controller numbering is static (like the old driver)
 #			else the device numbers are dynamically allocated.
 options 	ATA_STATIC_ID
 
-#
 # For older non-PCI systems, these are the lines to use:
-#device		ata0	at isa? port IO_WD1 irq 14
-#device		ata1	at isa? port IO_WD2 irq 15
+#
+#device		nata0	at isa? port IO_WD1 irq 14
+#device		nata1	at isa? port IO_WD2 irq 15
 
 #
 # Standard floppy disk controllers: `fdc' and `fd'
@@ -1502,6 +1484,7 @@ device		"snd_emu10k1"
 device		"snd_es137x"
 device		"snd_ess"
 device		"snd_fm801"
+device		"snd_gusc"
 device		"snd_hda"
 device		"snd_ich"
 device		"snd_maestro"
@@ -1623,8 +1606,6 @@ options 	ADW_ALLOW_MEMIO
 device		pci
 
 # PCI options
-#
-#Enable pci resources left off by a "lazy" BIOS.
 #
 options 	COMPAT_OLDPCI	#FreeBSD 2.2 and 3.x compatibility shims
 
@@ -1843,7 +1824,7 @@ device		trm		# Tekram DC395U/UW/F and DC315U
 #	ISP_TARGET_MODE		-	enable target mode operation
 #options 	ISP_TARGET_MODE=1
 
-# Options used in dev/sym/ (Symbios SCSI driver).
+# Options used in dev/disk/sym/ (Symbios SCSI driver).
 #options 	SYM_SETUP_LP_PROBE_MAP	#-Low Priority Probe Map (bits)
 					# Allows the ncr to take precedence
 					# 1 (1<<0) -> 810a, 860
@@ -2039,217 +2020,6 @@ device		wbsio1	at isa? port 0x4e
 device		lm#3	at wbsio?
 device		uguru0	at isa? port 0xe0	# ABIT uGuru
 
-#---------------------------------------------------------------------------
-# ISDN4BSD
-#
-# See /usr/share/examples/isdn/ROADMAP for an introduction to isdn4bsd.
-#
-# i4b passive ISDN cards support contains the following hardware drivers:
-#
-#       isic  - Siemens/Infineon ISDN ISAC/HSCX/IPAC chipset driver
-#       iwic  - Winbond W6692 PCI bus ISDN S/T interface controller
-#       ifpi  - AVM Fritz!Card PCI driver
-#       ifpi2 - AVM Fritz!Card PCI driver Version 2
-#       ihfc  - Cologne Chip HFC ISA/ISA-PnP chipset driver
-#       ifpnp - AVM Fritz!Card PnP driver
-#       itjc  - Siemens ISAC / TJNet Tiger300/320 chipset
-#
-# i4b active ISDN cards support contains the following hardware drivers:
-#
-#       iavc  - AVM B1 PCI, AVM B1 ISA, AVM T1
-#
-# Note that the ``options'' (if given) and ``device'' lines must BOTH
-# be uncommented to enable support for a given card !
-#
-# In addition to a hardware driver (and probably an option) the mandatory
-# ISDN protocol stack devices and the mandatory support device must be
-# enabled as well as one or more devices from the optional devices section.
-#
-#---------------------------------------------------------------------------
-# isic driver (Siemens/Infineon chipsets)
-#---------------------------------------------------------------------------
-#
-# ISA bus non-PnP Cards:
-# ----------------------
-#
-# Teles S0/8 or Niccy 1008
-options 	TEL_S0_8
-device		isic0	at isa? iomem 0xd0000 irq 5 flags 1
-#
-# Teles S0/16 or Creatix ISDN-S0 or Niccy 1016
-options 	TEL_S0_16
-#device		isic0	at isa? port 0xd80 iomem 0xd0000 irq 5 flags 2
-#
-# Teles S0/16.3
-options 	TEL_S0_16_3
-#device		isic0	at isa? port 0xd80 irq 5 flags 3
-#
-# AVM A1 or AVM Fritz!Card
-options 	AVM_A1
-#device		isic0	at isa? port 0x340 irq 5 flags 4
-#
-# USRobotics Sportster ISDN TA intern
-options 	USR_STI
-#device		isic0	at isa? port 0x268 irq 5 flags 7
-#
-# ITK ix1 Micro ( < V.3, non-PnP version )
-options 	ITKIX1
-#device		isic0	at isa? port 0x398 irq 10 flags 18
-#
-# ELSA PCC-16
-options 	ELSA_PCC16
-#device		isic0	at isa? port 0x360 irq 10 flags 20
-#
-# ISA bus PnP Cards:
-# ------------------
-#
-# Teles S0/16.3 PnP
-options 	TEL_S0_16_3_P
-#device		isic
-#
-# Creatix ISDN-S0 P&P
-options 	CRTX_S0_P
-#device		isic
-#
-# Dr. Neuhaus Niccy Go@
-options 	DRN_NGO
-#device		isic
-#
-# Sedlbauer Win Speed
-options 	SEDLBAUER
-#device		isic
-#
-# Dynalink IS64PH
-options 	DYNALINK
-#device		isic
-#
-# ELSA QuickStep 1000pro ISA
-options 	ELSA_QS1ISA
-#device		isic
-#
-# ITK ix1 Micro ( V.3, PnP version )
-options 	ITKIX1
-#device		isic
-#
-# Siemens I-Surf 2.0
-options 	SIEMENS_ISURF2
-#device		isic
-#
-# Asuscom ISDNlink 128K ISAC
-options 	ASUSCOM_IPAC
-#device 	isic
-#
-# Eicon Diehl DIVA 2.0 and 2.02
-options       EICON_DIVA
-#device 	isic
-#
-# Compaq Microcom 610
-options       COMPAQ_M610
-#device 	isic
-#
-# PCI bus Cards:
-# --------------
-#
-# ELSA MicroLink ISDN/PCI (same as ELSA QuickStep 1000pro PCI)
-options 	ELSA_QS1PCI
-#device		isic
-#
-#---------------------------------------------------------------------------
-#       ifpnp driver for AVM Fritz!Card ISA PnP
-#---------------------------------------------------------------------------
-#
-# AVM Fritz!Card ISA PnP
-device ifpnp
-#
-#---------------------------------------------------------------------------
-#       ihfc driver for Cologne Chip ISA chipsets (experimental!)
-#---------------------------------------------------------------------------
-#
-# Teles 16.3c ISA PnP
-# AcerISDN P10 ISA PnP
-# TELEINT ISDN SPEED No.1
-device ihfc
-#
-#---------------------------------------------------------------------------
-#       ifpi driver for AVM Fritz!Card PCI 1.0 (2.0 unsupported!)
-#---------------------------------------------------------------------------
-#
-# AVM Fritz!Card PCI 1.0
-device  ifpi
-#
-#---------------------------------------------------------------------------
-#       ifpi2 driver for AVM Fritz!Card PCI 2.0
-#---------------------------------------------------------------------------
-#
-# AVM Fritz!Card PCI 2.0
-device  "ifpi2"
-#
-#---------------------------------------------------------------------------
-#       iwic driver for Winbond W6692 chipset
-#---------------------------------------------------------------------------
-#
-# ASUSCOM P-IN100-ST-D (and other Winbond W6692 based cards)
-device  iwic
-#
-#---------------------------------------------------------------------------
-#       itjc driver for Siemens ISAC / TJNet Tiger300/320 chipset
-#---------------------------------------------------------------------------
-#
-# Traverse Technologies NETjet-S
-# Teles PCI-TJ
-device  itjc
-#
-#---------------------------------------------------------------------------
-#       iavc driver (AVM active cards, needs i4bcapi driver!)
-#---------------------------------------------------------------------------
-#
-pseudo-device   "i4bcapi"	2
-#
-# AVM B1 PCI
-device          iavc0
-#
-# AVM B1 ISA bus (PnP mode not supported!)
-#device  iavc0 at isa? port 0x150 irq 5
-#
-#
-# ISDN Protocol Stack (mandatory)
-# -------------------------------
-#
-# Q.921 / layer 2 - i4b passive cards D channel handling
-pseudo-device	"i4bq921"
-#
-# Q.931 / layer 3 - i4b passive cards D channel handling
-pseudo-device	"i4bq931"
-#
-# layer 4 - i4b common passive and active card handling
-pseudo-device	"i4b"
-#
-# ISDN devices
-# ------------
-#
-# userland driver to do ISDN tracing (for passive cards only)
-pseudo-device	"i4btrc"	4
-#
-# userland driver to control the whole thing (mandatory)
-pseudo-device	"i4bctl"
-#
-# userland driver for access to raw B channel
-pseudo-device	"i4brbch"	4
-#
-# userland driver for telephony
-pseudo-device	"i4btel"	2
-#
-# network driver for IP over raw HDLC ISDN
-pseudo-device	"i4bipr"	4
-# enable VJ header compression detection for ipr i/f
-options 	IPR_VJ
-# enable logging of the first n IP packets to isdnd (n=32 here)
-#options 	IPR_LOG=32
-#
-# network driver for sync PPP over ISDN - requires sppp
-pseudo-device	"i4bisppp"	4
-
-
 # Parallel-Port Bus
 #
 # Parallel port bus support is provided by the `ppbus' device.
@@ -2385,7 +2155,11 @@ options 	VM_SWZONE_SIZE_MAX="(50*1024*1024)"
 # that it is likely to break e.g. fstat(1) unless you recompile your
 # userland with -DDEBUG_LOCKS as well.
 #
+# DEBUG_LOCKS_LATENCY adds a sysctl to add a forced latency loop
+# (count to N) in front of any spinlock or gettoken.
+#
 options 	DEBUG_LOCKS
+options		DEBUG_LOCKS_LATENCY
 
 # Set the amount of time (in seconds) the system will wait before
 # rebooting automatically when a kernel panic occurs.  If set to (-1),
@@ -2411,6 +2185,7 @@ options		DIRECTIO
 # These controllers require the CAM infrastructure.
 #
 device		asr
+options		ASR_COMPAT
 
 # The 'dpt' driver provides support for DPT controllers (http://www.dpt.com/).
 # These have hardware RAID-{0,1,5} support, and do multi-initiator I/O.
@@ -2428,7 +2203,7 @@ device		asr
 #                           option will create more trouble than solve.
 #   DPT_TIMEOUT_FACTOR      Used to compute the excessive amount of time to
 #                           wait when timing out with the above option.
-#  DPT_DEBUG_xxxx           These are controllable from sys/dev/dpt/raid/dpt.h
+#  DPT_DEBUG_xxxx           These are controllable from sys/dev/raid/dpt/dpt.h
 #  DPT_LOST_IRQ             When enabled, will try, once per second, to catch
 #                           any interrupt that got lost.  Seems to help in some
 #                           DPT-firmware/Motherboard combinations.  Minimal
@@ -2607,6 +2382,7 @@ options		UBSEC_RNDTEST	# enable rndtest support
 device		aesni		# hardware crypto/RNG for AES-NI
 device		glxsb		# Geode LX Security Block
 device		padlock		# hardware crypto/RNG for VIA C3/C7/Eden
+device		rdrand		# hardware RNG for RdRand
 
 #
 # ACPI support using the Intel ACPI Component Architecture reference
@@ -2682,6 +2458,7 @@ options 	DRM_LINUX
 #
 device		cmx		# Omnikey CardMan 4040 smartcard reader
 device		gpio		# Enable support for the gpio framework
+device		tbridge		# regression testing
 
 #
 # Embedded system options:
@@ -2720,7 +2497,6 @@ options 	ENABLE_ALART
 options 	FB_DEBUG=2
 options 	FB_INSTALL_CDEV
 options 	FE_8BIT_SUPPORT
-options 	I4B_SMP_WORKAROUND
 options 	I586_PMC_GUPROF=0x70000
 #options	IEEE80211_DEBUG_REFCNT
 options		IEEE80211_SUPPORT_SUPERG
@@ -2814,8 +2590,9 @@ options		SCTP_FR_LOGGING
 options		SCTP_MAP_LOGGING
 
 # DSCHED stuff
-options		DSCHED_FQ
+options		DSCHED_AS
 options		DSCHED_BFQ
+options		DSCHED_FQ
 
 # WATCHDOG
 options		WATCHDOG_ENABLE		# Enable watchdog support framework

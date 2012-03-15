@@ -23,7 +23,6 @@
  * SUCH DAMAGE.
  *
  * $FreeBSD: src/sys/i386/i386/mp_machdep.c,v 1.115.2.15 2003/03/14 21:22:35 jhb Exp $
- * $DragonFly: src/sys/platform/pc32/i386/mp_machdep.c,v 1.60 2008/06/07 12:03:52 mneumann Exp $
  */
 
 #include "opt_cpu.h"
@@ -854,7 +853,7 @@ mptable_lapic_probe(struct lapic_enumerator *e)
 	error = EINVAL;
 	cth = mpt.mp_cth;
 
-	if (cth->apic_address == 0)
+	if (cth->apic_address == NULL)
 		goto done;
 
 	bzero(&arg, sizeof(arg));
@@ -901,7 +900,7 @@ mptable_ioapic_list_callback(void *xarg, const void *pos, int type)
 	if ((ent->apic_flags & IOAPICENTRY_FLAG_EN) == 0)
 		return 0;
 
-	if (ent->apic_address == 0) {
+	if (ent->apic_address == NULL) {
 		kprintf("mptable_ioapic_create_list: zero IOAPIC addr\n");
 		return EINVAL;
 	}
@@ -1425,7 +1424,7 @@ mptable_pci_int_route(int bus, int dev, int pin, int intline)
 		gsi = ioapic_gsi(pci_int->mpci_ioapic_idx,
 			pci_int->mpci_ioapic_pin);
 		if (gsi >= 0) {
-			irq = ioapic_abi_find_gsi(gsi,
+			irq = ioapic_find_legacy_by_gsi(gsi,
 				INTR_TRIGGER_LEVEL, INTR_POLARITY_LOW);
 		}
 	}
@@ -1436,7 +1435,7 @@ mptable_pci_int_route(int bus, int dev, int pin, int intline)
 				"for %d:%d INT%c\n", bus, dev, pin + 'A');
 		}
 
-		irq = ioapic_abi_find_irq(intline,
+		irq = ioapic_find_legacy_by_irq(intline,
 			INTR_TRIGGER_LEVEL, INTR_POLARITY_LOW);
 	}
 

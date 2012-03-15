@@ -71,13 +71,6 @@
 #include "fsort.h"
 #include "pathnames.h"
 
-#ifndef lint
-__COPYRIGHT("@(#) Copyright (c) 1993\
- The Regents of the University of California.  All rights reserved.");
-#endif /* not lint */
-
-__RCSID("$NetBSD: sort.c,v 1.59 2010/06/05 17:44:51 dholland Exp $");
-
 #include <sys/types.h>
 #include <sys/time.h>
 #include <sys/resource.h>
@@ -120,7 +113,7 @@ main(int argc, char *argv[])
 {
 	int ch, i, stdinflag = 0;
 	char cflag = 0, mflag = 0;
-	char *outfile, *outpath = 0;
+	char *outfile, *outpath = NULL;
 	struct field *fldtab;
 	size_t fldtab_sz, fld_cnt;
 	size_t alloc_size;

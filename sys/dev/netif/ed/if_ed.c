@@ -419,7 +419,7 @@ ed_probe_WD80x3_generic(device_t dev, int flags, u_short *intr_vals[])
 			int intr_val = intr_vals[0][iptr];
 
 			error = bus_set_resource(dev, SYS_RES_IRQ, 0,
-			    intr_val, 1, machintr_intr_cpuid(intr_val));
+			    intr_val, 1, machintr_legacy_intr_cpuid(intr_val));
 		}
 		if (error)
 			return (error);
@@ -448,7 +448,7 @@ ed_probe_WD80x3_generic(device_t dev, int flags, u_short *intr_vals[])
 			int intr_val = intr_vals[1][iptr];
 
 			error = bus_set_resource(dev, SYS_RES_IRQ, 0,
-			    intr_val, 1, machintr_intr_cpuid(intr_val));
+			    intr_val, 1, machintr_legacy_intr_cpuid(intr_val));
 		}
 		if (error)
 			return (error);
@@ -1380,7 +1380,7 @@ ed_probe_HP_pclanp(device_t dev, int port_rid, int flags)
 		int intr_val = ed_hpp_intr_val[irq];
 
 		bus_set_resource(dev, SYS_RES_IRQ, 0, intr_val, 1,
-		    machintr_intr_cpuid(intr_val));
+		    machintr_legacy_intr_cpuid(intr_val));
 	} else {
 		if (conf_irq != ed_hpp_intr_val[irq])
 			return (ENXIO);
@@ -1828,7 +1828,7 @@ ed_tick(void *arg)
 	lwkt_serialize_enter(ifp->if_serializer);
 
 	if (sc->gone) {
-		crit_exit();
+		lwkt_serialize_exit(ifp->if_serializer);
 		return;
 	}
 
@@ -2100,7 +2100,7 @@ outloop:
 		return;
 	}
 	m = ifq_dequeue(&ifp->if_snd, NULL);
-	if (m == 0) {
+	if (m == NULL) {
 
 		/*
 		 * We are using the !OACTIVE flag to indicate to the outside
@@ -2154,7 +2154,7 @@ outloop:
 				break;
 			}
 		}
-		for (len = 0; m != 0; m = m->m_next) {
+		for (len = 0; m != NULL; m = m->m_next) {
 			bcopy(mtod(m, caddr_t), buffer, m->m_len);
 			buffer += m->m_len;
 			len += m->m_len;

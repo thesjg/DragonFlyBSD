@@ -10,7 +10,6 @@
  * main.c,v 3.8.4.29 1998/03/01 01:49:00 fenner Exp
  *
  * $FreeBSD: src/usr.sbin/mrouted/main.c,v 1.16.2.4 2002/09/12 16:27:49 nectar Exp $
- * $DragonFly: src/usr.sbin/mrouted/main.c,v 1.5 2004/12/18 22:48:04 swildner Exp $
  */
 
 /*
@@ -25,11 +24,7 @@
 
 #include <err.h>
 #include "defs.h"
-#ifdef __STDC__
 #include <stdarg.h>
-#else
-#include <varargs.h>
-#endif
 #include <fcntl.h>
 #include <paths.h>
 
@@ -945,7 +940,7 @@ dolog(int severity, int syserr, char *format, ...)
 
 	for (i = 0; i < NLOGMSGS; i++) {
 	    logmsg[i] = malloc(LOGMSGSIZE);
-	    if (logmsg[i] == 0) {
+	    if (logmsg[i] == NULL) {
 		syslog(LOG_ERR, "out of memory");
 		exit(-1);
 	    }

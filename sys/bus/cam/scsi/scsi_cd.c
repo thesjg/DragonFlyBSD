@@ -49,7 +49,6 @@
 #include "opt_cd.h"
 
 #include <sys/param.h>
-#include <sys/bootmaj.h>
 #include <sys/systm.h>
 #include <sys/kernel.h>
 #include <sys/buf.h>
@@ -301,7 +300,7 @@ static struct periph_driver cddriver =
 PERIPHDRIVER_DECLARE(cd, cddriver);
 
 static struct dev_ops cd_ops = {
-	{ "cd", SCSICD_CDEV_MAJOR, D_DISK | D_MPSAFE },
+	{ "cd", 0, D_DISK | D_MPSAFE },
 	.d_open = cdopen,
 	.d_close = cdclose,
 	.d_read = physread,
@@ -401,8 +400,7 @@ cdoninvalidate(struct cam_periph *periph)
 	 * XXX Handle any transactions queued to the card
 	 *     with XPT_ABORT_CCB.
 	 */
-	while ((q_bio = bioq_first(&softc->bio_queue)) != NULL){
-		bioq_remove(&softc->bio_queue, q_bio);
+	while ((q_bio = bioq_takefirst(&softc->bio_queue)) != NULL) {
 		q_bp = q_bio->bio_buf;
 		q_bp->b_resid = q_bp->b_bcount;
 		q_bp->b_error = ENXIO;
@@ -1037,6 +1035,7 @@ cdopen(struct dev_open_args *ap)
 	 */
 	error = cdcheckmedia(periph);
 
+	cdprevent(periph, PR_PREVENT);
 	CAM_DEBUG(periph->path, CAM_DEBUG_TRACE, ("leaving cdopen\n"));
 	cam_periph_unhold(periph, 1);
 	/* stays acquired */
@@ -1613,8 +1612,7 @@ cddone(struct cam_periph *periph, union ccb *done_ccb)
 
 			xpt_print(periph->path,
 				  "cddone: got error %#x back\n", error);
-			while ((q_bio = bioq_first(&softc->bio_queue)) != NULL) {
-				bioq_remove(&softc->bio_queue, q_bio);
+			while ((q_bio = bioq_takefirst(&softc->bio_queue)) != NULL) {
 				q_bp = q_bio->bio_buf;
 				q_bp->b_resid = q_bp->b_bcount;
 				q_bp->b_error = EIO;
@@ -2802,8 +2800,6 @@ cdcheckmedia(struct cam_periph *periph)
 	first_track_audio = -1;
 	error = 0;
 
-	cdprevent(periph, PR_PREVENT);
-
 	/*
 	 * Set up disk info fields and tell the disk subsystem to reset
 	 * its internal copy of the label.
@@ -2850,8 +2846,6 @@ cdcheckmedia(struct cam_periph *periph)
 		 * Tell devstat(9) we don't have a blocksize.
 		 */
 		softc->device_stats.flags |= DEVSTAT_BS_UNAVAILABLE;
-
-		cdprevent(periph, PR_ALLOW);
 
 		return (error);
 	} else {

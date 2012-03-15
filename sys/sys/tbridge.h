@@ -27,6 +27,8 @@
  * SUCH DAMAGE.
  */
 
+#include <sys/ioccom.h>
+
 #define TBRIDGE_LOADTEST	_IOW('T', 0xBB, struct plistref)
 #define TBRIDGE_GETRESULT	_IOR('T', 0xBC, struct plistref)
 
@@ -54,7 +56,7 @@ struct tbridge_testcase {
 	tbridge_run_t	tb_run;
 };
 
-int tbridge_printf(const char *fmt, ...);
+int tbridge_printf(const char *fmt, ...) __printflike(1, 2);
 void tbridge_test_done(int result);
 
 /* safemem functions */

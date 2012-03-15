@@ -86,10 +86,6 @@ configuration files
 .\"Firmware image files;
 .\"see
 .\".Xr firmware 9
-.It Pa isdn/
-isdn4bsd configuration files;
-see
-.Xr isdnd 8
 .It Pa localtime
 local timezone information;
 see
@@ -322,6 +318,7 @@ holds the download firmware images
 .It Pa libexec/
 system daemons & system utilities (executed by other programs)
 .Pp
+.Bl -tag -width ".Pa binutils221/" -compact
 .It Pa binutils221/
 .Pp
 .Bl -tag -width ".Pa ldscripts/" -compact
@@ -456,8 +453,6 @@ internationalization databases; see
 .Xr iconv 3
 .It Pa info/
 GNU Info hypertext system
-.It Pa isdn/
-ISDN
 .It Pa libg++/
 libg++'s genclass prototype/template class files
 .It Pa locale/

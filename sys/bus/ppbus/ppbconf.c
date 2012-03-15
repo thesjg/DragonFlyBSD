@@ -213,7 +213,7 @@ search_token(char *str, int slen, char *token)
 static int
 ppb_pnp_detect(device_t bus)
 {
-	char *token, *class = 0;
+	char *token, *class = NULL;
 	int i, len, error;
 	int class_id = -1;
 	char str[PPB_PnP_STRING_SIZE+1];
@@ -417,7 +417,7 @@ ppbus_setup_intr(device_t bus, device_t child, struct resource *r, int flags,
 		return (EINVAL);
 
 	if ((error = BUS_SETUP_INTR(device_get_parent(bus), child, r, flags,
-					ihand, arg, cookiep, serializer)))
+					ihand, arg, cookiep, serializer, NULL)))
 		return (error);
 
 	/* store the resource and the cookie for eventually forcing

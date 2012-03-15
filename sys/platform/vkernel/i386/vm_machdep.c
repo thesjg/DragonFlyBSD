@@ -274,10 +274,6 @@ cpu_lwp_exit(void)
 	struct pcb *pcb;
 	struct pcb_ext *ext;
 
-#if NNPX > 0
-	npxexit();
-#endif	/* NNPX */
-
 	/*
 	 * If we were using a private TSS do a forced-switch to ourselves
 	 * to switch back to the common TSS before freeing it.
@@ -320,6 +316,9 @@ cpu_lwp_exit(void)
 void
 cpu_thread_exit(void)
 {
+#if NNPX > 0
+	npxexit();
+#endif
 	curthread->td_switch = cpu_exit_switch;
 	curthread->td_flags |= TDF_EXITING;
 	lwkt_switch();
@@ -356,19 +355,6 @@ kvtop(void *addr)
 }
 
 SYSCTL_DECL(_vm_stats_misc);
-
-/*
- * Tell whether this address is in some physical memory region.
- * Currently used by the kernel coredump code in order to avoid
- * dumping the ``ISA memory hole'' which could cause indefinite hangs,
- * or other unpredictable behaviour.
- */
-
-int
-is_physical_memory(vm_offset_t addr)
-{
-	return 1;
-}
 
 /*
  * Used by /dev/kmem to determine if we can safely read or write

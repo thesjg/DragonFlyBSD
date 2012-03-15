@@ -134,6 +134,10 @@ int use_soaccept_pred_fast = 1;
 SYSCTL_INT(_kern_ipc, OID_AUTO, soaccept_pred_fast, CTLFLAG_RW,
     &use_soaccept_pred_fast, 0, "Fast socket accept predication");
 
+int use_sendfile_async = 1;
+SYSCTL_INT(_kern_ipc, OID_AUTO, sendfile_async, CTLFLAG_RW,
+    &use_sendfile_async, 0, "sendfile uses asynchronized pru_send");
+
 /*
  * Socket operation routines.
  * These routines are called by the routines in
@@ -184,7 +188,7 @@ socreate(int dom, struct socket **aso, int type,
 	else
 		prp = pffindtype(dom, type);
 
-	if (prp == 0 || prp->pr_usrreqs->pru_attach == 0)
+	if (prp == NULL || prp->pr_usrreqs->pru_attach == 0)
 		return (EPROTONOSUPPORT);
 
 	if (p->p_ucred->cr_prison && jail_socket_unixiproute_only &&
@@ -197,7 +201,7 @@ socreate(int dom, struct socket **aso, int type,
 
 	if (prp->pr_type != type)
 		return (EPROTOTYPE);
-	so = soalloc(p != 0);
+	so = soalloc(p != NULL);
 	if (so == NULL)
 		return (ENOBUFS);
 
@@ -754,7 +758,7 @@ restart:
 				if ((so->so_state & SS_ISCONFIRMING) == 0 &&
 				    !(resid == 0 && clen != 0))
 					gotoerr(ENOTCONN);
-			} else if (addr == 0)
+			} else if (addr == NULL)
 			    gotoerr(so->so_proto->pr_flags & PR_CONNREQUIRED ?
 				   ENOTCONN : EDESTADDRREQ);
 		}
@@ -800,7 +804,7 @@ restart:
 				 * For datagram protocols, leave room
 				 * for protocol headers in first mbuf.
 				 */
-				if (atomic && top == 0 && len < mlen)
+				if (atomic && top == NULL && len < mlen)
 					MH_ALIGN(m, len);
 			}
 			space -= len;
@@ -850,7 +854,7 @@ restart:
 		    if (dontroute)
 			    so->so_options &= ~SO_DONTROUTE;
 		    clen = 0;
-		    control = 0;
+		    control = NULL;
 		    top = NULL;
 		    mp = &top;
 		    if (error)
@@ -1021,7 +1025,7 @@ restart:
 		if (allatonce && resid > so->so_snd.ssb_hiwat)
 			gotoerr(EMSGSIZE);
 
-		space = ssb_space(&so->so_snd);
+		space = ssb_space_prealloc(&so->so_snd);
 		if (flags & MSG_OOB)
 			space += 1024;
 		if ((space < 0 || (size_t)space < resid) && !allatonce &&
@@ -1095,6 +1099,8 @@ restart:
 		     * here, but there are probably other places that this
 		     * also happens.  We must rethink this.
 		     */
+		    for (m = top; m; m = m->m_next)
+			    ssb_preallocstream(&so->so_snd, m);
 		    if (!async) {
 			    error = so_pru_send(so, pru_flags, top,
 			        NULL, NULL, td);

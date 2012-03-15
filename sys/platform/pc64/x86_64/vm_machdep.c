@@ -254,7 +254,6 @@ cpu_lwp_exit(void)
 	struct thread *td = curthread;
 	struct pcb *pcb;
 
-	npxexit();
 	pcb = td->td_pcb;
 
 	/* Some i386 functionality was dropped */
@@ -289,6 +288,7 @@ cpu_lwp_exit(void)
 void
 cpu_thread_exit(void)
 {
+	npxexit();
 	curthread->td_switch = cpu_exit_switch;
 	curthread->td_flags |= TDF_EXITING;
 	lwkt_switch();
@@ -355,30 +355,6 @@ swi_vm_setup(void *arg)
 }
 
 SYSINIT(vm_setup, SI_BOOT2_MACHDEP, SI_ORDER_ANY, swi_vm_setup, NULL);
-
-
-/*
- * Tell whether this address is in some physical memory region.
- * Currently used by the kernel coredump code in order to avoid
- * dumping the ``ISA memory hole'' which could cause indefinite hangs,
- * or other unpredictable behaviour.
- */
-
-int
-is_physical_memory(vm_offset_t addr)
-{
-#if NISA > 0
-	/* The ISA ``memory hole''. */
-	if (addr >= 0xa0000 && addr < 0x100000)
-		return 0;
-#endif
-	/*
-	 * stuff other tests for known memory-mapped devices (PCI?)
-	 * here
-	 */
-
-	return 1;
-}
 
 /*
  * platform-specific vmspace initialization (nothing for x86_64)

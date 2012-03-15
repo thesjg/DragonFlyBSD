@@ -23,7 +23,7 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $FreeBSD: src/sys/dev/hptiop/hptiop.c,v 1.9 2011/08/01 21:12:41 delphij Exp $
+ * $FreeBSD: src/sys/dev/hptiop/hptiop.c,v 1.11 2011/11/23 21:43:51 marius Exp $
  */
 
 #include <sys/param.h>
@@ -45,7 +45,6 @@
 #include <sys/eventhandler.h>
 #include <sys/bus.h>
 #include <sys/taskqueue.h>
-#include <sys/ioccom.h>
 #include <sys/device.h>
 #include <sys/mplock2.h>
 
@@ -289,7 +288,7 @@ static void hptiop_request_callback_itl(struct hpt_iop_hba * hba,
 							u_int32_t index)
 {
 	struct hpt_iop_srb *srb;
-	struct hpt_iop_request_scsi_command *req=0;
+	struct hpt_iop_request_scsi_command *req=NULL;
 	union ccb *ccb;
 	u_int8_t *cdb;
 	u_int32_t result, temp, dxfer;
@@ -386,6 +385,13 @@ srb_complete:
 			ccb->ccb_h.status = CAM_BUSY;
 			break;
 		case IOP_RESULT_CHECK_CONDITION:
+			memset(&ccb->csio.sense_data, 0,
+			    sizeof(ccb->csio.sense_data));
+			if (dxfer < ccb->csio.sense_len)
+				ccb->csio.sense_resid = ccb->csio.sense_len -
+				    dxfer;
+			else
+				ccb->csio.sense_resid = 0;
 			if (srb->srb_flag & HPT_SRB_FLAG_HIGH_MEM_ACESS) {/*iop*/
 				bus_space_read_region_1(hba->bar0t, hba->bar0h,
 					index + offsetof(struct hpt_iop_request_scsi_command,
@@ -423,10 +429,6 @@ static void hptiop_drain_outbound_queue_itl(struct hpt_iop_hba *hba)
 		if (req & IOPMU_QUEUE_MASK_HOST_BITS)
 			hptiop_request_callback_itl(hba, req);
 		else {
-			struct hpt_iop_request_header *p;
-
-			p = (struct hpt_iop_request_header *)
-				((char *)hba->u.itl.mu + req);
 			temp = bus_space_read_4(hba->bar0t,
 					hba->bar0h,req +
 					offsetof(struct hpt_iop_request_header,
@@ -535,6 +537,13 @@ static void hptiop_request_callback_mv(struct hpt_iop_hba * hba,
 			ccb->ccb_h.status = CAM_BUSY;
 			break;
 		case IOP_RESULT_CHECK_CONDITION:
+			memset(&ccb->csio.sense_data, 0,
+			    sizeof(ccb->csio.sense_data));
+			if (req->dataxfer_length < ccb->csio.sense_len)
+				ccb->csio.sense_resid = ccb->csio.sense_len -
+				    req->dataxfer_length;
+			else
+				ccb->csio.sense_resid = 0;
 			memcpy(&ccb->csio.sense_data, &req->sg_list,
 				MIN(req->dataxfer_length, sizeof(ccb->csio.sense_data)));
 			ccb->ccb_h.status = CAM_SCSI_STATUS_ERROR;
@@ -1219,6 +1228,7 @@ static driver_t hptiop_pci_driver = {
 };
 
 DRIVER_MODULE(hptiop, pci, hptiop_pci_driver, hptiop_devclass, NULL, NULL);
+MODULE_VERSION(hptiop, 1);
 
 static int hptiop_probe(device_t dev)
 {
@@ -1284,8 +1294,8 @@ static int hptiop_attach(device_t dev)
 	struct ccb_setasync ccb;
 	u_int32_t unit = device_get_unit(dev);
 
-	device_printf(dev, "%d RocketRAID 3xxx/4xxx controller driver %s\n",
-			unit, driver_version);
+	device_printf(dev, "RocketRAID 3xxx/4xxx controller driver %s\n",
+	    driver_version);
 
 	KdPrint(("hptiop: attach(%d, %d/%d/%d) ops=%p\n", unit,
 		pci_get_bus(dev), pci_get_slot(dev),
@@ -1293,7 +1303,6 @@ static int hptiop_attach(device_t dev)
 
 	pci_enable_busmaster(dev);
 	hba->pcidev = dev;
-	hba->pciunit = unit;
 
 	if (hba->ops->alloc_pci_res(hba))
 		return ENXIO;
@@ -1520,8 +1529,7 @@ static int hptiop_detach(device_t dev)
 	hptiop_lock_adapter(hba);
 	for (i = 0; i < hba->max_devices; i++)
 		if (hptiop_os_query_remove_device(hba, i)) {
-			device_printf(dev, "%d file system is busy. id=%d",
-						hba->pciunit, i);
+			device_printf(dev, "file system is busy. id=%d", i);
 			goto out;
 		}
 
@@ -1545,7 +1553,7 @@ static int hptiop_shutdown(device_t dev)
 	int error = 0;
 
 	if (hba->flag & HPT_IOCTL_FLAG_OPEN) {
-		device_printf(dev, "%d device is busy", hba->pciunit);
+		device_printf(dev, "device is busy");
 		return EBUSY;
 	}
 
@@ -1680,8 +1688,7 @@ static void hptiop_action(struct cam_sim *sim, union ccb *ccb)
 
 				if (error && error != EINPROGRESS) {
 					device_printf(hba->pcidev,
-						"%d bus_dmamap_load error %d",
-						hba->pciunit, error);
+					    "bus_dmamap_load error %d", error);
 					xpt_freeze_simq(hba->sim, 1);
 					ccb->ccb_h.status = CAM_REQ_CMP_ERR;
 invalid:
@@ -1730,11 +1737,7 @@ scsi_done:
 		break;
 
 	case XPT_CALC_GEOMETRY:
-		ccb->ccg.heads = 255;
-		ccb->ccg.secs_per_track = 63;
-		ccb->ccg.cylinders = ccb->ccg.volume_size /
-				(ccb->ccg.heads * ccb->ccg.secs_per_track);
-		ccb->ccb_h.status = CAM_REQ_CMP;
+		cam_calc_geometry(&ccb->ccg, 1);
 		break;
 
 	case XPT_PATH_INQ:
@@ -2051,10 +2054,8 @@ static  int hptiop_os_query_remove_device(struct hpt_iop_hba * hba,
 	if (status == CAM_REQ_CMP) {
 		if ((periph = cam_periph_find(path, "da")) != NULL) {
 			if (periph->refcount >= 1) {
-				device_printf(hba->pcidev, "%d ,"
-					"target_id=0x%x,"
-					"refcount=%d",
-				    hba->pciunit, target_id, periph->refcount);
+				device_printf(hba->pcidev, "target_id=0x%x,"
+				    "refcount=%d", target_id, periph->refcount);
 				retval = -1;
 			}
 		}

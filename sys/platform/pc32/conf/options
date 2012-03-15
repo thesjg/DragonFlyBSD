@@ -14,7 +14,6 @@ AUTO_EOI_2		opt_auto_eoi.h
 CONSPEED		opt_comconsole.h
 I586_PMC_GUPROF		opt_i586_guprof.h
 BROKEN_KEYBOARD_RESET	opt_reset.h
-APIC_IO			opt_apic.h
 COMPAT_OLDISA		opt_compat_oldisa.h
 
 # Options for emulators.  These should only be used at config time, so
@@ -29,6 +28,8 @@ NDISAPI			opt_dontuse.h
 # Change KVM size.  Changes things all over the kernel.
 KVA_PAGES		opt_global.h
 
+ASR_COMPAT		opt_asr.h
+
 CLK_CALIBRATION_LOOP		opt_clock.h
 CLK_USE_I8254_CALIBRATION	opt_clock.h
 CLK_USE_TSC_CALIBRATION		opt_clock.h
@@ -36,7 +37,6 @@ TIMER_FREQ			opt_clock.h
 KERN_TIMESTAMP			opt_global.h
 
 NO_F00F_HACK			opt_cpu.h
-CPU_AMD64X2_INTR_SPAM		opt_cpu.h
 CPU_BLUELIGHTNING_FPU_OP_CACHE	opt_cpu.h
 CPU_BLUELIGHTNING_3X		opt_cpu.h
 CPU_BTB_EN			opt_cpu.h
@@ -63,7 +63,6 @@ NO_MEMORY_HOLE			opt_cpu.h
 CPU_DISABLE_SSE			opt_cpu.h
 CPU_ATHLON_SSE_HACK		opt_cpu.h
 CPU_HAS_SSE2			opt_global.h
-CPU_HAS_FXSR			opt_global.h
 
 # The CPU type affects the endian conversion functions all over the kernel.
 I486_CPU		opt_global.h
@@ -117,46 +116,6 @@ VISUAL_USERCONFIG	opt_userconfig.h
 INTRO_USERCONFIG	opt_userconfig.h
 
 FE_8BIT_SUPPORT		opt_fe.h
-
-# -------------------------------
-# isdn4bsd: passive ISA cards
-# -------------------------------
-TEL_S0_8		opt_i4b.h
-TEL_S0_16		opt_i4b.h
-TEL_S0_16_3		opt_i4b.h
-AVM_A1			opt_i4b.h
-USR_STI			opt_i4b.h
-ITKIX1			opt_i4b.h
-ELSA_PCC16		opt_i4b.h
-# -------------------------------
-# isdn4bsd: passive ISA PnP cards
-# -------------------------------
-CRTX_S0_P		opt_i4b.h
-DRN_NGO                 opt_i4b.h
-TEL_S0_16_3_P		opt_i4b.h
-SEDLBAUER		opt_i4b.h
-DYNALINK		opt_i4b.h
-ASUSCOM_IPAC		opt_i4b.h
-ELSA_QS1ISA		opt_i4b.h
-SIEMENS_ISURF2		opt_i4b.h
-EICON_DIVA		opt_i4b.h
-COMPAQ_M610		opt_i4b.h
-# -------------------------------
-# isdn4bsd: passive PCI cards
-# -------------------------------
-ELSA_QS1PCI		opt_i4b.h
-# -------------------------------
-# isdn4bsd: passive PCMCIA cards
-# -------------------------------
-#AVM_A1_PCMCIA		opt_i4b.h
-# -------------------------------
-# isdn4bsd: misc options
-# -------------------------------
-# temporary workaround for SMP machines
-I4B_SMP_WORKAROUND      opt_i4b.h
-# enable VJ compression code for ipr i/f
-IPR_VJ			opt_i4b.h
-IPR_LOG			opt_i4b.h
 
 # -------------------------------
 # EOF

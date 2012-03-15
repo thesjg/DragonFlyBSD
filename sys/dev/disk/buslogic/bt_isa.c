@@ -69,7 +69,7 @@ bt_isa_alloc_resources(device_t dev, u_long portstart, u_long portend)
 			return (ENOMEM);
 		}
 	} else
-		irq = 0;
+		irq = NULL;
 
 	if (isa_get_drq(dev) != -1) {
 		rid = 0;
@@ -85,7 +85,7 @@ bt_isa_alloc_resources(device_t dev, u_long portstart, u_long portend)
 			return (ENOMEM);
 		}
 	} else
-		drq = 0;
+		drq = NULL;
 
 	bt_init_softc(dev, port, irq, drq);
 
@@ -170,7 +170,7 @@ bt_isa_probe(device_t dev)
 
 		bus_set_resource(dev, SYS_RES_DRQ, 0, info.drq, 1, -1);
 		bus_set_resource(dev, SYS_RES_IRQ, 0, info.irq, 1,
-		    machintr_intr_cpuid(info.irq));
+		    machintr_legacy_intr_cpuid(info.irq));
 
 		return (0);
 	}

@@ -30,7 +30,6 @@
  * THE POSSIBILITY OF SUCH DAMAGE.
  *
  * $FreeBSD: head/usr.sbin/wpa/wpa_supplicant/Packet32.c 189220 2009-03-01 08:01:38Z sam $
- * $DragonFly$
  */
 
 
@@ -45,7 +44,6 @@
 #include <sys/param.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
-#include <sys/socket.h>
 #include <sys/errno.h>
 #include <sys/sysctl.h>
 #include <sys/fcntl.h>
@@ -56,6 +54,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <net/bpf.h>
 #include <net/route.h>
 
 #include <netproto/802_11/ieee80211_ioctl.h>

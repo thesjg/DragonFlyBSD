@@ -37,7 +37,6 @@
  *
  * $Id: vinum.c,v 1.33 2001/01/09 06:19:15 grog Exp grog $
  * $FreeBSD: src/sys/dev/vinum/vinum.c,v 1.38.2.3 2003/01/07 12:14:16 joerg Exp $
- * $DragonFly: src/sys/dev/raid/vinum/vinum.c,v 1.20 2007/05/15 22:44:12 dillon Exp $
  */
 
 #define STATIC static					    /* nothing while we're testing XXX */
@@ -59,7 +58,7 @@ extern struct mc malloced[];
 
 struct dev_ops vinum_ops =
 {
-	{ "vinum", VINUM_CDEV_MAJOR, D_DISK },
+	{ "vinum", 0, D_DISK },
 	.d_open =	vinumopen,
 	.d_close =	vinumclose,
 	.d_read =	physread,
@@ -135,7 +134,7 @@ vinumattach(void *dummy)
      * read the initial configuration from.
      */
     if ((cp = kgetenv("vinum.drives")) != NULL) {
-	for (cp1 = cp, i = 0, drives = 0; *cp1 != '\0'; i++) {
+	for (cp1 = cp, i = 0, drives = NULL; *cp1 != '\0'; i++) {
 	    cp2 = cp1;
 	    while (*cp1 != '\0' && *cp1 != ',' && *cp1 != ' ')
 		cp1++;
@@ -208,6 +207,7 @@ vinum_inactive(int confopen)
 void
 free_vinum(int cleardrive)
 {
+    union daemoninfo di = { .nothing = 0 };
     int i;
     int drives_allocated = vinum_conf.drives_allocated;
 
@@ -223,7 +223,7 @@ free_vinum(int cleardrive)
     }
     while ((vinum_conf.flags & (VF_STOPPING | VF_DAEMONOPEN))
 	== (VF_STOPPING | VF_DAEMONOPEN)) {		    /* at least one daemon open, we're stopping */
-	queue_daemon_request(daemonrq_return, (union daemoninfo) 0); /* stop the daemon */
+	queue_daemon_request(daemonrq_return, di);	    /* stop the daemon */
 	tsleep(&vinumclose, 0, "vstop", 1);		    /* and wait for it */
     }
     if (SD != NULL) {

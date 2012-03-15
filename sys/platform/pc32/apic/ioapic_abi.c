@@ -54,6 +54,7 @@
 #include <machine/md_var.h>
 #include <machine/intr_machdep.h>
 #include <machine/globaldata.h>
+#include <machine/msi_var.h>
 
 #include <machine_base/isa/isa_intr.h>
 #include <machine_base/icu/icu.h>
@@ -463,16 +464,24 @@ static struct ioapic_irqmap {
 	enum intr_trigger	im_trig;
 	enum intr_polarity	im_pola;
 	int			im_gsi;
+	int			im_msi_base;
 	uint32_t		im_flags;	/* IOAPIC_IMF_ */
 } ioapic_irqmaps[MAXCPU][IOAPIC_HWI_VECTORS];
 
+static struct lwkt_token ioapic_irqmap_tok =
+	LWKT_TOKEN_INITIALIZER(ioapic_irqmap_token);
+
 #define IOAPIC_IMT_UNUSED	0
 #define IOAPIC_IMT_RESERVED	1
-#define IOAPIC_IMT_LINE		2
+#define IOAPIC_IMT_LEGACY	2
 #define IOAPIC_IMT_SYSCALL	3
+#define IOAPIC_IMT_SHADOW	4
+#define IOAPIC_IMT_MSI		5
+#define IOAPIC_IMT_MSIX		6
 
 #define IOAPIC_IMT_ISHWI(map)	((map)->im_type != IOAPIC_IMT_RESERVED && \
-				 (map)->im_type != IOAPIC_IMT_SYSCALL)
+				 (map)->im_type != IOAPIC_IMT_SYSCALL && \
+				 (map)->im_type != IOAPIC_IMT_SHADOW)
 
 #define IOAPIC_IMF_CONF		0x1
 
@@ -485,9 +494,21 @@ static void	ioapic_abi_intr_enable(int);
 static void	ioapic_abi_intr_disable(int);
 static void	ioapic_abi_intr_setup(int, int);
 static void	ioapic_abi_intr_teardown(int);
-static void	ioapic_abi_intr_config(int,
+
+static void	ioapic_abi_legacy_intr_config(int,
 		    enum intr_trigger, enum intr_polarity);
-static int	ioapic_abi_intr_cpuid(int);
+static int	ioapic_abi_legacy_intr_cpuid(int);
+
+static int	ioapic_abi_msi_alloc(int [], int, int);
+static void	ioapic_abi_msi_release(const int [], int, int);
+static void	ioapic_abi_msi_map(int, uint64_t *, uint32_t *, int);
+static int	ioapic_abi_msix_alloc(int *, int);
+static void	ioapic_abi_msix_release(int, int);
+
+static int	ioapic_abi_msi_alloc_intern(int, const char *,
+		    int [], int, int);
+static void	ioapic_abi_msi_release_intern(int, const char *,
+		    const int [], int, int);
 
 static void	ioapic_abi_finalize(void);
 static void	ioapic_abi_cleanup(void);
@@ -505,8 +526,15 @@ struct machintr_abi MachIntrABI_IOAPIC = {
 	.intr_enable	= ioapic_abi_intr_enable,
 	.intr_setup	= ioapic_abi_intr_setup,
 	.intr_teardown	= ioapic_abi_intr_teardown,
-	.intr_config	= ioapic_abi_intr_config,
-	.intr_cpuid	= ioapic_abi_intr_cpuid,
+
+	.legacy_intr_config = ioapic_abi_legacy_intr_config,
+	.legacy_intr_cpuid = ioapic_abi_legacy_intr_cpuid,
+
+	.msi_alloc	= ioapic_abi_msi_alloc,
+	.msi_release	= ioapic_abi_msi_release,
+	.msi_map	= ioapic_abi_msi_map,
+	.msix_alloc	= ioapic_abi_msix_alloc,
+	.msix_release	= ioapic_abi_msix_release,
 
 	.finalize	= ioapic_abi_finalize,
 	.cleanup	= ioapic_abi_cleanup,
@@ -517,28 +545,45 @@ struct machintr_abi MachIntrABI_IOAPIC = {
 };
 
 static int	ioapic_abi_extint_irq = -1;
-static int	ioapic_abi_line_irq_max;
+static int	ioapic_abi_legacy_irq_max;
 static int	ioapic_abi_gsi_balance;
+static int	ioapic_abi_msi_start;	/* NOTE: for testing only */
 
 struct ioapic_irqinfo	ioapic_irqs[IOAPIC_HWI_VECTORS];
 
 static void
 ioapic_abi_intr_enable(int irq)
 {
-	if (irq < 0 || irq >= IOAPIC_HWI_VECTORS) {
-		kprintf("ioapic_abi_intr_enable invalid irq %d\n", irq);
+	const struct ioapic_irqmap *map;
+
+	KASSERT(irq >= 0 && irq < IOAPIC_HWI_VECTORS,
+	    ("ioapic enable, invalid irq %d\n", irq));
+
+	map = &ioapic_irqmaps[mycpuid][irq];
+	KASSERT(IOAPIC_IMT_ISHWI(map),
+	    ("ioapic enable, not hwi irq %d, type %d, cpu%d\n",
+	     irq, map->im_type, mycpuid));
+	if (map->im_type != IOAPIC_IMT_LEGACY)
 		return;
-	}
+
 	IOAPIC_INTREN(irq);
 }
 
 static void
 ioapic_abi_intr_disable(int irq)
 {
-	if (irq < 0 || irq >= IOAPIC_HWI_VECTORS) {
-		kprintf("ioapic_abi_intr_disable invalid irq %d\n", irq);
+	const struct ioapic_irqmap *map;
+
+	KASSERT(irq >= 0 && irq < IOAPIC_HWI_VECTORS,
+	    ("ioapic disable, invalid irq %d\n", irq));
+
+	map = &ioapic_irqmaps[mycpuid][irq];
+	KASSERT(IOAPIC_IMT_ISHWI(map),
+	    ("ioapic disable, not hwi irq %d, type %d, cpu%d\n",
+	     irq, map->im_type, mycpuid));
+	if (map->im_type != IOAPIC_IMT_LEGACY)
 		return;
-	}
+
 	IOAPIC_INTRDIS(irq);
 }
 
@@ -579,13 +624,23 @@ ioapic_abi_stabilize(void)
 static void
 ioapic_abi_intr_setup(int intr, int flags)
 {
+	const struct ioapic_irqmap *map;
 	int vector, select;
 	uint32_t value;
 	u_long ef;
 
-	KKASSERT(intr >= 0 && intr < IOAPIC_HWI_VECTORS &&
-	    intr != IOAPIC_HWI_SYSCALL);
-	KKASSERT(ioapic_irqs[intr].io_addr != NULL);
+	KASSERT(intr >= 0 && intr < IOAPIC_HWI_VECTORS,
+	    ("ioapic setup, invalid irq %d\n", intr));
+
+	map = &ioapic_irqmaps[mycpuid][intr];
+	KASSERT(IOAPIC_IMT_ISHWI(map),
+	    ("ioapic setup, not hwi irq %d, type %d, cpu%d",
+	     intr, map->im_type, mycpuid));
+	if (map->im_type != IOAPIC_IMT_LEGACY)
+		return;
+
+	KASSERT(ioapic_irqs[intr].io_addr != NULL,
+	    ("ioapic setup, no GSI information, irq %d\n", intr));
 
 	ef = read_eflags();
 	cpu_disable_intr();
@@ -612,7 +667,7 @@ ioapic_abi_intr_setup(int intr, int flags)
 
 	imen_unlock();
 
-	machintr_intr_enable(intr);
+	IOAPIC_INTREN(intr);
 
 	write_eflags(ef);
 }
@@ -620,13 +675,23 @@ ioapic_abi_intr_setup(int intr, int flags)
 static void
 ioapic_abi_intr_teardown(int intr)
 {
+	const struct ioapic_irqmap *map;
 	int vector, select;
 	uint32_t value;
 	u_long ef;
 
-	KKASSERT(intr >= 0 && intr < IOAPIC_HWI_VECTORS &&
-	    intr != IOAPIC_HWI_SYSCALL);
-	KKASSERT(ioapic_irqs[intr].io_addr != NULL);
+	KASSERT(intr >= 0 && intr < IOAPIC_HWI_VECTORS,
+	    ("ioapic teardown, invalid irq %d\n", intr));
+
+	map = &ioapic_irqmaps[mycpuid][intr];
+	KASSERT(IOAPIC_IMT_ISHWI(map),
+	    ("ioapic teardown, not hwi irq %d, type %d, cpu%d",
+	     intr, map->im_type, mycpuid));
+	if (map->im_type != IOAPIC_IMT_LEGACY)
+		return;
+
+	KASSERT(ioapic_irqs[intr].io_addr != NULL,
+	    ("ioapic teardown, no GSI information, irq %d\n", intr));
 
 	ef = read_eflags();
 	cpu_disable_intr();
@@ -635,7 +700,7 @@ ioapic_abi_intr_teardown(int intr)
 	 * Teardown an interrupt vector.  The vector should already be
 	 * installed in the cpu's IDT, but make sure.
 	 */
-	machintr_intr_disable(intr);
+	IOAPIC_INTRDIS(intr);
 
 	vector = IDT_OFFSET + intr;
 
@@ -680,21 +745,26 @@ ioapic_abi_initmap(void)
 
 	kgetenv_int("hw.ioapic.gsi.balance", &ioapic_abi_gsi_balance);
 
+	kgetenv_int("hw.ioapic.msi_start", &ioapic_abi_msi_start);
+	ioapic_abi_msi_start &= ~0x1f;	/* MUST be 32 aligned */
+
 	/*
 	 * NOTE: ncpus is not ready yet
 	 */
 	for (cpu = 0; cpu < MAXCPU; ++cpu) {
 		int i;
 
-		for (i = 0; i < IOAPIC_HWI_VECTORS; ++i)
+		for (i = 0; i < IOAPIC_HWI_VECTORS; ++i) {
 			ioapic_irqmaps[cpu][i].im_gsi = -1;
+			ioapic_irqmaps[cpu][i].im_msi_base = -1;
+		}
 		ioapic_irqmaps[cpu][IOAPIC_HWI_SYSCALL].im_type =
 		    IOAPIC_IMT_SYSCALL;
 	}
 }
 
 void
-ioapic_abi_set_irqmap(int irq, int gsi, enum intr_trigger trig,
+ioapic_set_legacy_irqmap(int irq, int gsi, enum intr_trigger trig,
     enum intr_polarity pola)
 {
 	struct ioapic_irqinfo *info;
@@ -706,15 +776,15 @@ ioapic_abi_set_irqmap(int irq, int gsi, enum intr_trigger trig,
 	KKASSERT(pola == INTR_POLARITY_HIGH || pola == INTR_POLARITY_LOW);
 
 	KKASSERT(irq >= 0 && irq < IOAPIC_HWI_VECTORS);
-	if (irq > ioapic_abi_line_irq_max)
-		ioapic_abi_line_irq_max = irq;
+	if (irq > ioapic_abi_legacy_irq_max)
+		ioapic_abi_legacy_irq_max = irq;
 
 	cpuid = ioapic_abi_gsi_cpuid(irq, gsi);
 
 	map = &ioapic_irqmaps[cpuid][irq];
 
 	KKASSERT(map->im_type == IOAPIC_IMT_UNUSED);
-	map->im_type = IOAPIC_IMT_LINE;
+	map->im_type = IOAPIC_IMT_LEGACY;
 
 	map->im_gsi = gsi;
 	map->im_trig = trig;
@@ -747,14 +817,20 @@ ioapic_abi_set_irqmap(int irq, int gsi, enum intr_trigger trig,
 }
 
 void
-ioapic_abi_fixup_irqmap(void)
+ioapic_fixup_legacy_irqmaps(void)
 {
 	int cpu;
+
+	ioapic_abi_legacy_irq_max += 1;
+	if (bootverbose) {
+		kprintf("IOAPIC: legacy irq max %d\n",
+		    ioapic_abi_legacy_irq_max);
+	}
 
 	for (cpu = 0; cpu < ncpus; ++cpu) {
 		int i;
 
-		for (i = 0; i < ISA_IRQ_CNT; ++i) {
+		for (i = 0; i < ioapic_abi_legacy_irq_max; ++i) {
 			struct ioapic_irqmap *map = &ioapic_irqmaps[cpu][i];
 
 			if (map->im_type == IOAPIC_IMT_UNUSED) {
@@ -766,14 +842,11 @@ ioapic_abi_fixup_irqmap(void)
 			}
 		}
 	}
-
-	ioapic_abi_line_irq_max += 1;
-	if (bootverbose)
-		kprintf("IOAPIC: line irq max %d\n", ioapic_abi_line_irq_max);
 }
 
 int
-ioapic_abi_find_gsi(int gsi, enum intr_trigger trig, enum intr_polarity pola)
+ioapic_find_legacy_by_gsi(int gsi, enum intr_trigger trig,
+    enum intr_polarity pola)
 {
 	int cpu;
 
@@ -783,12 +856,12 @@ ioapic_abi_find_gsi(int gsi, enum intr_trigger trig, enum intr_polarity pola)
 	for (cpu = 0; cpu < ncpus; ++cpu) {
 		int irq;
 
-		for (irq = 0; irq < ioapic_abi_line_irq_max; ++irq) {
+		for (irq = 0; irq < ioapic_abi_legacy_irq_max; ++irq) {
 			const struct ioapic_irqmap *map =
 			    &ioapic_irqmaps[cpu][irq];
 
 			if (map->im_gsi == gsi) {
-				KKASSERT(map->im_type == IOAPIC_IMT_LINE);
+				KKASSERT(map->im_type == IOAPIC_IMT_LEGACY);
 
 				if (map->im_flags & IOAPIC_IMF_CONF) {
 					if (map->im_trig != trig ||
@@ -803,20 +876,21 @@ ioapic_abi_find_gsi(int gsi, enum intr_trigger trig, enum intr_polarity pola)
 }
 
 int
-ioapic_abi_find_irq(int irq, enum intr_trigger trig, enum intr_polarity pola)
+ioapic_find_legacy_by_irq(int irq, enum intr_trigger trig,
+    enum intr_polarity pola)
 {
 	int cpu;
 
 	KKASSERT(trig == INTR_TRIGGER_EDGE || trig == INTR_TRIGGER_LEVEL);
 	KKASSERT(pola == INTR_POLARITY_HIGH || pola == INTR_POLARITY_LOW);
 
-	if (irq < 0 || irq >= ioapic_abi_line_irq_max)
+	if (irq < 0 || irq >= ioapic_abi_legacy_irq_max)
 		return -1;
 
 	for (cpu = 0; cpu < ncpus; ++cpu) {
 		const struct ioapic_irqmap *map = &ioapic_irqmaps[cpu][irq];
 
-		if (map->im_type == IOAPIC_IMT_LINE) {
+		if (map->im_type == IOAPIC_IMT_LEGACY) {
 			if (map->im_flags & IOAPIC_IMF_CONF) {
 				if (map->im_trig != trig ||
 				    map->im_pola != pola)
@@ -829,7 +903,8 @@ ioapic_abi_find_irq(int irq, enum intr_trigger trig, enum intr_polarity pola)
 }
 
 static void
-ioapic_abi_intr_config(int irq, enum intr_trigger trig, enum intr_polarity pola)
+ioapic_abi_legacy_intr_config(int irq, enum intr_trigger trig,
+    enum intr_polarity pola)
 {
 	struct ioapic_irqinfo *info;
 	struct ioapic_irqmap *map = NULL;
@@ -839,10 +914,10 @@ ioapic_abi_intr_config(int irq, enum intr_trigger trig, enum intr_polarity pola)
 	KKASSERT(trig == INTR_TRIGGER_EDGE || trig == INTR_TRIGGER_LEVEL);
 	KKASSERT(pola == INTR_POLARITY_HIGH || pola == INTR_POLARITY_LOW);
 
-	KKASSERT(irq >= 0 && irq < ioapic_abi_line_irq_max);
+	KKASSERT(irq >= 0 && irq < ioapic_abi_legacy_irq_max);
 	for (cpuid = 0; cpuid < ncpus; ++cpuid) {
 		map = &ioapic_irqmaps[cpuid][irq];
-		if (map->im_type == IOAPIC_IMT_LINE)
+		if (map->im_type == IOAPIC_IMT_LEGACY)
 			break;
 	}
 	KKASSERT(cpuid < ncpus);
@@ -896,7 +971,7 @@ ioapic_abi_intr_config(int irq, enum intr_trigger trig, enum intr_polarity pola)
 }
 
 int
-ioapic_abi_extint_irqmap(int irq)
+ioapic_conf_legacy_extint(int irq)
 {
 	struct ioapic_irqinfo *info;
 	struct ioapic_irqmap *map;
@@ -921,14 +996,14 @@ ioapic_abi_extint_irqmap(int irq)
 	map = &ioapic_irqmaps[0][irq];
 
 	KKASSERT(map->im_type == IOAPIC_IMT_RESERVED ||
-		 map->im_type == IOAPIC_IMT_LINE);
-	if (map->im_type == IOAPIC_IMT_LINE) {
+		 map->im_type == IOAPIC_IMT_LEGACY);
+	if (map->im_type == IOAPIC_IMT_LEGACY) {
 		if (map->im_flags & IOAPIC_IMF_CONF)
 			return EEXIST;
 	}
 	ioapic_abi_extint_irq = irq;
 
-	map->im_type = IOAPIC_IMT_LINE;
+	map->im_type = IOAPIC_IMT_LEGACY;
 	map->im_trig = INTR_TRIGGER_EDGE;
 	map->im_pola = INTR_POLARITY_HIGH;
 	map->im_flags = IOAPIC_IMF_CONF;
@@ -962,16 +1037,16 @@ ioapic_abi_extint_irqmap(int irq)
 }
 
 static int
-ioapic_abi_intr_cpuid(int irq)
+ioapic_abi_legacy_intr_cpuid(int irq)
 {
 	const struct ioapic_irqmap *map = NULL;
 	int cpuid;
 
-	KKASSERT(irq >= 0 && irq < ioapic_abi_line_irq_max);
+	KKASSERT(irq >= 0 && irq < ioapic_abi_legacy_irq_max);
 
 	for (cpuid = 0; cpuid < ncpus; ++cpuid) {
 		map = &ioapic_irqmaps[cpuid][irq];
-		if (map->im_type == IOAPIC_IMT_LINE)
+		if (map->im_type == IOAPIC_IMT_LEGACY)
 			return cpuid;
 	}
 
@@ -1084,4 +1159,236 @@ ioapic_abi_rman_setup(struct rman *rm)
 			    rm->rm_cpuid, start, end);
 		}
 	}
+}
+
+static int
+ioapic_abi_msi_alloc_intern(int type, const char *desc,
+    int intrs[], int count, int cpuid)
+{
+	int i, error;
+
+	KASSERT(cpuid >= 0 && cpuid < ncpus,
+	    ("invalid cpuid %d", cpuid));
+
+	KASSERT(count > 0 && count <= 32, ("invalid count %d\n", count));
+	KASSERT((count & (count - 1)) == 0,
+	    ("count %d is not power of 2\n", count));
+
+	lwkt_gettoken(&ioapic_irqmap_tok);
+
+	/*
+	 * NOTE:
+	 * Since IDT_OFFSET is 32, which is the maximum valid 'count',
+	 * we do not need to find out the first properly aligned
+	 * interrupt vector.
+	 */
+
+	error = EMSGSIZE;
+	for (i = ioapic_abi_msi_start; i < IOAPIC_HWI_VECTORS; i += count) {
+		int j;
+
+		if (ioapic_irqmaps[cpuid][i].im_type != IOAPIC_IMT_UNUSED)
+			continue;
+
+		for (j = 1; j < count; ++j) {
+			if (ioapic_irqmaps[cpuid][i + j].im_type !=
+			    IOAPIC_IMT_UNUSED)
+				break;
+		}
+		if (j != count)
+			continue;
+
+		for (j = 0; j < count; ++j) {
+			int intr = i + j, cpu;
+
+			for (cpu = 0; cpu < ncpus; ++cpu) {
+				struct ioapic_irqmap *map;
+
+				map = &ioapic_irqmaps[cpu][intr];
+				KASSERT(map->im_msi_base < 0,
+				    ("intr %d cpu%d, stale %s-base %d\n",
+				     intr, cpu, desc, map->im_msi_base));
+				KASSERT(map->im_type == IOAPIC_IMT_UNUSED,
+				    ("intr %d cpu%d, already allocated\n",
+				     intr, cpu));
+
+				if (cpu == cpuid) {
+					map->im_type = type;
+					map->im_msi_base = i;
+				} else {
+					map->im_type = IOAPIC_IMT_SHADOW;
+				}
+			}
+
+			intrs[j] = intr;
+			msi_setup(intr);
+
+			if (bootverbose) {
+				kprintf("alloc %s intr %d on cpu%d\n",
+				    desc, intr, cpuid);
+			}
+		}
+		error = 0;
+		break;
+	}
+
+	lwkt_reltoken(&ioapic_irqmap_tok);
+
+	return error;
+}
+
+static void
+ioapic_abi_msi_release_intern(int type, const char *desc,
+    const int intrs[], int count, int cpuid)
+{
+	int i, msi_base = -1, intr_next = -1, mask;
+
+	KASSERT(cpuid >= 0 && cpuid < ncpus,
+	    ("invalid cpuid %d", cpuid));
+
+	KASSERT(count > 0 && count <= 32, ("invalid count %d\n", count));
+
+	mask = count - 1;
+	KASSERT((count & mask) == 0, ("count %d is not power of 2\n", count));
+
+	lwkt_gettoken(&ioapic_irqmap_tok);
+
+	for (i = 0; i < count; ++i) {
+		int intr = intrs[i], cpu;
+
+		KASSERT(intr >= 0 && intr < IOAPIC_HWI_VECTORS,
+		    ("invalid intr %d\n", intr));
+
+		for (cpu = 0; cpu < ncpus; ++cpu) {
+			struct ioapic_irqmap *map;
+
+			map = &ioapic_irqmaps[cpu][intr];
+
+			if (cpu == cpuid) {
+				KASSERT(map->im_type == type,
+				    ("try release non-%s intr %d cpu%d, "
+				     "type %d\n", desc, intr, cpu,
+				     map->im_type));
+				KASSERT(map->im_msi_base >= 0 &&
+				    map->im_msi_base <= intr,
+				    ("intr %d cpu%d, invalid %s-base %d\n",
+				     intr, cpu, desc, map->im_msi_base));
+				KASSERT((map->im_msi_base & mask) == 0,
+				    ("intr %d cpu%d, %s-base %d is "
+				     "not proper aligned %d\n",
+				     intr, cpu, desc, map->im_msi_base, count));
+
+				if (msi_base < 0) {
+					msi_base = map->im_msi_base;
+				} else {
+					KASSERT(map->im_msi_base == msi_base,
+					    ("intr %d cpu%d, "
+					     "inconsistent %s-base, "
+					     "was %d, now %d\n",
+					     intr, cpu, desc,
+					     msi_base, map->im_msi_base));
+				}
+				map->im_msi_base = -1;
+			} else {
+				KASSERT(map->im_type == IOAPIC_IMT_SHADOW,
+				    ("try release non-%ssh intr %d cpu%d, "
+				     "type %d\n", desc, intr, cpu,
+				     map->im_type));
+				KASSERT(map->im_msi_base < 0,
+				    ("intr %d cpu%d, invalid %ssh-base %d\n",
+				     intr, cpu, desc, map->im_msi_base));
+			}
+			map->im_type = IOAPIC_IMT_UNUSED;
+		}
+
+		if (intr_next < intr)
+			intr_next = intr;
+
+		if (bootverbose) {
+			kprintf("release %s intr %d on cpu%d\n",
+			    desc, intr, cpuid);
+		}
+	}
+
+	KKASSERT(intr_next > 0);
+	KKASSERT(msi_base >= 0);
+
+	++intr_next;
+	if (intr_next < IOAPIC_HWI_VECTORS) {
+		int cpu;
+
+		for (cpu = 0; cpu < ncpus; ++cpu) {
+			const struct ioapic_irqmap *map =
+			    &ioapic_irqmaps[cpu][intr_next];
+
+			if (map->im_type == type) {
+				KASSERT(map->im_msi_base != msi_base,
+				    ("more than %d %s was allocated\n",
+				     count, desc));
+			}
+		}
+	}
+
+	lwkt_reltoken(&ioapic_irqmap_tok);
+}
+
+static int
+ioapic_abi_msi_alloc(int intrs[], int count, int cpuid)
+{
+	return ioapic_abi_msi_alloc_intern(IOAPIC_IMT_MSI, "MSI",
+	    intrs, count, cpuid);
+}
+
+static void
+ioapic_abi_msi_release(const int intrs[], int count, int cpuid)
+{
+	ioapic_abi_msi_release_intern(IOAPIC_IMT_MSI, "MSI",
+	    intrs, count, cpuid);
+}
+
+static int
+ioapic_abi_msix_alloc(int *intr, int cpuid)
+{
+	return ioapic_abi_msi_alloc_intern(IOAPIC_IMT_MSIX, "MSI-X",
+	    intr, 1, cpuid);
+}
+
+static void
+ioapic_abi_msix_release(int intr, int cpuid)
+{
+	ioapic_abi_msi_release_intern(IOAPIC_IMT_MSIX, "MSI-X",
+	    &intr, 1, cpuid);
+}
+
+static void
+ioapic_abi_msi_map(int intr, uint64_t *addr, uint32_t *data, int cpuid)
+{
+	const struct ioapic_irqmap *map;
+
+	KASSERT(cpuid >= 0 && cpuid < ncpus,
+	    ("invalid cpuid %d", cpuid));
+
+	KASSERT(intr >= 0 && intr < IOAPIC_HWI_VECTORS,
+	    ("invalid intr %d\n", intr));
+
+	lwkt_gettoken(&ioapic_irqmap_tok);
+
+	map = &ioapic_irqmaps[cpuid][intr];
+	KASSERT(map->im_type == IOAPIC_IMT_MSI ||
+	    map->im_type == IOAPIC_IMT_MSIX,
+	    ("try map non-MSI/MSI-X intr %d, type %d\n", intr, map->im_type));
+	KASSERT(map->im_msi_base >= 0 && map->im_msi_base <= intr,
+	    ("intr %d, invalid %s-base %d\n", intr,
+	     map->im_type == IOAPIC_IMT_MSI ? "MSI" : "MSI-X",
+	     map->im_msi_base));
+
+	msi_map(map->im_msi_base, addr, data, cpuid);
+
+	if (bootverbose) {
+		kprintf("map %s intr %d on cpu%d\n",
+		    map->im_type == IOAPIC_IMT_MSI ? "MSI" : "MSI-X",
+		    intr, cpuid);
+	}
+
+	lwkt_reltoken(&ioapic_irqmap_tok);
 }

@@ -26,7 +26,6 @@
  * $FreeBSD: src/sys/dev/pci/pci_user.c,v 1.22.2.4.2.1 2009/04/15 03:14:26 kensmith Exp $
  */
 
-#include "opt_bus.h"	/* XXX trim includes */
 #include "opt_compat.h"
 
 #include <sys/param.h>
@@ -59,31 +58,29 @@
  * This is the user interface to PCI configuration space.
  */
 
-#if 0
 static d_open_t 	pci_open;
 static d_close_t	pci_close;
 static int	pci_conf_match(struct pci_match_conf *matches, int num_matches,
 			       struct pci_conf *match_buf);
 static d_ioctl_t	pci_ioctl;
-static struct cdevsw pcicdev = {
-	.d_open =	pci_open,
-	.d_close =	pci_close,
-	.d_ioctl =	pci_ioctl,
-	.d_name =	"pci",
+
+struct dev_ops pcic_ops = {
+	{ "pci", 0, 0 },
+	.d_open =       pci_open,
+	.d_close =      pci_close,
+	.d_ioctl =      pci_ioctl,
 };
-#endif
 
 static int
 pci_open(struct dev_open_args *ap)
 {
-#if 0
-	int error;
+	int oflags = ap->a_oflags;
+
 	if (oflags & FWRITE) {
-		error = securelevel_gt(td->td_ucred, 0);
-		if (error)
-			return (error);
+		if (securelevel > 0)
+			return (EPERM);
 	}
-#endif
+
 	return (0);
 }
 
@@ -732,6 +729,16 @@ getconfexit:
 			bio->pbi_enabled = (value & PCIM_CMD_PORTEN) != 0;
 		error = 0;
 		break;
+	case PCIOCATTACHED:
+		error = 0;
+		io = (struct pci_io *)ap->a_data;
+		pcidev = pci_find_dbsf(io->pi_sel.pc_domain, io->pi_sel.pc_bus,
+				       io->pi_sel.pc_dev, io->pi_sel.pc_func);
+		if (pcidev != NULL)
+			io->pi_data = device_is_attached(pcidev);
+		else
+			error = ENODEV;
+		break;
 	default:
 		error = ENOTTY;
 		break;
@@ -739,12 +746,3 @@ getconfexit:
 
 	return (error);
 }
-
-
-#define PCI_CDEV        78
-struct dev_ops pcic_ops = {
-        { "pci", PCI_CDEV, 0 },
-        .d_open =       pci_open,
-        .d_close =      pci_close,
-        .d_ioctl =      pci_ioctl,
-};

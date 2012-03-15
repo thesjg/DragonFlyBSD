@@ -101,8 +101,7 @@ int (*ef_outputp)(struct ifnet *ifp, struct mbuf **mp, struct sockaddr *dst,
 
 /* netgraph node hooks for ng_ether(4) */
 void	(*ng_ether_input_p)(struct ifnet *ifp, struct mbuf **mp);
-void	(*ng_ether_input_orphan_p)(struct ifnet *ifp,
-		struct mbuf *m, const struct ether_header *eh);
+void	(*ng_ether_input_orphan_p)(struct ifnet *ifp, struct mbuf *m);
 int	(*ng_ether_output_p)(struct ifnet *ifp, struct mbuf **mp);
 void	(*ng_ether_attach_p)(struct ifnet *ifp);
 void	(*ng_ether_detach_p)(struct ifnet *ifp);
@@ -180,15 +179,15 @@ SYSCTL_ULONG(_net_link_ether, OID_AUTO, input_requeue, CTLFLAG_RW,
 #endif
 
 #define ETHER_KTR_STR		"ifp=%p"
-#define ETHER_KTR_ARG_SIZE	(sizeof(void *))
+#define ETHER_KTR_ARGS	struct ifnet *ifp
 #ifndef KTR_ETHERNET
 #define KTR_ETHERNET		KTR_ALL
 #endif
 KTR_INFO_MASTER(ether);
-KTR_INFO(KTR_ETHERNET, ether, chain_beg, 0, ETHER_KTR_STR, ETHER_KTR_ARG_SIZE);
-KTR_INFO(KTR_ETHERNET, ether, chain_end, 1, ETHER_KTR_STR, ETHER_KTR_ARG_SIZE);
-KTR_INFO(KTR_ETHERNET, ether, disp_beg, 2, ETHER_KTR_STR, ETHER_KTR_ARG_SIZE);
-KTR_INFO(KTR_ETHERNET, ether, disp_end, 3, ETHER_KTR_STR, ETHER_KTR_ARG_SIZE);
+KTR_INFO(KTR_ETHERNET, ether, chain_beg, 0, ETHER_KTR_STR, ETHER_KTR_ARGS);
+KTR_INFO(KTR_ETHERNET, ether, chain_end, 1, ETHER_KTR_STR, ETHER_KTR_ARGS);
+KTR_INFO(KTR_ETHERNET, ether, disp_beg, 2, ETHER_KTR_STR, ETHER_KTR_ARGS);
+KTR_INFO(KTR_ETHERNET, ether, disp_end, 3, ETHER_KTR_STR, ETHER_KTR_ARGS);
 #define logether(name, arg)	KTR_LOG(ether_ ## name, arg)
 
 /*
@@ -334,19 +333,22 @@ ether_output(struct ifnet *ifp, struct mbuf *m, struct sockaddr *dst,
 	}
 
 #ifdef CARP
-	if (ifp->if_carp) {
+	if (ifp->if_type == IFT_CARP) {
+		ifp = carp_parent(ifp);
+		ac = IFP2AC(ifp);
+
 		/*
-		 * Hold BGL and recheck ifp->if_carp
+		 * Check precondition again
 		 */
-		get_mplock();
-		if (ifp->if_carp && (error = carp_output(ifp, m, dst, NULL))) {
-			rel_mplock();
-			goto bad;
-		}
-		rel_mplock();
+		ASSERT_IFNET_NOT_SERIALIZED_ALL(ifp);
+
+		if (ifp->if_flags & IFF_MONITOR)
+			gotoerr(ENETDOWN);
+		if ((ifp->if_flags & (IFF_UP | IFF_RUNNING)) !=
+		    (IFF_UP | IFF_RUNNING))
+			gotoerr(ENETDOWN);
 	}
 #endif
- 
 
 	/* Handle ng_ether(4) processing, if any */
 	if (ng_ether_output_p != NULL) {
@@ -602,7 +604,7 @@ ether_ifdetach(struct ifnet *ifp)
 }
 
 int
-ether_ioctl(struct ifnet *ifp, int command, caddr_t data)
+ether_ioctl(struct ifnet *ifp, u_long command, caddr_t data)
 {
 	struct ifaddr *ifa = (struct ifaddr *) data;
 	struct ifreq *ifr = (struct ifreq *) data;
@@ -684,7 +686,9 @@ ether_resolvemulti(
 	struct sockaddr *sa)
 {
 	struct sockaddr_dl *sdl;
+#ifdef INET
 	struct sockaddr_in *sin;
+#endif
 #ifdef INET6
 	struct sockaddr_in6 *sin6;
 #endif
@@ -699,7 +703,7 @@ ether_resolvemulti(
 		e_addr = LLADDR(sdl);
 		if ((e_addr[0] & 1) != 1)
 			return EADDRNOTAVAIL;
-		*llsa = 0;
+		*llsa = NULL;
 		return 0;
 
 #ifdef INET
@@ -728,7 +732,7 @@ ether_resolvemulti(
 			 * (This is used for multicast routers.)
 			 */
 			ifp->if_flags |= IFF_ALLMULTI;
-			*llsa = 0;
+			*llsa = NULL;
 			return 0;
 		}
 		if (!IN6_IS_ADDR_MULTICAST(&sin6->sin6_addr))
@@ -986,7 +990,7 @@ ether_demux_oncpu(struct ifnet *ifp, struct mbuf *m)
 
 	M_ASSERTPKTHDR(m);
 	KASSERT(m->m_len >= ETHER_HDR_LEN,
-		("ether header is no contiguous!\n"));
+		("ether header is not contiguous!\n"));
 
 	eh = mtod(m, struct ether_header *);
 
@@ -1005,29 +1009,6 @@ ether_demux_oncpu(struct ifnet *ifp, struct mbuf *m)
 		/* packet is passing the second time */
 		goto post_stats;
 	}
-
-#ifdef CARP
-	/*
-	 * XXX: Okay, we need to call carp_forus() and - if it is for
-	 * us jump over code that does the normal check
-	 * "ac_enaddr == ether_dhost". The check sequence is a bit
-	 * different from OpenBSD, so we jump over as few code as
-	 * possible, to catch _all_ sanity checks. This needs
-	 * evaluation, to see if the carp ether_dhost values break any
-	 * of these checks!
-	 */
-	if (ifp->if_carp) {
-		/*
-		 * Hold BGL and recheck ifp->if_carp
-		 */
-		get_mplock();
-		if (ifp->if_carp && carp_forus(ifp->if_carp, eh->ether_dhost)) {
-			rel_mplock();
-			goto post_stats;
-		}
-		rel_mplock();
-	}
-#endif
 
 	/*
 	 * We got a packet which was unicast to a different Ethernet
@@ -1197,11 +1178,22 @@ post_stats:
 #endif
 		if (ng_ether_input_orphan_p != NULL) {
 			/*
+			 * Put back the ethernet header so netgraph has a
+			 * consistent view of inbound packets.
+			 */
+			M_PREPEND(m, ETHER_HDR_LEN, MB_DONTWAIT);
+			if (m == NULL) {
+				/*
+				 * M_PREPEND frees the mbuf in case of failure.
+				 */
+				return;
+			}
+			/*
 			 * Hold BGL and recheck ng_ether_input_orphan_p
 			 */
 			get_mplock();
 			if (ng_ether_input_orphan_p != NULL) {
-				ng_ether_input_orphan_p(ifp, m, eh);
+				ng_ether_input_orphan_p(ifp, m);
 				rel_mplock();
 				return;
 			}
@@ -1268,6 +1260,25 @@ ether_input_oncpu(struct ifnet *ifp, struct mbuf *m)
 				("bridge_input_p changed rcvif\n"));
 		}
 	}
+
+#ifdef CARP
+	if (ifp->if_carp) {
+		/*
+		 * Hold CARP token and recheck ifp->if_carp
+		 */
+		carp_gettok();
+		if (ifp->if_carp) {
+			m = carp_input(ifp->if_carp, m);
+			if (m == NULL) {
+				carp_reltok();
+				return;
+			}
+			KASSERT(ifp == m->m_pkthdr.rcvif,
+				("carp_input changed rcvif\n"));
+		}
+		carp_reltok();
+	}
+#endif
 
 	/* Handle ng_ether(4) processing, if any */
 	if (ng_ether_input_p != NULL) {

@@ -865,6 +865,7 @@ vfsync_bp(struct buf *bp, void *data)
 			bawrite(bp);
 		}
 		waitrunningbufspace();
+		vm_wait_nominal();
 		if (info->lazylimit && info->lazycount >= info->lazylimit)
 			error = 1;
 		else
@@ -1911,7 +1912,7 @@ vfs_hang_addrlist(struct mount *mp, struct netexport *nep,
 	struct radix_node_head *rnh;
 	int i;
 	struct radix_node *rn;
-	struct sockaddr *saddr, *smask = 0;
+	struct sockaddr *saddr, *smask = NULL;
 	struct domain *dom;
 	int error;
 
@@ -1947,7 +1948,7 @@ vfs_hang_addrlist(struct mount *mp, struct netexport *nep,
 			smask->sa_len = argp->ex_masklen;
 	}
 	i = saddr->sa_family;
-	if ((rnh = nep->ne_rtable[i]) == 0) {
+	if ((rnh = nep->ne_rtable[i]) == NULL) {
 		/*
 		 * Seems silly to initialize every AF when most are not used,
 		 * do so on demand here
@@ -1958,14 +1959,14 @@ vfs_hang_addrlist(struct mount *mp, struct netexport *nep,
 				    dom->dom_rtoffset);
 				break;
 			}
-		if ((rnh = nep->ne_rtable[i]) == 0) {
+		if ((rnh = nep->ne_rtable[i]) == NULL) {
 			error = ENOBUFS;
 			goto out;
 		}
 	}
 	rn = (*rnh->rnh_addaddr) ((char *) saddr, (char *) smask, rnh,
 	    np->netc_rnodes);
-	if (rn == 0 || np != (struct netcred *) rn) {	/* already exists */
+	if (rn == NULL || np != (struct netcred *) rn) {	/* already exists */
 		error = EPERM;
 		goto out;
 	}

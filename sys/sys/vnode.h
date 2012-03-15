@@ -196,7 +196,7 @@ struct vnode {
 	struct kev_filter v_filter;		/* kevent filters (poller(s)) */
 	struct vmresident *v_resident;		/* optional vmresident */
 	struct ccms_dataspace v_ccms;		/* cache coherency */
-	struct mount *v_pfsmp;			/* XXX: hack for PFS accounting */
+	struct mount *v_pfsmp;			/* real mount point for pfs/nullfs mounts */
 #ifdef	DEBUG_LOCKS
 	const char *filename;			/* Source file doing locking */
 	int line;				/* Line number doing locking */
@@ -395,6 +395,7 @@ struct ucred;
 struct uio;
 struct vattr;
 struct vnode;
+struct syncer_ctx;
 
 struct vnode *getsynthvnode(const char *devname);
 void	addaliasu (struct vnode *vp, int x, int y);
@@ -546,6 +547,9 @@ void	mount_init(struct mount *mp);
 
 void	vn_syncer_add(struct vnode *, int);
 void	vn_syncer_remove(struct vnode *);
+void	vn_syncer_thr_create(struct mount *);
+void	vn_syncer_thr_stop(struct mount *);
+
 void	vnlru_proc_wait(void);
 
 extern	struct vop_ops default_vnode_vops;

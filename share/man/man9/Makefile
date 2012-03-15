@@ -132,6 +132,7 @@ MAN=	accept_filter.9 \
 	posix4.9 \
 	priv.9 \
 	prop_copyin_ioctl.9 \
+	putter.9 \
 	resettodr.9 \
 	rman.9 \
 	rtalloc.9 \
@@ -801,7 +802,8 @@ MLINKS+=spinlock.9 spin_init.9 \
 MLINKS+=store.9 casuword.9 \
 	store.9 subyte.9 \
 	store.9 susword.9 \
-	store.9 suword.9
+	store.9 suword.9 \
+	store.9 suword32.9
 MLINKS+=syscall.9 syscalls.master.5
 MLINKS+=sysctl.9 SYSCTL_DECL.9 \
 	sysctl.9 SYSCTL_INT.9 \
@@ -856,6 +858,7 @@ MLINKS+=time.9 boottime.9 \
 	time.9 time_second.9
 MLINKS+=token.9 lwkt_getpooltoken.9 \
 	token.9 lwkt_gettoken.9 \
+	token.9 lwkt_gettoken_shared.9 \
 	token.9 lwkt_reltoken.9 \
 	token.9 lwkt_token_init.9 \
 	token.9 lwkt_token_pool_lookup.9 \

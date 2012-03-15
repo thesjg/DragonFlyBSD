@@ -32,7 +32,6 @@
 
 #define _IP_VHL
 
-#include "opt_ipfw.h"
 #include "opt_ipdn.h"
 #include "opt_ipdivert.h"
 #include "opt_ipsec.h"
@@ -1631,7 +1630,7 @@ ip_pcbopts(int optname, struct mbuf **pcbopt, struct mbuf *m)
 	/* turn off any old options */
 	if (*pcbopt)
 		m_free(*pcbopt);
-	*pcbopt = 0;
+	*pcbopt = NULL;
 	if (m == NULL || m->m_len == 0) {
 		/*
 		 * Only turning off any previous options.

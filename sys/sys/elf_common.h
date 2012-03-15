@@ -52,7 +52,7 @@ typedef struct {
 	u_int32_t	n_type;		/* Type of this note. */
 } Elf_Note;
 
-/* Indexes into the e_ident array.  Keep synced with 
+/* Indexes into the e_ident array.  Keep synced with
    http://www.sco.com/developers/gabi/latest/ch4.eheader.html */
 #define EI_MAG0		0	/* Magic number, byte 0. */
 #define EI_MAG1		1	/* Magic number, byte 1. */
@@ -301,8 +301,9 @@ typedef struct {
 #define PT_COUNT	8	/* Number of defined p_type values. */
 
 #define PT_LOOS		0x60000000	/* First OS-specific. */
-#define PT_GNU_EH_FRAME	0x6474e550
-#define PT_GNU_STACK	0x6474e551
+#define PT_GNU_EH_FRAME	0x6474e550	/* GCC .eh_frame_hdr segment */
+#define PT_GNU_STACK	0x6474e551	/* Indicates stack executability */
+#define PT_GNU_RELRO	0x6474e552	/* Read-only after relocation */
 #define PT_HIOS		0x6fffffff	/* Last OS-specific. */
 #define PT_LOPROC	0x70000000	/* First processor-specific type. */
 #define PT_HIPROC	0x7fffffff	/* Last processor-specific type. */
@@ -466,6 +467,7 @@ typedef struct {
 #define STT_TLS		6	/* TLS object. */
 #define STT_NUM		7
 #define STT_LOOS	10	/* Reserved range for operating system */
+#define STT_GNU_IFUNC	10
 #define STT_HIOS	12	/*   specific semantics. */
 #define STT_LOPROC	13	/* reserved range for processor */
 #define STT_HIPROC	15	/*   specific semantics. */

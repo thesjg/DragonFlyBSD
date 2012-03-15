@@ -2,7 +2,7 @@
  * Written by J.T. Conklin <jtc@NetBSD.org>.
  * Public domain.
  *
- * $NetBSD: s_scalbn.S,v 1.8 2006/03/21 11:35:21 drochner Exp $
+ * $NetBSD: s_scalbn.S,v 1.9 2010/04/23 19:17:07 drochner Exp $
  */
 
 #include <machine/asm.h>
@@ -25,3 +25,5 @@ ENTRY(scalbn)
 #endif
 	ret
 END(scalbn)
+
+	.section .note.GNU-stack,"",%progbits

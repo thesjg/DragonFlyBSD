@@ -206,7 +206,7 @@ lp_probe(device_t dev)
 	/* reserve the interrupt resource, expecting irq is available to continue */
 	lp->res_irq = bus_alloc_legacy_irq_resource(dev, &zero, irq,
 	    RF_SHAREABLE);
-	if (lp->res_irq == 0) {
+	if (lp->res_irq == NULL) {
 		device_printf(dev, "cannot reserve interrupt, failed.\n");
 		return (ENXIO);
 	}
@@ -334,7 +334,7 @@ lpioctl (struct ifnet *ifp, u_long cmd, caddr_t data, struct ucred *cr)
 
 	    /* attach our interrupt handler, later detached when the bus is released */
 	    error = BUS_SETUP_INTR(ppbus, dev, sc->res_irq, 0,
-				   lp_intr, dev, &ih, NULL);
+				   lp_intr, dev, &ih, NULL, NULL);
 	    if (error) {
 		ppb_release_bus(ppbus, dev);
 		return (error);
@@ -359,7 +359,7 @@ lpioctl (struct ifnet *ifp, u_long cmd, caddr_t data, struct ucred *cr)
 
     case SIOCADDMULTI:
     case SIOCDELMULTI:
-	if (ifr == 0) {
+	if (ifr == NULL) {
 	    return EAFNOSUPPORT;		/* XXX */
 	}
 	switch (ifr->ifr_addr.sa_family) {

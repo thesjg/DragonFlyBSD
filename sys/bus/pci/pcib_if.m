@@ -102,6 +102,7 @@ METHOD int alloc_msi {
 	int		count;
 	int		maxcount;
 	int		*irqs;
+	int		cpuid;
 };
 
 #
@@ -113,6 +114,7 @@ METHOD int release_msi {
 	device_t	dev;
 	int		count;
 	int		*irqs;
+	int		cpuid;
 };
 
 #
@@ -122,6 +124,7 @@ METHOD int alloc_msix {
 	device_t	pcib;
 	device_t	dev;
 	int		*irq;
+	int		cpuid;
 };
 
 #
@@ -131,6 +134,7 @@ METHOD int release_msix {
 	device_t	pcib;
 	device_t	dev;
 	int		irq;
+	int		cpuid;
 };
 
 #
@@ -143,4 +147,5 @@ METHOD int map_msi {
 	int		irq;
 	uint64_t	*addr;
 	uint32_t	*data;
+	int		cpuid;
 };

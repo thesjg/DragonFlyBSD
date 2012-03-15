@@ -1101,7 +1101,7 @@ psmidentify(driver_t *driver, device_t parent)
 	if (irq <= 0)
 		return;
 	bus_set_resource(psm, SYS_RES_IRQ, KBDC_RID_AUX, irq, 1,
-	    machintr_intr_cpuid(irq));
+	    machintr_legacy_intr_cpuid(irq));
 }
 
 #define	endprobe(v)	do {			\
@@ -1439,7 +1439,7 @@ psmattach(device_t dev)
 	if (sc->intr == NULL)
 		return (ENXIO);
 	error = BUS_SETUP_INTR(device_get_parent(dev), dev, sc->intr,
-			INTR_NOPOLL, psmintr, sc, &sc->ih, NULL);
+			INTR_NOPOLL, psmintr, sc, &sc->ih, NULL, NULL);
 	if (error) {
 		bus_release_resource(dev, SYS_RES_IRQ, rid, sc->intr);
 		return (error);
@@ -4612,7 +4612,7 @@ create_a_copy(device_t atkbdc, device_t me)
 	/* move our resource to the found device */
 	irq = bus_get_resource_start(me, SYS_RES_IRQ, 0);
 	bus_set_resource(psm, SYS_RES_IRQ, KBDC_RID_AUX, irq, 1,
-	    machintr_intr_cpuid(irq));
+	    machintr_legacy_intr_cpuid(irq));
 
 	/* ...then probe and attach it */
 	return (device_probe_and_attach(psm));
@@ -4644,7 +4644,7 @@ psmcpnp_probe(device_t dev)
 		device_printf(dev, "irq resource info is missing; "
 		    "assuming irq %ld\n", irq);
 		bus_set_resource(dev, SYS_RES_IRQ, rid, irq, 1,
-		    machintr_intr_cpuid(irq));
+		    machintr_legacy_intr_cpuid(irq));
 	}
 	res = bus_alloc_resource_any(dev, SYS_RES_IRQ, &rid, RF_SHAREABLE);
 	bus_release_resource(dev, SYS_RES_IRQ, rid, res);

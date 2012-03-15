@@ -58,7 +58,7 @@
 
 #ifndef NFS_NOSERVER 
 static long numnfsrvcache;
-static long desirednfsrvcache = NFSRVCACHESIZ;
+static long desirednfsrvcache;
 
 #define	NFSRCHASH(xid) \
 	(&nfsrvhashtbl[((xid) + ((xid) >> 24)) & nfsrvhash])
@@ -129,11 +129,25 @@ static int nfsv2_repstat[NFS_NPROCS] = {
 };
 
 /*
+ * Size the NFS server's duplicate request cache at 1/2 the nmbclusters,
+ * within a (64, 2048) range. This is to prevent all mbuf clusters being
+ * tied up in the NFS dupreq cache for small values of nmbclusters.
+ */
+static void
+nfsrvcache_size_change(void)
+{
+	desirednfsrvcache = nmbclusters / 2;
+	desirednfsrvcache = MIN(desirednfsrvcache, NFSRVCACHE_MAX_SIZE);
+	desirednfsrvcache = MAX(desirednfsrvcache, NFSRVCACHE_MIN_SIZE);
+}
+
+/*
  * Initialize the server request cache list
  */
 void
 nfsrv_initcache(void)
 {
+	nfsrvcache_size_change();
 	nfsrvhashtbl = hashinit(desirednfsrvcache, M_NFSD, &nfsrvhash);
 	TAILQ_INIT(&nfsrvlruhead);
 }
@@ -171,7 +185,7 @@ nfsrv_getcache(struct nfsrv_descript *nd, struct nfssvc_sock *slp,
 
 	lwkt_gettoken(&srvcache_token);
 loop:
-	for (rp = NFSRCHASH(nd->nd_retxid)->lh_first; rp != 0;
+	for (rp = NFSRCHASH(nd->nd_retxid)->lh_first; rp != NULL;
 	    rp = rp->rc_hash.le_next) {
 	    if (nd->nd_retxid == rp->rc_xid && nd->nd_procnum == rp->rc_proc &&
 		netaddr_match(NETFAMILY(rp), &rp->rc_haddr, nd->nd_nam)) {
@@ -285,7 +299,7 @@ nfsrv_updatecache(struct nfsrv_descript *nd, int repvalid, struct mbuf *repmbuf)
 
 	lwkt_gettoken(&srvcache_token);
 loop:
-	for (rp = NFSRCHASH(nd->nd_retxid)->lh_first; rp != 0;
+	for (rp = NFSRCHASH(nd->nd_retxid)->lh_first; rp != NULL;
 	    rp = rp->rc_hash.le_next) {
 	    if (nd->nd_retxid == rp->rc_xid && nd->nd_procnum == rp->rc_proc &&
 		netaddr_match(NETFAMILY(rp), &rp->rc_haddr, nd->nd_nam)) {

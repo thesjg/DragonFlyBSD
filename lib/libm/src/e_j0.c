@@ -9,8 +9,7 @@
  * is preserved.
  * ====================================================
  *
- * $NetBSD: e_j0.c,v 1.11 2002/05/26 22:01:50 wiz Exp $
- * $DragonFly: src/lib/libm/src/e_j0.c,v 1.1 2005/07/26 21:15:20 joerg Exp $
+ * $NetBSD: e_j0.c,v 1.12 2007/08/20 16:01:38 drochner Exp $
  */
 
 /* j0(x), y0(x)
@@ -58,6 +57,7 @@
  *	3. Special cases: y0(0)=-inf, y0(x<0)=NaN, y0(inf)=0.
  */
 
+#include <sys/_null.h>
 #include <math.h>
 #include "math_private.h"
 
@@ -274,7 +274,7 @@ pzero(double x)
 	double z,r,s;
 	int32_t ix;
 
-	p = q = 0;
+	p = q = NULL;
 	GET_HIGH_WORD(ix,x);
 	ix &= 0x7fffffff;
 	if(ix>=0x40200000)     {p = pR8; q= pS8;}
@@ -372,7 +372,7 @@ qzero(double x)
 	double s,r,z;
 	int32_t ix;
 
-	p = q = 0;
+	p = q = NULL;
 	GET_HIGH_WORD(ix,x);
 	ix &= 0x7fffffff;
 	if(ix>=0x40200000)     {p = qR8; q= qS8;}
